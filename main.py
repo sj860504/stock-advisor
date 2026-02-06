@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from typing import List
+from typing import List, Optional
 from contextlib import asynccontextmanager
 from models.schemas import StockRequest, ValuationResult, ReturnAnalysis, PriceAlert, NewsItem
 from services.analysis_service import AnalysisService
@@ -11,7 +11,9 @@ from services.ticker_service import TickerService
 from services.scheduler_service import SchedulerService
 from services.alert_service import AlertService
 from services.financial_service import FinancialService
+from services.portfolio_service import PortfolioService
 import os
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -226,7 +228,81 @@ def get_trading_signals():
     
     return signals
 
+# ============ 포트폴리오 관리 API ============
+
+@app.post("/portfolio/upload")
+async def upload_portfolio(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="default")
+):
+    """
+    엑셀 파일을 업로드하여 포트폴리오를 등록합니다.
+    
+    엑셀 형식:
+    | 티커/종목명 | 수량 | 매수가 | (매수일) |
+    |------------|------|--------|---------|
+    | AAPL       | 10   | 150    | 2024-01-15 |
+    | 삼성전자   | 50   | 70000  | 2024-02-01 |
+    """
+    try:
+        content = await file.read()
+        holdings = PortfolioService.parse_excel(content, file.filename)
+        PortfolioService.save_portfolio(user_id, holdings)
+        
+        return {
+            "message": f"포트폴리오 업로드 성공! {len(holdings)}개 종목 등록됨",
+            "holdings": holdings
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/portfolio/{user_id}")
+def get_portfolio(user_id: str = "default"):
+    """
+    저장된 포트폴리오를 조회합니다.
+    """
+    holdings = PortfolioService.load_portfolio(user_id)
+    if not holdings:
+        return {"message": "등록된 포트폴리오가 없습니다.", "holdings": []}
+    return {"holdings": holdings}
+
+@app.get("/portfolio/{user_id}/analysis")
+def analyze_portfolio(user_id: str = "default"):
+    """
+    포트폴리오 수익률을 분석합니다.
+    - 종목별 수익률
+    - 전체 포트폴리오 수익률
+    """
+    price_cache = SchedulerService.get_all_cached_prices()
+    result = PortfolioService.analyze_portfolio(user_id, price_cache)
+    return result
+
+@app.post("/portfolio/{user_id}/add")
+def add_holding(
+    user_id: str,
+    ticker: str,
+    quantity: float,
+    buy_price: float,
+    name: Optional[str] = None
+):
+    """
+    수동으로 보유 종목을 추가합니다.
+    """
+    # 티커 변환
+    resolved_ticker = TickerService.resolve_ticker(ticker)
+    holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, buy_price, name)
+    return {"message": f"{resolved_ticker} 추가 완료", "holdings": holdings}
+
+@app.delete("/portfolio/{user_id}/{ticker}")
+def remove_holding(user_id: str, ticker: str):
+    """
+    보유 종목을 제거합니다.
+    """
+    holdings = PortfolioService.remove_holding(user_id, ticker)
+    return {"message": f"{ticker} 제거 완료", "holdings": holdings}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
