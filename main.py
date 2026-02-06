@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from typing import List
 from contextlib import asynccontextmanager
 from models.schemas import StockRequest, ValuationResult, ReturnAnalysis, PriceAlert, NewsItem
@@ -9,6 +11,7 @@ from services.ticker_service import TickerService
 from services.scheduler_service import SchedulerService
 from services.alert_service import AlertService
 from services.financial_service import FinancialService
+import os
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -24,8 +27,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# 정적 파일 서빙
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
 # In-memory alert storage
 alerts = []
+
+@app.get("/", response_class=FileResponse)
+def serve_dashboard():
+    """대시보드 메인 페이지"""
+    index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
+
 
 
 def resolve_ticker_or_404(ticker_input: str) -> str:
