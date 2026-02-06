@@ -21,12 +21,19 @@ class PortfolioService:
     def parse_excel(cls, file_content: bytes, filename: str) -> List[dict]:
         """
         엑셀 파일을 파싱하여 보유 종목 리스트를 반환합니다.
-        예상 컬럼: 종목명/티커, 수량, 매수가, (매수일)
+        다양한 형식 지원:
+        - 기본: 종목명/티커, 수량, 매수가
+        - Sean 형식: symbol, AVG, QTY, SECTOR
         """
         import io
         
         if filename.endswith('.xlsx'):
-            df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
+            xlsx = pd.ExcelFile(io.BytesIO(file_content), engine='openpyxl')
+            # account 시트가 있으면 우선 사용
+            if 'account' in xlsx.sheet_names:
+                df = pd.read_excel(xlsx, sheet_name='account')
+            else:
+                df = pd.read_excel(xlsx, sheet_name=0)
         elif filename.endswith('.xls'):
             df = pd.read_excel(io.BytesIO(file_content))
         elif filename.endswith('.csv'):
@@ -42,7 +49,9 @@ class PortfolioService:
             'ticker': ['ticker', '티커', '종목코드', 'symbol', 'code'],
             'name': ['name', '종목명', '종목', 'stock_name', '이름'],
             'quantity': ['quantity', '수량', 'shares', 'qty', '보유수량'],
-            'buy_price': ['buy_price', '매수가', 'price', 'avg_price', '평균매수가', '매수단가'],
+            'buy_price': ['buy_price', '매수가', 'price', 'avg_price', '평균매수가', '매수단가', 'avg'],
+            'current_price': ['current_price', '현재가', 'crt', 'current'],
+            'sector': ['sector', '섹터', '업종'],
             'buy_date': ['buy_date', '매수일', 'date', '매수날짜']
         }
         
@@ -56,6 +65,8 @@ class PortfolioService:
         name_col = find_column(column_mapping['name'])
         qty_col = find_column(column_mapping['quantity'])
         price_col = find_column(column_mapping['buy_price'])
+        current_col = find_column(column_mapping['current_price'])
+        sector_col = find_column(column_mapping['sector'])
         date_col = find_column(column_mapping['buy_date'])
         
         if not qty_col or not price_col:
@@ -66,11 +77,29 @@ class PortfolioService:
         
         holdings = []
         for _, row in df.iterrows():
+            # NaN 값 건너뛰기
+            if pd.isna(row.get(ticker_col or name_col)):
+                continue
+                
+            ticker_value = str(row[ticker_col]).strip() if ticker_col else None
+            name_value = str(row[name_col]).strip() if name_col else None
+            
+            try:
+                quantity = float(row[qty_col])
+                buy_price = float(row[price_col])
+            except (ValueError, TypeError):
+                continue
+            
+            if quantity <= 0 or buy_price <= 0:
+                continue
+            
             holding = {
-                'ticker': str(row[ticker_col]).strip() if ticker_col else None,
-                'name': str(row[name_col]).strip() if name_col else None,
-                'quantity': float(row[qty_col]),
-                'buy_price': float(row[price_col]),
+                'ticker': ticker_value,
+                'name': name_value or ticker_value,
+                'quantity': quantity,
+                'buy_price': buy_price,
+                'current_price': float(row[current_col]) if current_col and pd.notnull(row.get(current_col)) else None,
+                'sector': str(row[sector_col]).strip() if sector_col and pd.notnull(row.get(sector_col)) else None,
                 'buy_date': str(row[date_col]) if date_col and pd.notnull(row.get(date_col)) else None
             }
             
@@ -79,10 +108,10 @@ class PortfolioService:
                 from .ticker_service import TickerService
                 holding['ticker'] = TickerService.resolve_ticker(holding['name'])
             
-            if holding['ticker'] and holding['quantity'] > 0:
-                holdings.append(holding)
+            holdings.append(holding)
         
         return holdings
+
     
     @classmethod
     def save_portfolio(cls, user_id: str, holdings: List[dict]):
@@ -128,17 +157,21 @@ class PortfolioService:
             quantity = h['quantity']
             buy_price = h['buy_price']
             
-            # 현재가 조회
-            current_price = None
-            if ticker in price_cache:
+            # 현재가 조회 순서: 1) 엑셀에 포함된 값 2) 캐시 3) API 조회
+            current_price = h.get('current_price')
+            
+            if current_price is None and ticker in price_cache:
                 current_price = price_cache[ticker].get('price')
             
             if current_price is None:
-                from .data_service import DataService
-                current_price = DataService.get_current_price(ticker)
+                try:
+                    from .data_service import DataService
+                    current_price = DataService.get_current_price(ticker)
+                except:
+                    current_price = buy_price  # 조회 실패시 매수가 사용
             
             invested = quantity * buy_price
-            current_value = quantity * current_price if current_price else 0
+            current_value = quantity * current_price if current_price else invested
             profit = current_value - invested
             profit_pct = (profit / invested * 100) if invested > 0 else 0
             
@@ -148,6 +181,7 @@ class PortfolioService:
             results.append({
                 'ticker': ticker,
                 'name': h.get('name'),
+                'sector': h.get('sector'),
                 'quantity': quantity,
                 'buy_price': buy_price,
                 'current_price': round(current_price, 2) if current_price else None,
@@ -160,6 +194,21 @@ class PortfolioService:
         total_profit = total_current - total_invested
         total_profit_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
         
+        # 섹터별 집계
+        sector_summary = {}
+        for r in results:
+            sector = r.get('sector') or 'Unknown'
+            if sector not in sector_summary:
+                sector_summary[sector] = {'invested': 0, 'current': 0, 'count': 0}
+            sector_summary[sector]['invested'] += r['invested']
+            sector_summary[sector]['current'] += r['current_value']
+            sector_summary[sector]['count'] += 1
+        
+        for sector in sector_summary:
+            s = sector_summary[sector]
+            s['profit'] = s['current'] - s['invested']
+            s['profit_pct'] = (s['profit'] / s['invested'] * 100) if s['invested'] > 0 else 0
+        
         return {
             'holdings': results,
             'summary': {
@@ -169,8 +218,10 @@ class PortfolioService:
                 'total_profit_pct': round(total_profit_pct, 2),
                 'holding_count': len(results)
             },
+            'sector_summary': sector_summary,
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
+
     
     @classmethod
     def add_holding(cls, user_id: str, ticker: str, quantity: float, buy_price: float, name: str = None):

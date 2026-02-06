@@ -7,6 +7,7 @@ class AlertService:
     """
     _webhook_url: Optional[str] = None
     _sent_alerts = set()  # 중복 알림 방지
+    _prev_data = {}  # {ticker: {price, ema20, ema60, ema200}}
     
     @classmethod
     def set_webhook(cls, webhook_url: str):
@@ -15,20 +16,25 @@ class AlertService:
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
         """슬랙으로 알림을 보냅니다."""
-        if not cls._webhook_url:
-            print(f"[Alert] No webhook configured: {message}")
-            return False
-        
+        # Slack 툴을 통해 메시지 전송 시도
+        from message import message as send_message
         try:
-            payload = {"text": message}
-            if channel:
-                payload["channel"] = channel
+            # channel이 #all-seanclaw 처럼 시작하면 이름으로, 아니면 ID로 처리
+            target = channel if channel else "C0ACP30M527" # 기본 채널 ID (all-seanclaw)
+            send_message(action="send", target=target, message=message)
+            return True
+        except:
+            if not cls._webhook_url:
+                print(f"[Alert] No webhook configured: {message}")
+                return False
             
-            response = requests.post(cls._webhook_url, json=payload)
-            return response.status_code == 200
-        except Exception as e:
-            print(f"Slack alert error: {e}")
-            return False
+            try:
+                payload = {"text": message}
+                response = requests.post(cls._webhook_url, json=payload)
+                return response.status_code == 200
+            except Exception as e:
+                print(f"Slack alert error: {e}")
+                return False
     
     @classmethod
     def check_and_alert(cls, ticker: str, data: dict) -> list:
@@ -40,38 +46,58 @@ class AlertService:
         rsi = data.get('rsi')
         price = data.get('price')
         dcf = data.get('fair_value_dcf')
+        
+        # 지지선 정보
+        ema20 = data.get('ema20')
+        ema60 = data.get('ema60')
         ema200 = data.get('ema200')
         
-        alert_key = f"{ticker}_{data.get('time', '')[:10]}"  # 하루에 한번만 알림
+        # 이전 데이터 가져오기
+        prev = cls._prev_data.get(ticker, {})
+        prev_price = prev.get('price')
         
-        # 1. RSI 과매도 (30 미만)
+        alert_key = f"{ticker}_{data.get('time', '')[:10]}"
+        
+        # --- 1. RSI 알림 (하루 한번) ---
         if rsi and rsi < 30:
-            alert = f"📉 **{ticker}** RSI 과매도! (RSI: {rsi}) - 현재가: ${price}"
             if f"{alert_key}_oversold" not in cls._sent_alerts:
-                alerts.append(alert)
+                alerts.append(f"📉 **{ticker}** RSI 과매도! (RSI: {rsi}) - 현재가: ${price}")
                 cls._sent_alerts.add(f"{alert_key}_oversold")
         
-        # 2. RSI 과매수 (70 초과)
         if rsi and rsi > 70:
-            alert = f"📈 **{ticker}** RSI 과매수! (RSI: {rsi}) - 현재가: ${price}"
             if f"{alert_key}_overbought" not in cls._sent_alerts:
-                alerts.append(alert)
+                alerts.append(f"📈 **{ticker}** RSI 과매수! (RSI: {rsi}) - 현재가: ${price}")
                 cls._sent_alerts.add(f"{alert_key}_overbought")
         
-        # 3. DCF 저평가 (현재가 < DCF의 80%)
+        # --- 2. DCF 알림 (하루 한번) ---
         if dcf and price and price < dcf * 0.8:
-            upside = ((dcf - price) / price) * 100
-            alert = f"🎯 **{ticker}** DCF 저평가! 현재가 ${price} < 적정가 ${dcf:.2f} (상승여력 {upside:.1f}%)"
             if f"{alert_key}_undervalued" not in cls._sent_alerts:
-                alerts.append(alert)
+                upside = ((dcf - price) / price) * 100
+                alerts.append(f"🎯 **{ticker}** DCF 저평가! 현재가 ${price} < 적정가 ${dcf:.2f} (상승여력 {upside:.1f}%)")
                 cls._sent_alerts.add(f"{alert_key}_undervalued")
-        
-        # 4. EMA200 지지선 터치
-        if ema200 and price and abs(price - ema200) / ema200 < 0.02:
-            alert = f"📊 **{ticker}** EMA200 지지선 터치! (EMA200: ${ema200:.2f}, 현재가: ${price})"
-            if f"{alert_key}_ema200" not in cls._sent_alerts:
-                alerts.append(alert)
-                cls._sent_alerts.add(f"{alert_key}_ema200")
+
+        # --- 3. 지지선 돌파/이탈 알림 (실시간 감지) ---
+        if prev_price and price:
+            for ema_val, name in [(ema20, "EMA20(단기)"), (ema60, "EMA60(중기)"), (ema200, "EMA200(장기)")]:
+                if not ema_val: continue
+                
+                prev_ema = prev.get(name.split('(')[0].lower()) or ema_val
+                
+                # 골든크로스 (상향 돌파)
+                if prev_price <= prev_ema and price > ema_val:
+                    alerts.append(f"🚀 **{ticker}** {name} 상향 돌파! (지지선: ${ema_val:.2f}, 현재가: ${price})")
+                
+                # 데드크로스 (하향 이탈)
+                elif prev_price >= prev_ema and price < ema_val:
+                    alerts.append(f"⚠️ **{ticker}** {name} 하향 이탈! (지지선: ${ema_val:.2f}, 현재가: ${price})")
+
+        # 현재 데이터를 이전 데이터로 저장
+        cls._prev_data[ticker] = {
+            'price': price,
+            'ema20': ema20,
+            'ema60': ema60,
+            'ema200': ema200
+        }
         
         return alerts
     

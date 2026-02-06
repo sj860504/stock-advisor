@@ -112,6 +112,11 @@ class SchedulerService:
                     "change_pct": round(((current_price - prev_close) / prev_close) * 100, 2),
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
+                
+                # 알림 체크 및 전송
+                alerts = AlertService.check_and_alert(ticker, cls._price_cache[ticker])
+                for alert_msg in alerts:
+                    AlertService.send_slack_alert(alert_msg)
 
             except Exception as e:
                 print(f"  Error fetching {ticker}: {e}")

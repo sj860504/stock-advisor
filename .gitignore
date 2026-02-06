@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+venv/
+.env
+data/
+*.xlsx
+*.csv
+toss_raw.json
+toss_status.png
+fetch_toss.py
+dcf_calculator.py
