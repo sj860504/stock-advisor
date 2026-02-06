@@ -7,22 +7,26 @@ from services.news_service import NewsService
 from services.data_service import DataService
 from services.ticker_service import TickerService
 from services.scheduler_service import SchedulerService
+from services.alert_service import AlertService
+from services.financial_service import FinancialService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 앱 시작 시 스케줄러 실행
     SchedulerService.start()
     yield
-    # 앱 종료 시 정리 (필요하면)
+    # 앱 종료 시 정리
 
 app = FastAPI(
     title="Sean's Stock Advisor", 
-    description="FinanceDataReader 기반 주식 분석 및 알림 API",
+    description="FinanceDataReader + yfinance 기반 주식 분석 및 알림 API",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# In-memory alert storage (for demo purposes - use DB in production)
+# In-memory alert storage
 alerts = []
+
 
 def resolve_ticker_or_404(ticker_input: str) -> str:
     resolved = TickerService.resolve_ticker(ticker_input)
@@ -120,6 +124,92 @@ def check_alerts():
     
     return {"triggered_alerts": triggered}
 
+@app.get("/summary")
+def get_daily_summary():
+    """
+    현재 Top 20 종목의 일일 요약 리포트를 생성합니다.
+    과매도/과매수/저평가 종목을 한눈에 보여줍니다.
+    """
+    data = SchedulerService.get_all_cached_prices()
+    if not data:
+        return {"message": "Data collection is starting... please wait a moment."}
+    
+    return AlertService.generate_daily_summary(data)
+
+@app.get("/metrics/{ticker_input}")
+def get_financial_metrics(ticker_input: str):
+    """
+    종목의 재무 지표(PER, PBR, ROE, 시가총액 등)를 조회합니다.
+    """
+    real_ticker = resolve_ticker_or_404(ticker_input)
+    metrics = FinancialService.get_metrics(real_ticker)
+    return {
+        "ticker": real_ticker,
+        "metrics": metrics
+    }
+
+@app.get("/signals")
+def get_trading_signals():
+    """
+    현재 Top 20 종목 중 매매 신호가 발생한 종목을 반환합니다.
+    - 과매도 (RSI < 30)
+    - 과매수 (RSI > 70)  
+    - DCF 저평가 (현재가 < DCF * 0.8)
+    """
+    data = SchedulerService.get_all_cached_prices()
+    if not data:
+        return {"message": "Data collection is starting..."}
+    
+    signals = {
+        "oversold": [],
+        "overbought": [],
+        "undervalued": [],
+        "ema200_support": []
+    }
+    
+    for ticker, info in data.items():
+        rsi = info.get('rsi')
+        price = info.get('price')
+        dcf = info.get('fair_value_dcf')
+        ema200 = info.get('ema200')
+        
+        if rsi and rsi < 30:
+            signals["oversold"].append({
+                "ticker": ticker,
+                "rsi": rsi,
+                "price": price,
+                "signal": "BUY"
+            })
+        
+        if rsi and rsi > 70:
+            signals["overbought"].append({
+                "ticker": ticker,
+                "rsi": rsi,
+                "price": price,
+                "signal": "SELL"
+            })
+        
+        if dcf and price and price < dcf * 0.8:
+            upside = ((dcf - price) / price) * 100
+            signals["undervalued"].append({
+                "ticker": ticker,
+                "price": price,
+                "dcf": round(dcf, 2),
+                "upside_pct": round(upside, 1),
+                "signal": "BUY"
+            })
+        
+        if ema200 and price and abs(price - ema200) / ema200 < 0.02:
+            signals["ema200_support"].append({
+                "ticker": ticker,
+                "price": price,
+                "ema200": round(ema200, 2),
+                "signal": "WATCH"
+            })
+    
+    return signals
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

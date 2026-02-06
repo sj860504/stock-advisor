@@ -85,6 +85,12 @@ class SchedulerService:
                 fair_value_dcf = dcf_data.get('dcf_price')
                 fair_value_ema = ema200 if ema200 else ema100
                 
+                # DCF 신뢰도 검증
+                dcf_confidence = "N/A"
+                dcf_note = ""
+                if fair_value_dcf and current_price > 0:
+                    _, dcf_confidence, dcf_note = FinancialService.validate_dcf(fair_value_dcf, current_price)
+                
                 cls._price_cache[ticker] = {
                     "price": round(current_price, 2),
                     "open": round(prev_open, 2),
@@ -94,6 +100,8 @@ class SchedulerService:
                     "fair_value_ema200": round(fair_value_ema, 2) if fair_value_ema else None,
                     "fair_value_dcf": round(fair_value_dcf, 2) if fair_value_dcf else None,
                     "dcf_method": dcf_data.get('method'),
+                    "dcf_confidence": dcf_confidence,
+                    "dcf_note": dcf_note,
                     "rsi": round(rsi, 2) if not np.isnan(rsi) else None,
                     "ema5": round(ema5, 2),
                     "ema10": round(ema10, 2),
