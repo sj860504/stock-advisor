@@ -230,6 +230,12 @@ def get_trading_signals():
 
 # ============ 포트폴리오 관리 API ============
 
+@app.get("/alerts/pending")
+def get_pending_alerts():
+    """대기 중인 알림 조회 및 삭제 (Polling용)"""
+    alerts = AlertService.get_pending_alerts()
+    return {"alerts": alerts}
+
 @app.post("/portfolio/upload")
 async def upload_portfolio(
     file: UploadFile = File(...),

@@ -8,6 +8,7 @@ class AlertService:
     _webhook_url: Optional[str] = None
     _sent_alerts = set()  # 중복 알림 방지
     _prev_data = {}  # {ticker: {price, ema20, ema60, ema200}}
+    _pending_alerts = [] # 에이전트 전송 대기열
     
     @classmethod
     def set_webhook(cls, webhook_url: str):
@@ -15,26 +16,17 @@ class AlertService:
     
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
-        """슬랙으로 알림을 보냅니다."""
-        # Slack 툴을 통해 메시지 전송 시도
-        from message import message as send_message
-        try:
-            # channel이 #all-seanclaw 처럼 시작하면 이름으로, 아니면 ID로 처리
-            target = channel if channel else "C0ACP30M527" # 기본 채널 ID (all-seanclaw)
-            send_message(action="send", target=target, message=message)
-            return True
-        except:
-            if not cls._webhook_url:
-                print(f"[Alert] No webhook configured: {message}")
-                return False
-            
-            try:
-                payload = {"text": message}
-                response = requests.post(cls._webhook_url, json=payload)
-                return response.status_code == 200
-            except Exception as e:
-                print(f"Slack alert error: {e}")
-                return False
+        """알림을 대기열에 추가합니다 (에이전트가 수거해감)"""
+        print(f"[Alert Generated] {message}")
+        cls._pending_alerts.append(message)
+        return True
+
+    @classmethod
+    def get_pending_alerts(cls) -> list:
+        """대기 중인 알림을 반환하고 비웁니다."""
+        alerts = list(cls._pending_alerts)
+        cls._pending_alerts.clear()
+        return alerts
     
     @classmethod
     def check_and_alert(cls, ticker: str, data: dict) -> list:
