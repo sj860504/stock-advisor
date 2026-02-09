@@ -243,10 +243,11 @@
                                 <th>Valuation</th>
                                 <th>Return</th>
                                 <th>Fair Value (DCF)</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="portfolio-table">
-                            <tr><td colspan="7" style="text-align: center; padding: 20px;">Loading...</td></tr>
+                            <tr><td colspan="8" style="text-align: center; padding: 20px;">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -569,7 +570,7 @@
         
         function renderPortfolioTable(data) {
             const tbody = document.getElementById('portfolio-table');
-            if (!data.length) { tbody.innerHTML = '<tr><td colspan="7">No holdings</td></tr>'; return; }
+            if (!data.length) { tbody.innerHTML = '<tr><td colspan="8">No holdings</td></tr>'; return; }
             
             tbody.innerHTML = data.map(info => {
                 const price = info.price || 0;
@@ -583,9 +584,29 @@
                         <td>$${info.current_value ? info.current_value.toFixed(2) : '-'}</td>
                         <td class="${info.return_pct >= 0 ? 'price-up' : 'price-down'}">${info.return_pct ? info.return_pct.toFixed(2)+'%' : '-'}</td>
                         <td>$${info.dcf_fair || '-'} <span style="font-size:0.8rem">(${info.dcf_upside ? info.dcf_upside+'%' : '-'})</span></td>
+                        <td>
+                             <button class="btn btn-outline" style="padding:4px 8px; color:#ef4444; border-color:#ef4444;" onclick="deleteHolding('${info.ticker}')">🗑️</button>
+                        </td>
                     </tr>
                 `;
             }).join('');
+        }
+
+        async function deleteHolding(ticker) {
+            if(!confirm(`Are you sure you want to remove ${ticker} from your portfolio?`)) return;
+            
+            try {
+                const res = await fetch(`/portfolio/sean/${ticker}`, { method: 'DELETE' });
+                if(res.ok) {
+                    fetchPortfolio(); // Refresh
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + (err.detail || 'Failed to delete'));
+                }
+            } catch(e) {
+                console.error(e);
+                alert('Error deleting holding');
+            }
         }
 
         // --- Trade Modal Logic ---
