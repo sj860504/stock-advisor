@@ -1,7 +1,10 @@
 fastapi
 uvicorn
 finance-datareader
+yfinance
 pandas
 numpy
 requests
 beautifulsoup4
+lxml
+apscheduler
