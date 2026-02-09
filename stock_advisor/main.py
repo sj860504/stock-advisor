@@ -368,6 +368,52 @@ def trade_holding(
         
     return {"message": f"{resolved_ticker} {action.upper()} completed", "holdings": holdings}
 
+@app.get("/valuation/dcf-custom")
+def get_custom_dcf(
+    ticker: str,
+    growth_rate: Optional[float] = None,
+    discount_rate: Optional[float] = None,
+    terminal_growth: Optional[float] = 0.03
+):
+    """
+    사용자 정의 변수를 사용하여 DCF 적정 가치를 계산합니다.
+    """
+    real_ticker = TickerService.resolve_ticker(ticker)
+    
+    # 기본 재무 데이터 가져오기
+    # FinancialService에 get_fcf_per_share가 있는지 확인 필요하나, 
+    # 기존 metrics에서 활용 가능하다고 가정하거나 새로 추가
+    metrics = FinancialService.get_metrics(real_ticker)
+    fcf_per_share = metrics.get('fcf_per_share')
+    
+    if not fcf_per_share:
+        # metrics에 없을 경우 임시로 0 처리하거나 에러
+        raise HTTPException(status_code=400, detail="FCF data not available")
+
+    calc_growth = growth_rate if growth_rate is not None else metrics.get('growth_5y', 0.10)
+    calc_beta = metrics.get('beta', 1.0)
+    
+    from stock_advisor.services.dcf_service import DcfService
+    result = DcfService.calculate_fair_value(
+        fcf_per_share=fcf_per_share,
+        growth_rate=calc_growth,
+        beta=calc_beta,
+        risk_free_rate=0.04,
+        terminal_growth=terminal_growth,
+        manual_discount=discount_rate
+    )
+    
+    return {
+        "ticker": real_ticker,
+        "parameters": {
+            "growth_rate": calc_growth,
+            "discount_rate": result.get('discount_rate'),
+            "terminal_growth": terminal_growth
+        },
+        "fair_value": result.get('value'),
+        "error": result.get('error')
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

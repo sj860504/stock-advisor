@@ -168,6 +168,7 @@
             <a class="nav-item active" onclick="switchTab('dashboard')">Dashboard</a>
             <a class="nav-item" onclick="switchTab('portfolio')">Portfolio</a>
             <a class="nav-item" onclick="switchTab('market')">Market Watch</a>
+            <a class="nav-item" onclick="switchTab('dcf')">DCF Simulator</a>
             <a class="nav-item" onclick="switchTab('settings')">Settings</a>
         </div>
         <div style="font-size: 0.85rem; color: var(--text-sub);">
@@ -290,7 +291,45 @@
             </div>
         </div>
 
-        <!-- 4. SETTINGS TAB -->
+        <!-- 4. DCF SIMULATOR TAB -->
+        <div id="dcf" class="page-section">
+            <div class="card" style="max-width: 900px; margin: 0 auto;">
+                <h2>🧬 DCF Value Simulator</h2>
+                <p style="color: var(--text-sub); margin-bottom: 20px;">Adjust growth and discount rates to find your own fair value.</p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                    <div>
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Ticker</label>
+                            <input type="text" id="dcfTicker" placeholder="e.g. AAPL" onchange="updateDcf()">
+                        </div>
+                        
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Stage 1 Growth Rate (10Y) : <span id="valGrowth">10</span>%</label>
+                            <input type="range" id="rangeGrowth" min="-0.1" max="0.5" step="0.01" value="0.10" oninput="updateDcf()">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Discount Rate (WACC) : <span id="valDiscount">9</span>%</label>
+                            <input type="range" id="rangeDiscount" min="0.04" max="0.20" step="0.005" value="0.09" oninput="updateDcf()">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Terminal Growth Rate : <span id="valTerminal">3</span>%</label>
+                            <input type="range" id="rangeTerminal" min="0" max="0.05" step="0.005" value="0.03" oninput="updateDcf()">
+                        </div>
+                    </div>
+
+                    <div style="background: #0f1115; border-radius: 12px; padding: 30px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px dashed var(--border);">
+                        <span style="color: var(--text-sub); font-size: 0.9rem; margin-bottom: 10px;">Estimated Fair Value</span>
+                        <h1 id="dcfResult" style="font-size: 3.5rem; color: var(--accent);">$0.00</h1>
+                        <p id="dcfStatus" style="margin-top: 15px; color: var(--text-sub); text-align: center;">Enter a ticker to start</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5. SETTINGS TAB -->
         <div id="settings" class="page-section">
             <div class="card" style="max-width: 600px; margin: 0 auto;">
                 <h2>⚙️ Settings & Alerts</h2>
@@ -416,6 +455,7 @@
             if (tabId === 'portfolio') fetchPortfolio();
             if (tabId === 'market') fetchMarketData();
             if (tabId === 'settings') fetchAlerts();
+            // dcf는 사용자 입력 기반이므로 자동 fetch 안함
         }
 
         // Handle specific nav click to ensure class active works even if triggered manually
@@ -526,6 +566,40 @@
                 // Render alerts...
                 list.innerHTML = '<li style="color:var(--text-sub)">No active alerts configured.</li>';
             } catch(e) { console.error(e); }
+        }
+
+        // --- DCF Simulator Logic ---
+        async function updateDcf() {
+            const ticker = document.getElementById('dcfTicker').value;
+            if(!ticker) return;
+
+            const growth = parseFloat(document.getElementById('rangeGrowth').value);
+            const discount = parseFloat(document.getElementById('rangeDiscount').value);
+            const terminal = parseFloat(document.getElementById('rangeTerminal').value);
+
+            // Update labels
+            document.getElementById('valGrowth').innerText = (growth * 100).toFixed(0);
+            document.getElementById('valDiscount').innerText = (discount * 100).toFixed(1);
+            document.getElementById('valTerminal').innerText = (terminal * 100).toFixed(1);
+
+            document.getElementById('dcfStatus').innerText = 'Calculating...';
+
+            try {
+                const url = `/valuation/dcf-custom?ticker=${encodeURIComponent(ticker)}&growth_rate=${growth}&discount_rate=${discount}&terminal_growth=${terminal}`;
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.fair_value) {
+                    document.getElementById('dcfResult').innerText = '$' + data.fair_value;
+                    document.getElementById('dcfStatus').innerText = `Based on Growth ${(growth*100).toFixed(1)}% / WACC ${(discount*100).toFixed(1)}%`;
+                } else {
+                    document.getElementById('dcfResult').innerText = 'Error';
+                    document.getElementById('dcfStatus').innerText = data.error || 'Calculation failed';
+                }
+            } catch (e) {
+                console.error(e);
+                document.getElementById('dcfStatus').innerText = 'Network error';
+            }
         }
 
         // --- Render Helpers ---
