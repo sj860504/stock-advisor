@@ -304,6 +304,9 @@ def get_full_portfolio_report(user_id: str = "default"):
         report.append({
             "ticker": ticker,
             "name": item.get('name'),
+            "quantity": item.get('quantity'),
+            "buy_price": item.get('buy_price'),
+            "current_value": round(price * item.get('quantity', 0), 2),
             "price": price,
             "return_pct": round(profit_pct, 2),
             "rsi": cached.get('rsi'),
