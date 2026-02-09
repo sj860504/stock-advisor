@@ -1,0 +1,421 @@
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from typing import List, Optional
+from contextlib import asynccontextmanager
+from stock_advisor.models.schemas import StockRequest, ValuationResult, ReturnAnalysis, PriceAlert, NewsItem
+from stock_advisor.services.analysis_service import AnalysisService
+from stock_advisor.services.news_service import NewsService
+from stock_advisor.services.data_service import DataService
+from stock_advisor.services.ticker_service import TickerService
+from stock_advisor.services.scheduler_service import SchedulerService
+from stock_advisor.services.alert_service import AlertService
+from stock_advisor.services.financial_service import FinancialService
+from stock_advisor.services.portfolio_service import PortfolioService
+from stock_advisor.services.macro_service import MacroService
+from stock_advisor.services.report_service import ReportService
+import os
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 앱 시작 시 스케줄러 실행
+    SchedulerService.start()
+    yield
+    # 앱 종료 시 정리
+
+app = FastAPI(
+    title="Sean's Stock Advisor", 
+    description="FinanceDataReader + yfinance 기반 주식 분석 및 알림 API",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# 정적 파일 서빙
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# In-memory alert storage
+alerts = []
+
+@app.get("/", response_class=FileResponse)
+def serve_dashboard():
+    """대시보드 메인 페이지"""
+    index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
+
+def resolve_ticker_or_404(ticker_input: str) -> str:
+    resolved = TickerService.resolve_ticker(ticker_input)
+    if not resolved:
+         raise HTTPException(status_code=404, detail=f"Could not find ticker for: {ticker_input}")
+    return resolved
+
+@app.get("/valuation/{ticker_input}", response_model=ValuationResult)
+def get_valuation(ticker_input: str):
+    """
+    해당 종목(이름 또는 티커)의 기술적 지표(RSI, 이동평균)를 기반으로 매수/매도 의견을 제시합니다.
+    예: '삼성전자', '테슬라', '005930', 'TSLA'
+    """
+    real_ticker = resolve_ticker_or_404(ticker_input)
+    result = AnalysisService.evaluate_stock(real_ticker)
+    
+    # 덮어쓰기: 결과의 ticker 필드를 사용자가 검색한 이름(또는 매핑된 티커)와 연관지을 수 있게
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    
+    # 편의상 티커명을 반환 결과에 업데이트 (선택 사항)
+    # result['ticker'] = f"{ticker_input} ({real_ticker})"
+    
+    return result
+
+@app.get("/returns/{ticker_input}", response_model=ReturnAnalysis)
+def get_returns(ticker_input: str):
+    """
+    2024년 1월 1일부터 현재까지의 수익률과 MDD(최대 낙폭)를 분석합니다.
+    """
+    real_ticker = resolve_ticker_or_404(ticker_input)
+    result = AnalysisService.analyze_returns(real_ticker)
+    if not result:
+        raise HTTPException(status_code=404, detail="Data not found")
+    return result
+
+@app.get("/news/{ticker_input}", response_model=List[NewsItem])
+def get_news(ticker_input: str):
+    """
+    관련 뉴스 링크를 제공합니다.
+    """
+    real_ticker = resolve_ticker_or_404(ticker_input)
+    return NewsService.get_news(real_ticker)
+
+@app.get("/market/top20")
+def get_top20_realtime():
+    """
+    실시간으로 모니터링 중인 미국 시총 상위 20개 기업의 현재가를 반환합니다.
+    (서버 백그라운드에서 1분마다 업데이트됨)
+    """
+    data = SchedulerService.get_all_cached_prices()
+    if not data:
+        return {"message": "Data collection is starting... please wait a moment."}
+    return data
+
+@app.get("/market")
+def get_market_status():
+    """
+    주요 지수(코스피, 코스닥, 나스닥 등) 현황을 조회합니다.
+    """
+    return NewsService.get_market_summary()
+
+@app.post("/alerts")
+def create_alert(alert: PriceAlert):
+    """
+    가격 알림을 설정합니다. (입력된 티커/이름 자동 변환)
+    """
+    real_ticker = TickerService.resolve_ticker(alert.ticker)
+    alert.ticker = real_ticker # 변환된 티커로 저장
+    
+    alerts.append(alert)
+    return {"message": f"Alert set for {alert.ticker} at {alert.target_price}"}
+
+@app.get("/check-alerts")
+def check_alerts():
+    """
+    설정된 알림 조건을 확인하고 트리거된 알림을 반환합니다.
+    (주기적으로 호출하여 확인하는 용도)
+    """
+    triggered = []
+    for alert in alerts:
+        if not alert.is_active:
+            continue
+            
+        current_price = DataService.get_current_price(alert.ticker)
+        if current_price:
+            if alert.condition == "above" and current_price >= alert.target_price:
+                triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} >= 목표가: {alert.target_price}")
+            elif alert.condition == "below" and current_price <= alert.target_price:
+                triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} <= 목표가: {alert.target_price}")
+    
+    return {"triggered_alerts": triggered}
+
+@app.get("/summary")
+def get_daily_summary():
+    """
+    현재 Top 20 종목의 일일 요약 리포트를 생성합니다.
+    과매도/과매수/저평가 종목을 한눈에 보여줍니다.
+    """
+    data = SchedulerService.get_all_cached_prices()
+    if not data:
+        return {"message": "Data collection is starting... please wait a moment."}
+    
+    return AlertService.generate_daily_summary(data)
+
+@app.get("/metrics/{ticker_input}")
+def get_financial_metrics(ticker_input: str):
+    """
+    종목의 재무 지표(PER, PBR, ROE, 시가총액 등)를 조회합니다.
+    """
+    real_ticker = resolve_ticker_or_404(ticker_input)
+    metrics = FinancialService.get_metrics(real_ticker)
+    return {
+        "ticker": real_ticker,
+        "metrics": metrics
+    }
+
+@app.get("/signals")
+def get_trading_signals():
+    """
+    현재 Top 20 종목 중 매매 신호가 발생한 종목을 반환합니다.
+    - 과매도 (RSI < 30)
+    - 과매수 (RSI > 70)  
+    - DCF 저평가 (현재가 < DCF * 0.8)
+    """
+    data = SchedulerService.get_all_cached_prices()
+    if not data:
+        return {"message": "Data collection is starting..."}
+    
+    signals = {
+        "oversold": [],
+        "overbought": [],
+        "undervalued": [],
+        "ema200_support": []
+    }
+    
+    for ticker, info in data.items():
+        rsi = info.get('rsi')
+        price = info.get('price')
+        dcf = info.get('fair_value_dcf')
+        ema200 = info.get('ema200')
+        
+        if rsi and rsi < 30:
+            signals["oversold"].append({
+                "ticker": ticker,
+                "rsi": rsi,
+                "price": price,
+                "signal": "BUY"
+            })
+        
+        if rsi and rsi > 70:
+            signals["overbought"].append({
+                "ticker": ticker,
+                "rsi": rsi,
+                "price": price,
+                "signal": "SELL"
+            })
+        
+        if dcf and price and price < dcf * 0.8:
+            upside = ((dcf - price) / price) * 100
+            signals["undervalued"].append({
+                "ticker": ticker,
+                "price": price,
+                "dcf": round(dcf, 2),
+                "upside_pct": round(upside, 1),
+                "signal": "BUY"
+            })
+        
+        if ema200 and price and abs(price - ema200) / ema200 < 0.02:
+            signals["ema200_support"].append({
+                "ticker": ticker,
+                "price": price,
+                "ema200": round(ema200, 2),
+                "signal": "WATCH"
+            })
+    
+    return signals
+
+# ============ 포트폴리오 관리 API ============
+
+@app.get("/alerts/pending")
+def get_pending_alerts():
+    """대기 중인 알림 조회 및 삭제 (Polling용)"""
+    alerts = AlertService.get_pending_alerts()
+    return {"alerts": alerts}
+
+@app.post("/portfolio/upload")
+async def upload_portfolio(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="default")
+):
+    """
+    엑셀 파일을 업로드하여 포트폴리오를 등록합니다.
+    
+    엑셀 형식:
+    | 티커/종목명 | 수량 | 매수가 | (매수일) |
+    |------------|------|--------|---------|
+    | AAPL       | 10   | 150    | 2024-01-15 |
+    | 삼성전자   | 50   | 70000  | 2024-02-01 |
+    """
+    try:
+        content = await file.read()
+        holdings = PortfolioService.parse_excel(content, file.filename)
+        PortfolioService.save_portfolio(user_id, holdings)
+        
+        return {
+            "message": f"포트폴리오 업로드 성공! {len(holdings)}개 종목 등록됨",
+            "holdings": holdings
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/portfolio/{user_id}")
+def get_portfolio(user_id: str = "default"):
+    """
+    저장된 포트폴리오를 조회합니다.
+    """
+    holdings = PortfolioService.load_portfolio(user_id)
+    if not holdings:
+        return {"message": "등록된 포트폴리오가 없습니다.", "holdings": []}
+    return {"holdings": holdings}
+
+@app.get("/portfolio/{user_id}/analysis")
+def analyze_portfolio(user_id: str = "default"):
+    """
+    포트폴리오 수익률을 분석합니다.
+    """
+    price_cache = SchedulerService.get_all_cached_prices()
+    result = PortfolioService.analyze_portfolio(user_id, price_cache)
+    return result
+
+@app.get("/portfolio/{user_id}/full-report")
+def get_full_portfolio_report(user_id: str = "default"):
+    """
+    보유 종목 전체에 대한 상세 분석 데이터를 반환합니다.
+    """
+    holdings = PortfolioService.load_portfolio(user_id)
+    price_cache = SchedulerService.get_all_cached_prices()
+    
+    report = []
+    for item in holdings:
+        ticker = item['ticker']
+        if not ticker: continue
+        
+        # 캐시된 데이터 활용
+        cached = price_cache.get(ticker, {})
+        price = cached.get('price') or item['buy_price']
+        
+        profit_pct = ((price - item['buy_price']) / item['buy_price']) * 100 if item['buy_price'] > 0 else 0
+        
+        dcf = cached.get('fair_value_dcf')
+        upside = 0
+        if dcf and price:
+            upside = ((dcf - price) / price) * 100
+            
+        report.append({
+            "ticker": ticker,
+            "name": item.get('name'),
+            "quantity": item.get('quantity'),
+            "buy_price": item.get('buy_price'),
+            "current_value": round(price * item.get('quantity', 0), 2),
+            "price": price,
+            "return_pct": round(profit_pct, 2),
+            "rsi": cached.get('rsi'),
+            "ema200": cached.get('ema200'),
+            "dcf_fair": dcf,
+            "dcf_upside": round(upside, 1) if dcf else None
+        })
+        
+    report.sort(key=lambda x: x['return_pct'], reverse=True)
+    return report
+
+@app.post("/portfolio/{user_id}/add")
+def add_holding(
+    user_id: str,
+    ticker: str,
+    quantity: float,
+    buy_price: float,
+    name: Optional[str] = None
+):
+    """
+    수동으로 보유 종목을 추가합니다.
+    """
+    # 티커 변환
+    resolved_ticker = TickerService.resolve_ticker(ticker)
+    holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, buy_price, name)
+    return {"message": f"{resolved_ticker} 추가 완료", "holdings": holdings}
+
+@app.delete("/portfolio/{user_id}/{ticker}")
+def remove_holding(user_id: str, ticker: str):
+    """
+    보유 종목을 제거합니다.
+    """
+    holdings = PortfolioService.remove_holding(user_id, ticker)
+    return {"message": f"{ticker} 제거 완료", "holdings": holdings}
+
+@app.post("/portfolio/{user_id}/trade")
+def trade_holding(
+    user_id: str,
+    ticker: str,
+    action: str,
+    quantity: float,
+    price: float
+):
+    """
+    주식 매수/매도 통합 처리
+    - action: 'buy' 또는 'sell'
+    """
+    resolved_ticker = TickerService.resolve_ticker(ticker)
+    
+    try:
+        if action.lower() == "buy":
+            holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, price)
+        elif action.lower() == "sell":
+            holdings = PortfolioService.sell_holding(user_id, resolved_ticker, quantity, price)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action. Use 'buy' or 'sell'.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    return {"message": f"{resolved_ticker} {action.upper()} completed", "holdings": holdings}
+
+@app.get("/valuation/dcf-custom")
+def get_custom_dcf(
+    ticker: str,
+    growth_rate: Optional[float] = None,
+    discount_rate: Optional[float] = None,
+    terminal_growth: Optional[float] = 0.03
+):
+    """
+    사용자 정의 변수를 사용하여 DCF 적정 가치를 계산합니다.
+    """
+    real_ticker = TickerService.resolve_ticker(ticker)
+    
+    # 기본 재무 데이터 가져오기
+    # FinancialService에 get_fcf_per_share가 있는지 확인 필요하나, 
+    # 기존 metrics에서 활용 가능하다고 가정하거나 새로 추가
+    metrics = FinancialService.get_metrics(real_ticker)
+    fcf_per_share = metrics.get('fcf_per_share')
+    
+    if not fcf_per_share:
+        # metrics에 없을 경우 임시로 0 처리하거나 에러
+        raise HTTPException(status_code=400, detail="FCF data not available")
+
+    calc_growth = growth_rate if growth_rate is not None else metrics.get('growth_5y', 0.10)
+    calc_beta = metrics.get('beta', 1.0)
+    
+    from stock_advisor.services.dcf_service import DcfService
+    result = DcfService.calculate_fair_value(
+        fcf_per_share=fcf_per_share,
+        growth_rate=calc_growth,
+        beta=calc_beta,
+        risk_free_rate=0.04,
+        terminal_growth=terminal_growth,
+        manual_discount=discount_rate
+    )
+    
+    return {
+        "ticker": real_ticker,
+        "parameters": {
+            "growth_rate": calc_growth,
+            "discount_rate": result.get('discount_rate'),
+            "terminal_growth": terminal_growth
+        },
+        "fair_value": result.get('value'),
+        "error": result.get('error')
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
