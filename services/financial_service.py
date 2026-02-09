@@ -4,11 +4,37 @@ import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
 import time
+import os
+import json
 
 class FinancialService:
     _krx_listing = None
     _dcf_cache = {}  # yfinance 데이터 캐싱
     _metrics_cache = {}  # 재무지표 캐싱
+    _overrides_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'dcf_settings.json')
+
+    @classmethod
+    def get_overrides(cls) -> dict:
+        """수동으로 설정된 DCF 파라미터를 가져옵니다."""
+        if os.path.exists(cls._overrides_path):
+            try:
+                with open(cls._overrides_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    @classmethod
+    def save_override(cls, ticker: str, params: dict):
+        """특정 종목의 DCF 파라미터를 저장합니다."""
+        overrides = cls.get_overrides()
+        overrides[ticker] = params
+        
+        # 폴더 생성 확인
+        os.makedirs(os.path.dirname(cls._overrides_path), exist_ok=True)
+        with open(cls._overrides_path, 'w', encoding='utf-8') as f:
+            json.dump(overrides, f, indent=2)
+        return overrides[ticker]
 
     @classmethod
     def _load_krx(cls):

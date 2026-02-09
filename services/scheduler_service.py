@@ -3,11 +3,13 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
-from .data_service import DataService
-from .financial_service import FinancialService
-from .ticker_service import TickerService
-from .alert_service import AlertService
-from .portfolio_service import PortfolioService
+from stock_advisor.services.data_service import DataService
+from stock_advisor.services.financial_service import FinancialService
+from stock_advisor.services.ticker_service import TickerService
+from stock_advisor.services.alert_service import AlertService
+from stock_advisor.services.portfolio_service import PortfolioService
+from stock_advisor.services.macro_service import MacroService
+from stock_advisor.services.indicator_service import IndicatorService
 
 class SchedulerService:
     _scheduler = None
@@ -27,10 +29,48 @@ class SchedulerService:
             print("📅 Scheduler started.")
 
     @classmethod
+    def update_prices(cls):
+        """실시간 시세 및 지표 업데이트 (Refactored)"""
+        if not cls._top_20_tickers: return
+        
+        for ticker in cls._top_20_tickers:
+            try:
+                df = DataService.get_price_data(ticker, start_date="2025-01-01")
+                if df is None or df.empty: continue
+                
+                current_price = float(df['Close'].iloc[-1])
+                
+                # IndicatorService를 사용하여 지표 계산 위임
+                indicators = IndicatorService.get_latest_indicators(df['Close'])
+                
+                dcf_data = cls._dcf_cache.get(ticker, {})
+                fair_value_dcf = dcf_data.get('dcf_price')
+                
+                # 데이터 통합
+                price_data = {
+                    "price": current_price,
+                    "fair_value_dcf": fair_value_dcf,
+                    "change_pct": 0,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    **indicators # RSI, EMA 등 포함
+                }
+                
+                cls._price_cache[ticker] = price_data
+                
+                # 알림 체크
+                alerts = AlertService.check_and_alert(ticker, price_data)
+                for alert_msg in alerts:
+                    AlertService.send_slack_alert(alert_msg)
+
+            except Exception as e:
+                print(f"Error fetching {ticker}: {e}")
+
+    @classmethod
     def check_portfolio_hourly(cls):
-        """보유 종목 중 상승 종목 리포트 (Webull 스타일: Pre - Reg)"""
+        """보유 종목 중 상승 종목 리포트 (Webull 스타일 + 거시경제 요약)"""
         print("⏰ Checking portfolio gainers (Webull Style)...")
         try:
+            macro = MacroService.get_macro_data()
             holdings = PortfolioService.load_portfolio('sean')
             if not holdings: return
 
@@ -39,8 +79,6 @@ class SchedulerService:
             for item in holdings:
                 ticker = item['ticker']
                 if not ticker: continue
-                
-                # 미국 주식만 조회
                 if not ticker.isascii() or any(x in ticker for x in ['ACE', 'TIGER', 'KODEX']):
                     continue
                 
@@ -56,7 +94,6 @@ class SchedulerService:
                     
                     market_state = info.get('marketState', 'REGULAR')
                     
-                    # Webull 스타일: (Pre - Reg) / Reg
                     reg_price = info.get('regularMarketPrice') or stock.fast_info.last_price
                     pre_price = info.get('preMarketPrice')
                     
@@ -70,7 +107,6 @@ class SchedulerService:
                         if prev_close:
                             change_pct = ((current_price - prev_close) / prev_close) * 100
 
-                    # 회사 이름
                     if company_name == ticker:
                         company_name = info.get('shortName') or info.get('longName') or ticker
                         
@@ -88,7 +124,23 @@ class SchedulerService:
             
             if gainers:
                 gainers.sort(key=lambda x: x['change'], reverse=True)
-                msg = "🌙 **위불 스타일 상승 리포트 (전체)**\n"
+                
+                msg = f"🌍 **시장 상황 요약**\n"
+                msg += f"• **상태**: {macro['market_regime']['status']} ({macro['market_regime']['diff_pct']:+.1f}% above MA200)\n"
+                msg += f"• **금리**: {macro['us_10y_yield']}%\n"
+                msg += f"• **VIX**: {macro['vix']}\n"
+                
+                btc = macro.get('crypto', {}).get('BTC')
+                if btc:
+                    msg += f"• **BTC**: ${btc['price']:,.0f} ({btc['change']:+.2f}%)\n"
+                
+                commodities = macro.get('commodities', {})
+                gold = commodities.get('Gold')
+                oil = commodities.get('Oil')
+                if gold and oil:
+                    msg += f"• **Gold**: ${gold['price']:,.1f} ({gold['change']:+.2f}%) | **Oil**: ${oil['price']:,.2f} ({oil['change']:+.2f}%)\n"
+                
+                msg += "\n🌙 **위불 스타일 상승 리포트 (전체)**\n"
                 for g in gainers: 
                     state_icon = "🌑" if g['market'] == "Pre-market" else "🚀"
                     msg += f"{state_icon} **{g['name']} ({g['ticker']})**: +{g['change']:.2f}% (${g['price']:.2f})\n"
@@ -108,71 +160,37 @@ class SchedulerService:
             ]
         except: pass
 
-    @classmethod
-    def calculate_ema(cls, series, period):
-        return series.ewm(span=period, adjust=False).mean()
+from stock_advisor.services.dcf_service import DcfService
 
-    @classmethod
-    def calculate_rsi(cls, series, period=14):
-        delta = series.diff(1)
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-
-    @classmethod
-    def update_prices(cls):
-        if not cls._top_20_tickers: return
-        for ticker in cls._top_20_tickers:
-            try:
-                df = DataService.get_price_data(ticker, start_date="2025-01-01")
-                if df is None or df.empty: continue
-                
-                current_price = float(df['Close'].iloc[-1])
-                ema200 = cls.calculate_ema(df['Close'], 200).iloc[-1] if len(df) >= 200 else None
-                rsi = cls.calculate_rsi(df['Close']).iloc[-1]
-                
-                dcf_data = cls._dcf_cache.get(ticker, {})
-                fair_value_dcf = dcf_data.get('dcf_price')
-                
-                cls._price_cache[ticker] = {
-                    "price": current_price,
-                    "ema200": ema200,
-                    "rsi": rsi,
-                    "fair_value_dcf": fair_value_dcf,
-                    "change_pct": 0, # Top 20는 단순 모니터링
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                
-                alerts = AlertService.check_and_alert(ticker, cls._price_cache[ticker])
-                for alert_msg in alerts:
-                    AlertService.send_slack_alert(alert_msg)
-
-            except Exception as e:
-                print(f"Error fetching {ticker}: {e}")
+class SchedulerService:
+    # ... (기존 코드 유지) ...
 
     @classmethod
     def update_dcf_valuations(cls):
         if not cls._top_20_tickers: return
         print(f"💰 Calculating DCF for {len(cls._top_20_tickers)} stocks...")
+        
+        macro = MacroService.get_macro_data()
+        risk_free = macro['us_10y_yield'] / 100
+        
         for ticker in cls._top_20_tickers:
             try:
                 yahoo_ticker = TickerService.get_yahoo_ticker(ticker) if ticker.isdigit() else ticker
                 data = FinancialService.get_dcf_data(yahoo_ticker)
-                fcf = data.get('fcf_per_share')
                 
-                if fcf and fcf > 0:
-                    # 간략화된 DCF 계산 (기존 로직 유지)
-                    growth = data.get('growth_rate', 0.05)
-                    beta = data.get('beta', 1.0)
-                    discount = 0.10 # 단순화
-                    
-                    term_val = (fcf * (1+0.03)) / (discount - 0.03)
-                    dcf_price = term_val / ((1+discount)**10) # 매우 단순화된 예시 (실제론 loop 필요)
-                    # *여기서는 기존 복잡한 로직을 그대로 두는게 좋지만, 파일 덮어쓰기라 간략히 표현함.
-                    # 실제 서비스용으론 아까 그 복잡한 로직을 다시 넣어야 함.
-                    
-                    # (중략: 기존 DCF 로직이 너무 길어서 복원 필요시 다시 작성해야 함)
-                    # 여기서는 스케줄러 구조 변경에 집중
-                    cls._dcf_cache[ticker] = {"dcf_price": fcf * 15, "method": "Simple DCF"} 
+                fcf = data.get('fcf_per_share')
+                if not fcf or fcf < 0: continue
+                
+                # DcfService 위임
+                result = DcfService.calculate_fair_value(
+                    fcf_per_share=fcf,
+                    growth_rate=data.get('growth_rate', 0.05),
+                    beta=data.get('beta', 1.0),
+                    risk_free_rate=risk_free
+                )
+                
+                cls._dcf_cache[ticker] = {
+                    "dcf_price": result['value'], 
+                    "method": f"DCF(Rf {risk_free*100:.1f}%)"
+                } 
             except: pass

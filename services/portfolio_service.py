@@ -1,124 +1,43 @@
-import pandas as pd
-from typing import List, Dict, Optional
-from datetime import datetime
 import json
 import os
+from typing import List, Dict
+from datetime import datetime
+from .file_service import FileService
+from .data_service import DataService
+from .ticker_service import TickerService
 
 class PortfolioService:
     """
-    포트폴리오 관리 서비스
-    엑셀 업로드 → 보유 종목 관리 → 수익률 분석
+    포트폴리오 관리 서비스 (Refactored)
     """
-    _portfolios: Dict[str, List[dict]] = {}  # user_id -> holdings
+    _portfolios: Dict[str, List[dict]] = {}
     _data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     
     @classmethod
     def _ensure_data_dir(cls):
         if not os.path.exists(cls._data_dir):
             os.makedirs(cls._data_dir)
-    
+            
     @classmethod
-    def parse_excel(cls, file_content: bytes, filename: str) -> List[dict]:
-        """
-        엑셀 파일을 파싱하여 보유 종목 리스트를 반환합니다.
-        다양한 형식 지원:
-        - 기본: 종목명/티커, 수량, 매수가
-        - Sean 형식: symbol, AVG, QTY, SECTOR
-        """
-        import io
+    def upload_portfolio(cls, file_content: bytes, filename: str, user_id: str = "sean") -> List[dict]:
+        """엑셀 파일 업로드 및 저장"""
+        # FileService에 파싱 위임
+        holdings = FileService.parse_portfolio_file(file_content, filename)
         
-        if filename.endswith('.xlsx'):
-            xlsx = pd.ExcelFile(io.BytesIO(file_content), engine='openpyxl')
-            # account 시트가 있으면 우선 사용
-            if 'account' in xlsx.sheet_names:
-                df = pd.read_excel(xlsx, sheet_name='account')
-            else:
-                df = pd.read_excel(xlsx, sheet_name=0)
-        elif filename.endswith('.xls'):
-            df = pd.read_excel(io.BytesIO(file_content))
-        elif filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(file_content))
-        else:
-            raise ValueError("지원하지 않는 파일 형식입니다. xlsx, xls, csv만 지원합니다.")
-        
-        # 컬럼명 정규화
-        df.columns = df.columns.str.strip().str.lower()
-        
-        # 컬럼 매핑 (다양한 이름 지원)
-        column_mapping = {
-            'ticker': ['ticker', '티커', '종목코드', 'symbol', 'code'],
-            'name': ['name', '종목명', '종목', 'stock_name', '이름'],
-            'quantity': ['quantity', '수량', 'shares', 'qty', '보유수량'],
-            'buy_price': ['buy_price', '매수가', 'price', 'avg_price', '평균매수가', '매수단가', 'avg'],
-            'current_price': ['current_price', '현재가', 'crt', 'current'],
-            'sector': ['sector', '섹터', '업종'],
-            'buy_date': ['buy_date', '매수일', 'date', '매수날짜']
-        }
-        
-        def find_column(candidates):
-            for col in candidates:
-                if col in df.columns:
-                    return col
-            return None
-        
-        ticker_col = find_column(column_mapping['ticker'])
-        name_col = find_column(column_mapping['name'])
-        qty_col = find_column(column_mapping['quantity'])
-        price_col = find_column(column_mapping['buy_price'])
-        current_col = find_column(column_mapping['current_price'])
-        sector_col = find_column(column_mapping['sector'])
-        date_col = find_column(column_mapping['buy_date'])
-        
-        if not qty_col or not price_col:
-            raise ValueError("필수 컬럼(수량, 매수가)을 찾을 수 없습니다.")
-        
-        if not ticker_col and not name_col:
-            raise ValueError("종목 정보(티커 또는 종목명) 컬럼을 찾을 수 없습니다.")
-        
-        holdings = []
-        for _, row in df.iterrows():
-            # NaN 값 건너뛰기
-            if pd.isna(row.get(ticker_col or name_col)):
-                continue
+        # 티커 변환 처리
+        for h in holdings:
+            if not h['ticker'] and h['name']:
+                h['ticker'] = TickerService.resolve_ticker(h['name'])
                 
-            ticker_value = str(row[ticker_col]).strip() if ticker_col else None
-            name_value = str(row[name_col]).strip() if name_col else None
-            
-            try:
-                quantity = float(row[qty_col])
-                buy_price = float(row[price_col])
-            except (ValueError, TypeError):
-                continue
-            
-            if quantity <= 0 or buy_price <= 0:
-                continue
-            
-            holding = {
-                'ticker': ticker_value,
-                'name': name_value or ticker_value,
-                'quantity': quantity,
-                'buy_price': buy_price,
-                'current_price': float(row[current_col]) if current_col and pd.notnull(row.get(current_col)) else None,
-                'sector': str(row[sector_col]).strip() if sector_col and pd.notnull(row.get(sector_col)) else None,
-                'buy_date': str(row[date_col]) if date_col and pd.notnull(row.get(date_col)) else None
-            }
-            
-            # 티커가 없으면 종목명으로 변환 시도
-            if not holding['ticker'] and holding['name']:
-                from .ticker_service import TickerService
-                holding['ticker'] = TickerService.resolve_ticker(holding['name'])
-            
-            holdings.append(holding)
+        # 유효한 데이터만 필터링
+        valid_holdings = [h for h in holdings if h['ticker'] and h['quantity'] > 0]
         
-        return holdings
+        cls.save_portfolio(user_id, valid_holdings)
+        return valid_holdings
 
-    
     @classmethod
     def save_portfolio(cls, user_id: str, holdings: List[dict]):
-        """포트폴리오를 저장합니다."""
         cls._portfolios[user_id] = holdings
-        
-        # 파일로도 저장
         cls._ensure_data_dir()
         filepath = os.path.join(cls._data_dir, f'portfolio_{user_id}.json')
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -126,7 +45,6 @@ class PortfolioService:
     
     @classmethod
     def load_portfolio(cls, user_id: str) -> List[dict]:
-        """저장된 포트폴리오를 불러옵니다."""
         if user_id in cls._portfolios:
             return cls._portfolios[user_id]
         
@@ -136,121 +54,51 @@ class PortfolioService:
                 holdings = json.load(f)
                 cls._portfolios[user_id] = holdings
                 return holdings
-        
         return []
-    
+
     @classmethod
     def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
-        """
-        포트폴리오 수익률 분석
-        """
+        """포트폴리오 수익률 분석"""
         holdings = cls.load_portfolio(user_id)
-        if not holdings:
-            return {"error": "포트폴리오가 없습니다. 먼저 엑셀을 업로드하세요."}
-        
+        results = []
         total_invested = 0
         total_current = 0
-        results = []
         
         for h in holdings:
             ticker = h['ticker']
-            quantity = h['quantity']
+            qty = h['quantity']
             buy_price = h['buy_price']
             
-            # 현재가 조회 순서: 1) 엑셀에 포함된 값 2) 캐시 3) API 조회
-            current_price = h.get('current_price')
+            # 현재가 조회 (캐시 우선)
+            curr = h.get('current_price') # 엑셀값
+            if not curr:
+                if ticker in price_cache:
+                    curr = price_cache[ticker].get('price')
+                else:
+                    curr = DataService.get_current_price(ticker) or buy_price
             
-            if current_price is None and ticker in price_cache:
-                current_price = price_cache[ticker].get('price')
+            val = qty * curr
+            inv = qty * buy_price
             
-            if current_price is None:
-                try:
-                    from .data_service import DataService
-                    current_price = DataService.get_current_price(ticker)
-                except:
-                    current_price = buy_price  # 조회 실패시 매수가 사용
-            
-            invested = quantity * buy_price
-            current_value = quantity * current_price if current_price else invested
-            profit = current_value - invested
-            profit_pct = (profit / invested * 100) if invested > 0 else 0
-            
-            total_invested += invested
-            total_current += current_value
+            total_invested += inv
+            total_current += val
             
             results.append({
                 'ticker': ticker,
                 'name': h.get('name'),
-                'sector': h.get('sector'),
-                'quantity': quantity,
+                'quantity': qty,
                 'buy_price': buy_price,
-                'current_price': round(current_price, 2) if current_price else None,
-                'invested': round(invested, 2),
-                'current_value': round(current_value, 2),
-                'profit': round(profit, 2),
-                'profit_pct': round(profit_pct, 2)
+                'current_price': round(curr, 2),
+                'profit': round(val - inv, 2),
+                'profit_pct': round(((val - inv)/inv)*100, 2)
             })
-        
-        total_profit = total_current - total_invested
-        total_profit_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
-        
-        # 섹터별 집계
-        sector_summary = {}
-        for r in results:
-            sector = r.get('sector') or 'Unknown'
-            if sector not in sector_summary:
-                sector_summary[sector] = {'invested': 0, 'current': 0, 'count': 0}
-            sector_summary[sector]['invested'] += r['invested']
-            sector_summary[sector]['current'] += r['current_value']
-            sector_summary[sector]['count'] += 1
-        
-        for sector in sector_summary:
-            s = sector_summary[sector]
-            s['profit'] = s['current'] - s['invested']
-            s['profit_pct'] = (s['profit'] / s['invested'] * 100) if s['invested'] > 0 else 0
-        
+            
         return {
             'holdings': results,
             'summary': {
                 'total_invested': round(total_invested, 2),
                 'total_current': round(total_current, 2),
-                'total_profit': round(total_profit, 2),
-                'total_profit_pct': round(total_profit_pct, 2),
-                'holding_count': len(results)
-            },
-            'sector_summary': sector_summary,
-            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                'profit': round(total_current - total_invested, 2),
+                'profit_pct': round(((total_current-total_invested)/total_invested)*100, 2)
+            }
         }
-
-    
-    @classmethod
-    def add_holding(cls, user_id: str, ticker: str, quantity: float, buy_price: float, name: str = None):
-        """수동으로 보유 종목을 추가합니다."""
-        holdings = cls.load_portfolio(user_id)
-        
-        # 기존 종목이 있으면 평균 매수가 계산
-        existing = next((h for h in holdings if h['ticker'] == ticker), None)
-        if existing:
-            total_qty = existing['quantity'] + quantity
-            total_cost = (existing['quantity'] * existing['buy_price']) + (quantity * buy_price)
-            existing['quantity'] = total_qty
-            existing['buy_price'] = total_cost / total_qty
-        else:
-            holdings.append({
-                'ticker': ticker,
-                'name': name,
-                'quantity': quantity,
-                'buy_price': buy_price,
-                'buy_date': datetime.now().strftime('%Y-%m-%d')
-            })
-        
-        cls.save_portfolio(user_id, holdings)
-        return holdings
-    
-    @classmethod
-    def remove_holding(cls, user_id: str, ticker: str):
-        """보유 종목을 제거합니다."""
-        holdings = cls.load_portfolio(user_id)
-        holdings = [h for h in holdings if h['ticker'] != ticker]
-        cls.save_portfolio(user_id, holdings)
-        return holdings
