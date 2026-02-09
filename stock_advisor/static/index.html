@@ -593,7 +593,11 @@
         }
 
         async function deleteHolding(ticker) {
-            if(!confirm(`Are you sure you want to remove ${ticker} from your portfolio?`)) return;
+            const input = prompt(`To delete ${ticker}, please type "${ticker}" below:`);
+            if (input !== ticker) {
+                if (input !== null) alert("Ticker mismatch. Deletion cancelled.");
+                return;
+            }
             
             try {
                 const res = await fetch(`/portfolio/sean/${ticker}`, { method: 'DELETE' });
