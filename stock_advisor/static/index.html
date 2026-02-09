@@ -226,7 +226,11 @@
             <div class="card">
                 <h2>
                     <span>💼 My Portfolio</span>
-                    <button class="btn btn-primary" onclick="openModal()">+ Add Trade</button>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <input type="file" id="excelInput" accept=".xlsx, .xls" style="display:none" onchange="uploadExcel()">
+                        <button class="btn btn-outline" onclick="document.getElementById('excelInput').click()">📂 Upload Excel</button>
+                        <button class="btn btn-primary" onclick="openModal()">+ Add Trade</button>
+                    </div>
                 </h2>
                 <div style="overflow-x: auto;">
                     <table>
@@ -358,6 +362,44 @@
     </div>
 
     <script>
+        // --- Excel Upload ---
+        async function uploadExcel() {
+            const input = document.getElementById('excelInput');
+            if (!input.files || !input.files[0]) return;
+            
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('user_id', 'sean'); // Fixed user for now
+
+            try {
+                // UI Loading feedback
+                const btn = document.querySelector('button[onclick*="excelInput"]');
+                const origText = btn.innerText;
+                btn.innerText = 'Uploading...';
+                
+                const res = await fetch('/portfolio/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (res.ok) {
+                    const result = await res.json();
+                    alert(result.message);
+                    fetchPortfolio(); // Refresh list
+                } else {
+                    const err = await res.json();
+                    alert('Upload failed: ' + (err.detail || 'Unknown error'));
+                }
+                btn.innerText = origText;
+            } catch (e) {
+                console.error(e);
+                alert('Error uploading file');
+            } finally {
+                input.value = ''; // Reset input
+            }
+        }
+
         // --- Tab Management ---
         function switchTab(tabId) {
             // Update Nav
