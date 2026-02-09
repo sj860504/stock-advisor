@@ -339,6 +339,32 @@ def remove_holding(user_id: str, ticker: str):
     holdings = PortfolioService.remove_holding(user_id, ticker)
     return {"message": f"{ticker} 제거 완료", "holdings": holdings}
 
+@app.post("/portfolio/{user_id}/trade")
+def trade_holding(
+    user_id: str,
+    ticker: str,
+    action: str,
+    quantity: float,
+    price: float
+):
+    """
+    주식 매수/매도 통합 처리
+    - action: 'buy' 또는 'sell'
+    """
+    resolved_ticker = TickerService.resolve_ticker(ticker)
+    
+    try:
+        if action.lower() == "buy":
+            holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, price)
+        elif action.lower() == "sell":
+            holdings = PortfolioService.sell_holding(user_id, resolved_ticker, quantity, price)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action. Use 'buy' or 'sell'.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    return {"message": f"{resolved_ticker} {action.upper()} completed", "holdings": holdings}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -74,7 +74,12 @@
 
         <div class="grid" style="margin-top: 20px;">
             <div class="card">
-                <h2 style="margin-bottom: 15px;">📊 Portfolio Analysis (Full List)</h2>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px;">
+                    <h2>📊 Portfolio Analysis (Full List)</h2>
+                    <button onclick="openModal()" style="padding:8px 16px; background:#3b82f6; border:none; color:white; border-radius:6px; font-size:0.9rem; cursor:pointer; font-weight:600;">
+                        + Add Trade
+                    </button>
+                </div>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
@@ -189,6 +194,119 @@
 
         fetchAnalysis();
         setInterval(fetchAnalysis, 30000);
+    </script>
+    <!-- Trade Modal -->
+    <div id="tradeModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:100; align-items:center; justify-content:center;">
+        <div style="background:#1a202c; padding:30px; border-radius:12px; width:400px; border:1px solid #2d3748; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);">
+            <h3 style="margin-bottom:20px; color:#fff; font-size:1.2rem;">Add Trade</h3>
+            
+            <div style="margin-bottom:15px;">
+                <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Action</label>
+                <div style="display:flex; gap:10px;">
+                    <button id="btnBuy" onclick="setMode('buy')" style="flex:1; padding:10px; border-radius:6px; border:1px solid #2d3748; background:#064e3b; color:#10b981; font-weight:600; cursor:pointer;">BUY</button>
+                    <button id="btnSell" onclick="setMode('sell')" style="flex:1; padding:10px; border-radius:6px; border:1px solid #2d3748; background:transparent; color:#718096; font-weight:600; cursor:pointer;">SELL</button>
+                </div>
+            </div>
+
+            <div style="margin-bottom:15px;">
+                <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Ticker</label>
+                <input type="text" id="txTicker" placeholder="e.g. AAPL" style="width:100%; padding:10px; background:#2d3748; border:1px solid #4a5568; color:white; border-radius:6px; font-size:1rem;">
+            </div>
+
+            <div style="display:flex; gap:15px; margin-bottom:20px;">
+                <div style="flex:1;">
+                    <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Quantity</label>
+                    <input type="number" id="txQty" step="any" placeholder="0" style="width:100%; padding:10px; background:#2d3748; border:1px solid #4a5568; color:white; border-radius:6px; font-size:1rem;">
+                </div>
+                <div style="flex:1;">
+                    <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Price ($)</label>
+                    <input type="number" id="txPrice" step="any" placeholder="0.00" style="width:100%; padding:10px; background:#2d3748; border:1px solid #4a5568; color:white; border-radius:6px; font-size:1rem;">
+                </div>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:10px;">
+                <button onclick="closeModal()" style="padding:10px 20px; background:transparent; border:1px solid #4a5568; color:#cbd5e0; border-radius:6px; cursor:pointer;">Cancel</button>
+                <button onclick="submitTrade()" style="padding:10px 20px; background:#3b82f6; border:none; color:white; border-radius:6px; font-weight:600; cursor:pointer;">Submit</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let tradeMode = 'buy';
+        
+        function openModal() {
+            document.getElementById('tradeModal').style.display = 'flex';
+            setMode('buy'); // Default
+        }
+        
+        function closeModal() {
+            document.getElementById('tradeModal').style.display = 'none';
+            // Clear inputs
+            document.getElementById('txTicker').value = '';
+            document.getElementById('txQty').value = '';
+            document.getElementById('txPrice').value = '';
+        }
+        
+        function setMode(mode) {
+            tradeMode = mode;
+            const btnBuy = document.getElementById('btnBuy');
+            const btnSell = document.getElementById('btnSell');
+            
+            if(mode === 'buy') {
+                btnBuy.style.background = '#064e3b';
+                btnBuy.style.color = '#10b981';
+                btnBuy.style.border = '1px solid #10b981';
+                
+                btnSell.style.background = 'transparent';
+                btnSell.style.color = '#718096';
+                btnSell.style.border = '1px solid #2d3748';
+            } else {
+                btnSell.style.background = '#7f1d1d';
+                btnSell.style.color = '#ef4444';
+                btnSell.style.border = '1px solid #ef4444';
+                
+                btnBuy.style.background = 'transparent';
+                btnBuy.style.color = '#718096';
+                btnBuy.style.border = '1px solid #2d3748';
+            }
+        }
+        
+        async function submitTrade() {
+            const ticker = document.getElementById('txTicker').value;
+            const qty = document.getElementById('txQty').value;
+            const price = document.getElementById('txPrice').value;
+            
+            if(!ticker || !qty || !price) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            try {
+                // API 호출
+                const url = `/portfolio/sean/trade?ticker=${encodeURIComponent(ticker)}&action=${tradeMode}&quantity=${qty}&price=${price}`;
+                const res = await fetch(url, { method: 'POST' });
+                
+                if(res.ok) {
+                    // alert('Trade successful!');
+                    closeModal();
+                    fetchAnalysis(); // Refresh table
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + (err.detail || 'Unknown error'));
+                }
+            } catch(e) {
+                console.error(e);
+                alert('Failed to submit trade');
+            }
+        }
+
+        // Close modal on outside click
+        window.onclick = function(event) {
+            const modal = document.getElementById('tradeModal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        }
     </script>
 </body>
 </html>
