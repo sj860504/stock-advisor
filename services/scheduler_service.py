@@ -10,6 +10,7 @@ from stock_advisor.services.alert_service import AlertService
 from stock_advisor.services.portfolio_service import PortfolioService
 from stock_advisor.services.macro_service import MacroService
 from stock_advisor.services.indicator_service import IndicatorService
+from stock_advisor.services.dcf_service import DcfService
 
 class SchedulerService:
     _scheduler = None
@@ -29,8 +30,22 @@ class SchedulerService:
             print("📅 Scheduler started.")
 
     @classmethod
+    def get_all_cached_prices(cls):
+        """캐시된 모든 시세 데이터를 반환"""
+        return cls._price_cache
+
+    @classmethod
+    def update_top_20_list(cls):
+        try:
+            cls._top_20_tickers = [
+                'AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'BRK-B', 'AVGO', 'LLY',
+                'JPM', 'XOM', 'V', 'UNH', 'MA', 'PG', 'COST', 'JNJ', 'HD', 'WMT'
+            ]
+        except: pass
+
+    @classmethod
     def update_prices(cls):
-        """실시간 시세 및 지표 업데이트 (Refactored)"""
+        """실시간 시세 및 지표 업데이트"""
         if not cls._top_20_tickers: return
         
         for ticker in cls._top_20_tickers:
@@ -52,7 +67,7 @@ class SchedulerService:
                     "fair_value_dcf": fair_value_dcf,
                     "change_pct": 0,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    **indicators # RSI, EMA 등 포함
+                    **indicators
                 }
                 
                 cls._price_cache[ticker] = price_data
@@ -67,8 +82,8 @@ class SchedulerService:
 
     @classmethod
     def check_portfolio_hourly(cls):
-        """보유 종목 중 상승 종목 리포트 (Webull 스타일 + 거시경제 요약)"""
-        print("⏰ Checking portfolio gainers (Webull Style)...")
+        """보유 종목 중 상승 종목 리포트 (Webull 스타일)"""
+        print("⏰ Checking portfolio gainers...")
         try:
             macro = MacroService.get_macro_data()
             holdings = PortfolioService.load_portfolio('sean')
@@ -125,45 +140,15 @@ class SchedulerService:
             if gainers:
                 gainers.sort(key=lambda x: x['change'], reverse=True)
                 
-                msg = f"🌍 **시장 상황 요약**\n"
-                msg += f"• **상태**: {macro['market_regime']['status']} ({macro['market_regime']['diff_pct']:+.1f}% above MA200)\n"
-                msg += f"• **금리**: {macro['us_10y_yield']}%\n"
-                msg += f"• **VIX**: {macro['vix']}\n"
+                # 리포트 포맷팅 위임
+                from stock_advisor.services.report_service import ReportService
+                msg = ReportService.format_hourly_gainers(gainers, macro)
                 
-                btc = macro.get('crypto', {}).get('BTC')
-                if btc:
-                    msg += f"• **BTC**: ${btc['price']:,.0f} ({btc['change']:+.2f}%)\n"
-                
-                commodities = macro.get('commodities', {})
-                gold = commodities.get('Gold')
-                oil = commodities.get('Oil')
-                if gold and oil:
-                    msg += f"• **Gold**: ${gold['price']:,.1f} ({gold['change']:+.2f}%) | **Oil**: ${oil['price']:,.2f} ({oil['change']:+.2f}%)\n"
-                
-                msg += "\n🌙 **위불 스타일 상승 리포트 (전체)**\n"
-                for g in gainers: 
-                    state_icon = "🌑" if g['market'] == "Pre-market" else "🚀"
-                    msg += f"{state_icon} **{g['name']} ({g['ticker']})**: +{g['change']:.2f}% (${g['price']:.2f})\n"
-                    
                 AlertService.send_slack_alert(msg)
                 print(f"✅ Sent report for {len(gainers)} gainers.")
                 
         except Exception as e:
             print(f"❌ Portfolio check error: {e}")
-
-    @classmethod
-    def update_top_20_list(cls):
-        try:
-            cls._top_20_tickers = [
-                'AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'BRK-B', 'AVGO', 'LLY',
-                'JPM', 'XOM', 'V', 'UNH', 'MA', 'PG', 'COST', 'JNJ', 'HD', 'WMT'
-            ]
-        except: pass
-
-from stock_advisor.services.dcf_service import DcfService
-
-class SchedulerService:
-    # ... (기존 코드 유지) ...
 
     @classmethod
     def update_dcf_valuations(cls):
@@ -181,7 +166,6 @@ class SchedulerService:
                 fcf = data.get('fcf_per_share')
                 if not fcf or fcf < 0: continue
                 
-                # DcfService 위임
                 result = DcfService.calculate_fair_value(
                     fcf_per_share=fcf,
                     growth_rate=data.get('growth_rate', 0.05),

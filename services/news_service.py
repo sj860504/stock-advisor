@@ -45,3 +45,60 @@ class NewsService:
             summary += f"   🔗 {news['link']}\n"
         
         return summary
+
+    @classmethod
+    def get_market_summary(cls) -> dict:
+        """
+        주요 지수 현황을 조회합니다.
+        KOSPI, KOSDAQ, S&P 500, NASDAQ, USD/KRW, VIX
+        """
+        indices = {
+            "KOSPI": "^KS11",
+            "KOSDAQ": "^KQ11",
+            "S&P 500": "^GSPC",
+            "NASDAQ": "^IXIC",
+            "USD/KRW": "KRW=X",
+            "VIX": "^VIX"
+        }
+        
+        result = {}
+        for name, ticker_symbol in indices.items():
+            try:
+                ticker = yf.Ticker(ticker_symbol)
+                info = ticker.fast_info
+                price = info.last_price
+                prev_close = info.previous_close
+                
+                if price and prev_close:
+                    change = price - prev_close
+                    pct_change = (change / prev_close) * 100
+                    result[name] = {
+                        "price": round(price, 2),
+                        "change": round(change, 2),
+                        "change_pct": round(pct_change, 2)
+                    }
+                else:
+                    # Fallback to history
+                    hist = ticker.history(period="2d")
+                    if len(hist) >= 2:
+                        close = hist['Close'].iloc[-1]
+                        prev = hist['Close'].iloc[-2]
+                        change = close - prev
+                        pct_change = (change / prev) * 100
+                        result[name] = {
+                            "price": round(close, 2),
+                            "change": round(change, 2),
+                            "change_pct": round(pct_change, 2)
+                        }
+                    elif len(hist) == 1:
+                        result[name] = {
+                            "price": round(hist['Close'].iloc[-1], 2),
+                            "change": None,
+                            "change_pct": None
+                        }
+                    else:
+                        result[name] = {"price": None, "change": None, "change_pct": None, "error": "No data"}
+            except Exception as e:
+                result[name] = {"price": None, "change": None, "change_pct": None, "error": str(e)}
+        
+        return result

@@ -3,15 +3,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from models.schemas import StockRequest, ValuationResult, ReturnAnalysis, PriceAlert, NewsItem
-from services.analysis_service import AnalysisService
-from services.news_service import NewsService
-from services.data_service import DataService
-from services.ticker_service import TickerService
-from services.scheduler_service import SchedulerService
-from services.alert_service import AlertService
-from services.financial_service import FinancialService
-from services.portfolio_service import PortfolioService
+from stock_advisor.models.schemas import StockRequest, ValuationResult, ReturnAnalysis, PriceAlert, NewsItem
+from stock_advisor.services.analysis_service import AnalysisService
+from stock_advisor.services.news_service import NewsService
+from stock_advisor.services.data_service import DataService
+from stock_advisor.services.ticker_service import TickerService
+from stock_advisor.services.scheduler_service import SchedulerService
+from stock_advisor.services.alert_service import AlertService
+from stock_advisor.services.financial_service import FinancialService
+from stock_advisor.services.portfolio_service import PortfolioService
+from stock_advisor.services.macro_service import MacroService
+from stock_advisor.services.report_service import ReportService
 import os
 
 
@@ -45,17 +47,11 @@ def serve_dashboard():
         return FileResponse(index_path)
     return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
 
-
-
 def resolve_ticker_or_404(ticker_input: str) -> str:
     resolved = TickerService.resolve_ticker(ticker_input)
     if not resolved:
          raise HTTPException(status_code=404, detail=f"Could not find ticker for: {ticker_input}")
     return resolved
-
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
 
 @app.get("/valuation/{ticker_input}", response_model=ValuationResult)
 def get_valuation(ticker_input: str):
@@ -276,12 +272,48 @@ def get_portfolio(user_id: str = "default"):
 def analyze_portfolio(user_id: str = "default"):
     """
     포트폴리오 수익률을 분석합니다.
-    - 종목별 수익률
-    - 전체 포트폴리오 수익률
     """
     price_cache = SchedulerService.get_all_cached_prices()
     result = PortfolioService.analyze_portfolio(user_id, price_cache)
     return result
+
+@app.get("/portfolio/{user_id}/full-report")
+def get_full_portfolio_report(user_id: str = "default"):
+    """
+    보유 종목 전체에 대한 상세 분석 데이터를 반환합니다.
+    """
+    holdings = PortfolioService.load_portfolio(user_id)
+    price_cache = SchedulerService.get_all_cached_prices()
+    
+    report = []
+    for item in holdings:
+        ticker = item['ticker']
+        if not ticker: continue
+        
+        # 캐시된 데이터 활용
+        cached = price_cache.get(ticker, {})
+        price = cached.get('price') or item['buy_price']
+        
+        profit_pct = ((price - item['buy_price']) / item['buy_price']) * 100 if item['buy_price'] > 0 else 0
+        
+        dcf = cached.get('fair_value_dcf')
+        upside = 0
+        if dcf and price:
+            upside = ((dcf - price) / price) * 100
+            
+        report.append({
+            "ticker": ticker,
+            "name": item.get('name'),
+            "price": price,
+            "return_pct": round(profit_pct, 2),
+            "rsi": cached.get('rsi'),
+            "ema200": cached.get('ema200'),
+            "dcf_fair": dcf,
+            "dcf_upside": round(upside, 1) if dcf else None
+        })
+        
+    report.sort(key=lambda x: x['return_pct'], reverse=True)
+    return report
 
 @app.post("/portfolio/{user_id}/add")
 def add_holding(

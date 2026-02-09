@@ -2,9 +2,9 @@ import json
 import os
 from typing import List, Dict
 from datetime import datetime
-from .file_service import FileService
-from .data_service import DataService
-from .ticker_service import TickerService
+from stock_advisor.services.file_service import FileService
+from stock_advisor.services.data_service import DataService
+from stock_advisor.services.ticker_service import TickerService
 
 class PortfolioService:
     """

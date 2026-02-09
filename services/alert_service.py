@@ -1,6 +1,6 @@
 import requests
 from typing import Optional
-from .news_service import NewsService
+from stock_advisor.services.news_service import NewsService
 
 class AlertService:
     """
