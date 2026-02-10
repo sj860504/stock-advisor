@@ -46,26 +46,69 @@ class SchedulerService:
     @classmethod
     def update_prices(cls):
         """실시간 시세 및 지표 업데이트"""
-        if not cls._top_20_tickers: return
+        # Top 20 + 포트폴리오 보유 종목 합치기
+        targets = set(cls._top_20_tickers)
+        try:
+            holdings = PortfolioService.load_portfolio('sean')
+            for item in holdings:
+                if item.get('ticker'):
+                    targets.add(item['ticker'])
+        except: pass
         
-        for ticker in cls._top_20_tickers:
+        if not targets: return
+        
+        import yfinance as yf
+        
+        for ticker in list(targets):
             try:
-                df = DataService.get_price_data(ticker, start_date="2025-01-01")
-                if df is None or df.empty: continue
+                # 1. 과거 데이터로 지표 계산 (DataService 사용)
+                # EMA200 계산을 위해 최소 300일 이전 데이터부터 가져옴
+                df = DataService.get_price_data(ticker, start_date="2024-01-01")
+                indicators = {}
+                if df is not None and not df.empty:
+                    indicators = IndicatorService.get_latest_indicators(df['Close'])
+
+                # 2. 실시간 데이터 (yfinance 사용)
+                # DataService에서 가져온 값은 지연되거나 종가 기준일 수 있으므로 yfinance 실시간 데이터 우선 사용
+                stock = yf.Ticker(ticker)
                 
-                current_price = float(df['Close'].iloc[-1])
+                # fast_info가 더 빠르고 정확할 때가 많음
+                current_price = stock.fast_info.last_price
+                prev_close = stock.fast_info.previous_close
                 
-                # IndicatorService를 사용하여 지표 계산 위임
-                indicators = IndicatorService.get_latest_indicators(df['Close'])
+                # 상세 정보 (프리장 등)
+                info = stock.info
+                market_state = info.get('marketState', 'REGULAR')
                 
+                change = 0
+                change_pct = 0
+                
+                if current_price and prev_close:
+                    change = current_price - prev_close
+                    change_pct = ((current_price - prev_close) / prev_close) * 100
+
+                # 프리장 데이터
+                pre_price = info.get('preMarketPrice')
+                pre_change_pct = 0
+                
+                if pre_price:
+                    # 프리장 등락률은 정규장 종가 대비로 계산
+                    reg_close = info.get('regularMarketPreviousClose') or prev_close
+                    if reg_close:
+                        pre_change_pct = ((pre_price - reg_close) / reg_close) * 100
+
                 dcf_data = cls._dcf_cache.get(ticker, {})
                 fair_value_dcf = dcf_data.get('dcf_price')
                 
                 # 데이터 통합
                 price_data = {
                     "price": current_price,
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "pre_price": pre_price,
+                    "pre_change_pct": round(pre_change_pct, 2) if pre_price else None,
+                    "market_state": market_state,
                     "fair_value_dcf": fair_value_dcf,
-                    "change_pct": 0,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     **indicators
                 }

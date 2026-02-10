@@ -200,13 +200,21 @@
                                 <tr>
                                     <th>Asset</th>
                                     <th>Price</th>
-                                    <th>Today</th>
+                                    <th>Chg / Chg%</th>
+                                    <th>Pre-Mkt</th>
+                                    <th>EMA 5</th>
+                                    <th>EMA 10</th>
+                                    <th>EMA 20</th>
+                                    <th>EMA 60</th>
+                                    <th>EMA 120</th>
+                                    <th>EMA 200</th>
+                                    <th>DCF Fair</th>
                                     <th>RSI (14)</th>
                                     <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody id="dash-stock-table">
-                                <tr><td colspan="5" style="text-align: center; padding: 20px; color: var(--text-sub);">Loading data...</td></tr>
+                                <tr><td colspan="13" style="text-align: center; padding: 20px; color: var(--text-sub);">Loading data...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -617,30 +625,77 @@
         }
 
         function renderDashTable(data) {
-            const tbody = document.getElementById('dash-stock-table');
-            if (!data.length) { tbody.innerHTML = '<tr><td colspan="5">No portfolio data</td></tr>'; return; }
+        const tbody = document.getElementById('dash-stock-table');
+        if (!data.length) { tbody.innerHTML = '<tr><td colspan="8">No portfolio data</td></tr>'; return; }
+        
+        tbody.innerHTML = data.map(info => {
+            const rsiVal = info.rsi ? info.rsi.toFixed(1) : '-';
+            const rsiClass = info.rsi < 30 ? 'bg-up' : (info.rsi > 70 ? 'bg-down' : 'bg-neutral');
             
-            tbody.innerHTML = data.map(info => {
-                const rsiVal = info.rsi ? info.rsi.toFixed(1) : '-';
-                const rsiClass = info.rsi < 30 ? 'bg-up' : (info.rsi > 70 ? 'bg-down' : 'bg-neutral');
-                return `
-                    <tr>
-                        <td>
-                            <div class="ticker">${info.ticker}</div>
-                            <span class="name">${info.name || ''}</span>
-                        </td>
-                        <td>$${info.price ? info.price.toFixed(2) : '-'}</td>
-                        <td class="${info.return_pct >= 0 ? 'price-up' : 'price-down'}">
-                            ${info.return_pct ? info.return_pct.toFixed(2) + '%' : '-'}
-                        </td>
-                        <td><span class="badge ${rsiClass}">${rsiVal}</span></td>
-                        <td>
-                            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="openTradeFor('${info.ticker}')">Trade</button>
-                        </td>
-                    </tr>
+            // Change color logic
+            const change = info.change || 0;
+            const changePct = info.change_pct || 0;
+            const changeClass = change >= 0 ? 'price-up' : 'price-down';
+            const changeSign = change >= 0 ? '+' : '';
+            const chgStr = `${changeSign}${change.toFixed(2)}`;
+            const pctStr = `(${changeSign}${changePct.toFixed(2)}%)`;
+
+            // Pre-market logic
+            let preHtml = '<span style="color:var(--text-sub)">-</span>';
+            if (info.pre_price) {
+                const preChangePct = info.pre_change_pct || 0;
+                const preClass = preChangePct >= 0 ? 'price-up' : 'price-down';
+                const preSign = preChangePct >= 0 ? '+' : '';
+                
+                preHtml = `
+                    <div style="font-size:0.9rem;">$${info.pre_price.toFixed(2)}</div>
+                    <div class="${preClass}" style="font-size:0.75rem;">${preSign}${preChangePct.toFixed(2)}%</div>
                 `;
-            }).join('');
-        }
+            }
+
+            // EMA & DCF
+            const fmtEma = (val) => val ? '$' + val.toFixed(1) : '-';
+            
+            let dcfHtml = '<span style="color:var(--text-sub)">-</span>';
+            if (info.dcf_fair) {
+                const upside = info.dcf_upside || 0;
+                const dcfClass = upside > 0 ? 'price-up' : 'price-down';
+                const dcfSign = upside > 0 ? '+' : '';
+                dcfHtml = `
+                    <div style="font-size:0.9rem;">$${info.dcf_fair.toFixed(2)}</div>
+                    <div class="${dcfClass}" style="font-size:0.75rem;">${dcfSign}${upside.toFixed(1)}%</div>
+                `;
+            }
+
+            return `
+                <tr>
+                    <td>
+                        <div class="ticker">${info.ticker}</div>
+                        <span class="name">${info.name || ''}</span>
+                    </td>
+                    <td>
+                        <div style="font-weight:600">$${info.price ? info.price.toFixed(2) : '-'}</div>
+                    </td>
+                    <td>
+                        <div class="${changeClass}" style="font-weight:500">${chgStr}</div>
+                        <div class="${changeClass}" style="font-size:0.8rem">${pctStr}</div>
+                    </td>
+                    <td>${preHtml}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema5)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema10)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema20)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema60)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema120)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema200)}</td>
+                    <td>${dcfHtml}</td>
+                    <td><span class="badge ${rsiClass}">${rsiVal}</span></td>
+                    <td>
+                        <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="openTradeFor('${info.ticker}')">Trade</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
         
         function renderPortfolioTable(data) {
             const tbody = document.getElementById('portfolio-table');

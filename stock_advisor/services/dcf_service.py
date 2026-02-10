@@ -1,10 +1,12 @@
+from typing import Optional
+
 class DcfService:
     """
     DCF (현금흐름할인법) 계산 전담 서비스
     """
     
     @staticmethod
-    def calculate_fair_value(fcf_per_share: float, growth_rate: float, beta: float, risk_free_rate: float) -> dict:
+    def calculate_fair_value(fcf_per_share: float, growth_rate: float, beta: float, risk_free_rate: float = 0.04, terminal_growth: float = 0.03, manual_discount: Optional[float] = None) -> dict:
         """
         2단계 성장 모델을 사용하여 적정 주가를 계산합니다.
         """
@@ -14,7 +16,9 @@ class DcfService:
         equity_risk_premium = 0.055  # 5.5%
         
         # CAPM: 할인율 계산
-        if beta:
+        if manual_discount:
+            discount_rate = manual_discount
+        elif beta:
             discount_rate = risk_free_rate + beta * equity_risk_premium
         else:
             discount_rate = 0.10
@@ -22,7 +26,7 @@ class DcfService:
         # 할인율 안전장치 (6% ~ 15%)
         discount_rate = max(0.06, min(0.15, discount_rate))
             
-        terminal_growth_rate = 0.03  # 영구 성장률 3%
+        terminal_growth_rate = terminal_growth
         
         # Stage 1: 10년 고성장
         future_fcf = []

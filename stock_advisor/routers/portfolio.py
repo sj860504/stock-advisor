@@ -82,8 +82,17 @@ def get_full_portfolio_report(user_id: str = "default"):
             "ticker": ticker,
             "name": item.get('name'),
             "price": price,
+            "change": cached.get('change', 0),
+            "change_pct": cached.get('change_pct', 0),
+            "pre_price": cached.get('pre_price'),
+            "pre_change_pct": cached.get('pre_change_pct'),
             "return_pct": round(profit_pct, 2),
             "rsi": cached.get('rsi'),
+            "ema5": cached.get('ema5'),
+            "ema10": cached.get('ema10'),
+            "ema20": cached.get('ema20'),
+            "ema60": cached.get('ema60'),
+            "ema120": cached.get('ema120'),
             "ema200": cached.get('ema200'),
             "dcf_fair": dcf,
             "dcf_upside": round(upside, 1) if dcf else None
@@ -115,3 +124,29 @@ def remove_holding(user_id: str, ticker: str):
     """
     holdings = PortfolioService.remove_holding(user_id, ticker)
     return {"message": f"{ticker} 제거 완료", "holdings": holdings}
+
+@router.post("/{user_id}/trade")
+def trade_holding(
+    user_id: str,
+    ticker: str,
+    action: str,
+    quantity: float,
+    price: float
+):
+    """
+    주식 매수/매도 통합 처리
+    - action: 'buy' 또는 'sell'
+    """
+    resolved_ticker = TickerService.resolve_ticker(ticker)
+    
+    try:
+        if action.lower() == "buy":
+            holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, price)
+        elif action.lower() == "sell":
+            holdings = PortfolioService.sell_holding(user_id, resolved_ticker, quantity, price)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action. Use 'buy' or 'sell'.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    return {"message": f"{resolved_ticker} {action.upper()} completed", "holdings": holdings}
