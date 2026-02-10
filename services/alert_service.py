@@ -1,15 +1,18 @@
 import requests
-from typing import Optional
+from typing import Optional, List
 from stock_advisor.services.news_service import NewsService
+from stock_advisor.models.schemas import PriceAlert
+from stock_advisor.services.data_service import DataService
 
 class AlertService:
     """
-    슬랙 알림 서비스 (Refactored)
+    슬랙 알림 및 사용자 알림 서비스 (Refactored)
     """
     _webhook_url: Optional[str] = None
     _sent_alerts = set()  # 중복 알림 방지
     _prev_data = {}  # {ticker: {price, ema20, ...}}
     _pending_alerts = [] # 에이전트 전송 대기열
+    _user_alerts: List[PriceAlert] = [] # 사용자 설정 가격 알림
     
     @classmethod
     def set_webhook(cls, webhook_url: str):
@@ -28,6 +31,27 @@ class AlertService:
         alerts = list(cls._pending_alerts)
         cls._pending_alerts.clear()
         return alerts
+
+    @classmethod
+    def add_user_alert(cls, alert: PriceAlert):
+        """사용자 알림 추가"""
+        cls._user_alerts.append(alert)
+
+    @classmethod
+    def check_user_alerts(cls) -> List[str]:
+        """사용자 설정 알림 확인"""
+        triggered = []
+        for alert in cls._user_alerts:
+            if not alert.is_active:
+                continue
+                
+            current_price = DataService.get_current_price(alert.ticker)
+            if current_price:
+                if alert.condition == "above" and current_price >= alert.target_price:
+                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} >= 목표가: {alert.target_price}")
+                elif alert.condition == "below" and current_price <= alert.target_price:
+                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} <= 목표가: {alert.target_price}")
+        return triggered
     
     @classmethod
     def check_and_alert(cls, ticker: str, data: dict) -> list:
