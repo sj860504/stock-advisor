@@ -10,7 +10,10 @@ from stock_advisor.services.alert_service import AlertService
 from stock_advisor.services.portfolio_service import PortfolioService
 from stock_advisor.services.macro_service import MacroService
 from stock_advisor.services.indicator_service import IndicatorService
+from stock_advisor.utils.logger import get_logger
 from stock_advisor.services.dcf_service import DcfService
+
+logger = get_logger("scheduler")
 
 class SchedulerService:
     _scheduler = None
@@ -22,12 +25,15 @@ class SchedulerService:
     def start(cls):
         if cls._scheduler is None:
             cls._scheduler = BackgroundScheduler()
-            cls._scheduler.add_job(cls.update_top_20_list, 'interval', hours=24, next_run_time=datetime.now())
+            # 서버 시작 시 즉시 Top 20 업데이트
+            cls.update_top_20_list()
+            
+            cls._scheduler.add_job(cls.update_top_20_list, 'interval', hours=24)
             cls._scheduler.add_job(cls.update_prices, 'interval', minutes=1, next_run_time=datetime.now())
             cls._scheduler.add_job(cls.update_dcf_valuations, 'interval', minutes=30, next_run_time=datetime.now())
             cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', minutes=60, next_run_time=datetime.now())
             cls._scheduler.start()
-            print("📅 Scheduler started.")
+            logger.info("📅 Scheduler started.")
 
     @classmethod
     def get_all_cached_prices(cls):
@@ -36,12 +42,16 @@ class SchedulerService:
 
     @classmethod
     def update_top_20_list(cls):
+        """시가총액 상위 종목 리스트 갱신"""
         try:
-            cls._top_20_tickers = [
-                'AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'BRK-B', 'AVGO', 'LLY',
-                'JPM', 'XOM', 'V', 'UNH', 'MA', 'PG', 'COST', 'JNJ', 'HD', 'WMT'
-            ]
-        except: pass
+            tickers = DataService.get_top_market_cap_tickers(limit=20)
+            if tickers:
+                cls._top_20_tickers = tickers
+                logger.info(f"✅ Top 20 list updated: {tickers}")
+            else:
+                logger.warning("⚠️ Failed to update Top 20 list, keeping old list.")
+        except Exception as e:
+            logger.error(f"❌ Error updating top 20 list: {e}")
 
     @classmethod
     def update_prices(cls):
@@ -121,12 +131,12 @@ class SchedulerService:
                     AlertService.send_slack_alert(alert_msg)
 
             except Exception as e:
-                print(f"Error fetching {ticker}: {e}")
+                logger.error(f"Error fetching {ticker}: {e}")
 
     @classmethod
     def check_portfolio_hourly(cls):
         """보유 종목 중 상승 종목 리포트 (Webull 스타일)"""
-        print("⏰ Checking portfolio gainers...")
+        logger.info("⏰ Checking portfolio gainers...")
         try:
             macro = MacroService.get_macro_data()
             holdings = PortfolioService.load_portfolio('sean')
@@ -188,15 +198,15 @@ class SchedulerService:
                 msg = ReportService.format_hourly_gainers(gainers, macro)
                 
                 AlertService.send_slack_alert(msg)
-                print(f"✅ Sent report for {len(gainers)} gainers.")
+                logger.info(f"✅ Sent report for {len(gainers)} gainers.")
                 
         except Exception as e:
-            print(f"❌ Portfolio check error: {e}")
+            logger.error(f"❌ Portfolio check error: {e}")
 
     @classmethod
     def update_dcf_valuations(cls):
         if not cls._top_20_tickers: return
-        print(f"💰 Calculating DCF for {len(cls._top_20_tickers)} stocks...")
+        logger.info(f"💰 Calculating DCF for {len(cls._top_20_tickers)} stocks...")
         
         macro = MacroService.get_macro_data()
         risk_free = macro['us_10y_yield'] / 100
