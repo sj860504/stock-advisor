@@ -1,12 +1,12 @@
 # Stock Advisor Architecture
 
 ## 1. Overview
-**Stock Advisor**는 FastAPI 기반의 실시간 주식 분석 및 포트폴리오 관리 시스템입니다.
-미국/한국 주식의 실시간 시세 모니터링, DCF(현금흐름할인법) 가치평가, 그리고 사용자 포트폴리오 수익률 분석을 수행하며 Slack으로 알림을 전송합니다.
+**Stock Advisor**??FastAPI 湲곕컲???ㅼ떆媛?二쇱떇 遺꾩꽍 諛??ы듃?대━??愿由??쒖뒪?쒖엯?덈떎.
+誘멸뎅/?쒓뎅 二쇱떇???ㅼ떆媛??쒖꽭 紐⑤땲?곕쭅, DCF(?꾧툑?먮쫫?좎씤踰? 媛移섑룊媛, 洹몃━怨??ъ슜???ы듃?대━???섏씡瑜?遺꾩꽍???섑뻾?섎ŉ Slack?쇰줈 ?뚮┝???꾩넚?⑸땲??
 
 ## 2. Service Layer Structure
 
-프로젝트는 `services/` 디렉토리 내의 전문화된 서비스 클래스들로 구성되어 있습니다.
+?꾨줈?앺듃??`services/` ?붾젆?좊━ ?댁쓽 ?꾨Ц?붾맂 ?쒕퉬???대옒?ㅻ뱾濡?援ъ꽦?섏뼱 ?덉뒿?덈떎.
 
 ```mermaid
 graph TD
@@ -14,10 +14,10 @@ graph TD
     Main --> Portfolio[PortfolioService]
     Main --> Alert[AlertService]
     
-    Scheduler -- 1. 주기적 실행 --> Data[DataService]
-    Scheduler -- 2. 가치평가 --> Financial[FinancialService]
-    Scheduler -- 3. 알림 체크 --> Alert
-    Scheduler -- 4. 자산 분석 --> Portfolio
+    Scheduler -- 1. 二쇨린???ㅽ뻾 --> Data[DataService]
+    Scheduler -- 2. 媛移섑룊媛 --> Financial[FinancialService]
+    Scheduler -- 3. ?뚮┝ 泥댄겕 --> Alert
+    Scheduler -- 4. ?먯궛 遺꾩꽍 --> Portfolio
     
     Portfolio --> Data[DataService]
     Portfolio --> Ticker[TickerService]
@@ -25,43 +25,43 @@ graph TD
     Financial --> Data
 ```
 
-### 🧩 Core Services
+### ?㎥ Core Services
 
 #### 1. `SchedulerService` (The Heartbeat)
-백그라운드에서 주기적인 작업을 총괄합니다.
-- **`start()`**: 스케줄러 초기화 및 작업 등록.
-- **`update_prices()`** (1분 간격): Top 20 및 관심 종목의 실시간 시세, RSI, EMA 업데이트.
-- **`check_portfolio_hourly()`** (1시간 간격): **Webull 스타일** 등락률(Pre-market 반영)로 포트폴리오 전수 조사 및 상승 종목 리포트 생성.
-- **`update_dcf_valuations()`** (30분 간격): DCF 적정주가 재계산.
+諛깃렇?쇱슫?쒖뿉??二쇨린?곸씤 ?묒뾽??珥앷큵?⑸땲??
+- **`start()`**: ?ㅼ?以꾨윭 珥덇린??諛??묒뾽 ?깅줉.
+- **`update_prices()`** (1遺?媛꾧꺽): Top 20 諛?愿??醫낅ぉ???ㅼ떆媛??쒖꽭, RSI, EMA ?낅뜲?댄듃.
+- **`check_portfolio_hourly()`** (1?쒓컙 媛꾧꺽): **Webull ?ㅽ???* ?깅씫瑜?Pre-market 諛섏쁺)濡??ы듃?대━???꾩닔 議곗궗 諛??곸듅 醫낅ぉ 由ы룷???앹꽦.
+- **`update_dcf_valuations()`** (30遺?媛꾧꺽): DCF ?곸젙二쇨? ?ш퀎??
 
 #### 2. `PortfolioService` (Asset Management)
-사용자의 자산을 관리합니다.
-- **`parse_excel()`**: 엑셀 파일을 파싱하여 보유 종목(Ticker, 수량, 매수가) 로드.
-- **`load_portfolio()` / `save_portfolio()`**: JSON 파일로 자산 데이터 영구 저장.
-- **`analyze_portfolio()`**: 현재가 기반 수익률 및 섹터별 비중 분석.
+?ъ슜?먯쓽 ?먯궛??愿由ы빀?덈떎.
+- **`parse_excel()`**: ?묒? ?뚯씪???뚯떛?섏뿬 蹂댁쑀 醫낅ぉ(Ticker, ?섎웾, 留ㅼ닔媛) 濡쒕뱶.
+- **`load_portfolio()` / `save_portfolio()`**: JSON ?뚯씪濡??먯궛 ?곗씠???곴뎄 ???
+- **`analyze_portfolio()`**: ?꾩옱媛 湲곕컲 ?섏씡瑜?諛??뱁꽣蹂?鍮꾩쨷 遺꾩꽍.
 
 #### 3. `AlertService` (Notification)
-Slack 알림을 관리합니다. 서버 부하 분산을 위해 **대기열(Queue)** 방식을 사용합니다.
-- **`check_and_alert()`**: RSI 과매도/과매수, DCF 저평가, 지지선(EMA) 돌파 여부 판단.
-- **`send_slack_alert()`**: 알림 메시지를 메모리 내 대기열(`_pending_alerts`)에 추가.
-- **`get_pending_alerts()`**: 대기 중인 알림을 반환하고 비움 (API polling용).
+Slack ?뚮┝??愿由ы빀?덈떎. ?쒕쾭 遺??遺꾩궛???꾪빐 **?湲곗뿴(Queue)** 諛⑹떇???ъ슜?⑸땲??
+- **`check_and_alert()`**: RSI 怨쇰ℓ??怨쇰ℓ?? DCF ??됯?, 吏吏??EMA) ?뚰뙆 ?щ? ?먮떒.
+- **`send_slack_alert()`**: ?뚮┝ 硫붿떆吏瑜?硫붾え由????湲곗뿴(`_pending_alerts`)??異붽?.
+- **`get_pending_alerts()`**: ?湲?以묒씤 ?뚮┝??諛섑솚?섍퀬 鍮꾩? (API polling??.
 
 #### 4. `FinancialService` (Valuation)
-기업의 펀더멘털을 분석합니다.
-- **`get_dcf_data()`**: FCF(자유현금흐름), Beta, 성장률 데이터 수집.
-- **`validate_dcf()`**: 산출된 DCF 적정가와 현재가를 비교하여 신뢰도(High/Medium/Low) 평가.
+湲곗뾽????붾찘?몄쓣 遺꾩꽍?⑸땲??
+- **`get_dcf_data()`**: FCF(?먯쑀?꾧툑?먮쫫), Beta, ?깆옣瑜??곗씠???섏쭛.
+- **`validate_dcf()`**: ?곗텧??DCF ?곸젙媛? ?꾩옱媛瑜?鍮꾧탳?섏뿬 ?좊ː??High/Medium/Low) ?됯?.
 
 #### 5. `DataService` & `TickerService` (Infra)
-- **`DataService`**: `yfinance`, `FinanceDataReader`를 통해 OHLCV 및 실시간 시세 조회.
-- **`TickerService`**: 한국어 종목명(삼성전자) ↔ 티커(005930) 변환.
+- **`DataService`**: `yfinance`, `FinanceDataReader`瑜??듯빐 OHLCV 諛??ㅼ떆媛??쒖꽭 議고쉶.
+- **`TickerService`**: ?쒓뎅??醫낅ぉ紐??쇱꽦?꾩옄) ???곗빱(005930) 蹂??
 
 ## 3. Data Flow (Notification Loop)
 
-1.  **Detection**: `SchedulerService`가 시세 변동을 감지하고 `AlertService`에 알림 요청.
-2.  **Queueing**: `AlertService`는 메시지를 즉시 보내지 않고 **Queue**에 적재.
-3.  **Polling**: 외부 에이전트(OpenClaw Cron) 또는 클라이언트가 `GET /alerts/pending` 호출.
-4.  **Delivery**: 수신된 메시지를 실제 Slack 채널로 전송.
+1.  **Detection**: `SchedulerService`媛 ?쒖꽭 蹂?숈쓣 媛먯??섍퀬 `AlertService`???뚮┝ ?붿껌.
+2.  **Queueing**: `AlertService`??硫붿떆吏瑜?利됱떆 蹂대궡吏 ?딄퀬 **Queue**???곸옱.
+3.  **Polling**: ?몃? ?먯씠?꾪듃(OpenClaw Cron) ?먮뒗 ?대씪?댁뼵?멸? `GET /alerts/pending` ?몄텧.
+4.  **Delivery**: ?섏떊??硫붿떆吏瑜??ㅼ젣 Slack 梨꾨꼸濡??꾩넚.
 
 ## 4. Key Features
-- **Webull-Style Pre-market Logic**: 프리마켓 등락률 계산 시 `(현재가 - 정규장 종가) / 정규장 종가` 공식을 사용하여 앱과 동일한 경험 제공.
-- **Hybrid Data Source**: 미국 주식은 `yfinance`, 한국 주식은 `FinanceDataReader` 및 `Naver Finance` 크롤링 혼용.
+- **Webull-Style Pre-market Logic**: ?꾨━留덉폆 ?깅씫瑜?怨꾩궛 ??`(?꾩옱媛 - ?뺢퇋??醫낃?) / ?뺢퇋??醫낃?` 怨듭떇???ъ슜?섏뿬 ?깃낵 ?숈씪??寃쏀뿕 ?쒓났.
+- **Hybrid Data Source**: 誘멸뎅 二쇱떇? `yfinance`, ?쒓뎅 二쇱떇? `FinanceDataReader` 諛?`Naver Finance` ?щ·留??쇱슜.

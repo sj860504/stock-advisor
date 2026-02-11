@@ -1,63 +1,80 @@
 # Stock Advisor API
 
-실시간 주식 분석 및 가치평가 API (FastAPI + FinanceDataReader + yfinance)
+?ㅼ떆媛?二쇱떇 遺꾩꽍, 媛移섑룊媛 諛??ы듃?대━??愿由?API (FastAPI + FinanceDataReader + yfinance)
 
-## 주요 기능
+## 二쇱슂 湲곕뒫
 
-### 📊 실시간 모니터링
-- 미국 시총 Top 20 종목 자동 수집 (1분 주기)
-- DCF 적정주가 계산 (30분 주기)
-- 기술적 지표: RSI, EMA(5, 10, 20, 60, 100, 200)
+### ?뱤 ?ㅼ떆媛?紐⑤땲?곕쭅
+- 誘멸뎅 ?쒖킑 Top 20 醫낅ぉ ?먮룞 ?섏쭛 (1遺?二쇨린)
+- DCF ?곸젙二쇨? 怨꾩궛 (30遺?二쇨린)
+- 湲곗닠??吏?? RSI, EMA(5, 10, 20, 60, 100, 200)
+- 二쇱슂 吏??肄붿뒪?? ?섏뒪???? ?꾪솴 議고쉶
 
-### 💰 가치평가
-- **DCF (현금흐름 할인법)**: yfinance에서 실제 FCF 데이터 사용
-- **신뢰도 검증**: DCF 대비 현재가 괴리율 분석
+### ?뮥 媛移섑룊媛 諛?遺꾩꽍
+- **DCF (?꾧툑?먮쫫 ?좎씤踰?**: yfinance FCF ?곗씠??湲곕컲 ?곸젙二쇨? ?곗텧
+- **?좊ː??寃利?*: DCF ?鍮??꾩옱媛 愿대━??遺꾩꽍
+- **?섏씡瑜?遺꾩꽍**: YTD ?섏씡瑜?諛?MDD(理쒕? ?숉룺) 怨꾩궛
+- **?щТ吏??*: PER, PBR, ROE ??二쇱슂 吏???쒓났
 
-### 🔔 매매 신호
-- 과매도 알림 (RSI < 30)
-- 과매수 알림 (RSI > 70)
-- DCF 저평가 알림 (현재가 < DCF * 0.8)
-- EMA200 지지선 터치 알림
+### ?뱚 ?ы듃?대━??愿由?
+- **?묒? ?낅줈??*: 蹂댁쑀 醫낅ぉ ?쇨큵 ?깅줉 (?곗빱, ?섎웾, 留ㅼ닔媛)
+- **?섏씡瑜?遺꾩꽍**: ?ы듃?대━???꾩껜 諛?醫낅ぉ蹂??섏씡瑜??꾪솴
+- **醫낅ぉ 愿由?*: 媛쒕퀎 醫낅ぉ 異붽?/??젣
 
-## API 엔드포인트
+### ?뵒 留ㅻℓ ?좏샇 諛??뚮┝
+- 怨쇰ℓ???뚮┝ (RSI < 30)
+- 怨쇰ℓ???뚮┝ (RSI > 70)
+- DCF ??됯? ?뚮┝ (?꾩옱媛 < DCF * 0.8)
+- EMA200 吏吏???곗튂 ?뚮┝
 
-| 엔드포인트 | 설명 |
-|-----------|------|
-| `GET /market/top20` | 실시간 Top 20 시세 + 지표 |
-| `GET /valuation/{ticker}` | 종목 가치평가 (한글/영문 지원) |
-| `GET /returns/{ticker}` | 수익률 및 MDD 분석 |
-| `GET /metrics/{ticker}` | 재무지표 (PER, PBR, ROE 등) |
-| `GET /signals` | 현재 매매 신호 |
-| `GET /summary` | 일일 요약 리포트 |
-| `GET /market` | 주요 지수 현황 |
+## API ?붾뱶?ъ씤??
 
-## 실행 방법
+| 移댄뀒怨좊━ | ?붾뱶?ъ씤??| ?ㅻ챸 |
+|---|---|---|
+| **?쒖옣/遺꾩꽍** | `GET /market/top20` | ?ㅼ떆媛?Top 20 ?쒖꽭 + 吏??|
+| | `GET /market` | 二쇱슂 ?쒖옣 吏???꾪솴 |
+| | `GET /valuation/{ticker}` | 醫낅ぉ 媛移섑룊媛 (DCF, 湲곗닠??吏?? |
+| | `GET /returns/{ticker}` | ?섏씡瑜?諛?MDD 遺꾩꽍 |
+| | `GET /metrics/{ticker}` | ?щТ吏??(PER, PBR, ROE ?? |
+| | `GET /news/{ticker}` | 愿???댁뒪 留곹겕 ?쒓났 |
+| **?좏샇/?뚮┝** | `GET /signals` | ?꾩옱 留ㅻℓ ?좏샇 (怨쇰ℓ??怨쇰ℓ???? |
+| | `GET /summary` | ?쇱씪 ?붿빟 由ы룷??|
+| | `POST /alerts` | 媛寃??뚮┝ ?ㅼ젙 |
+| | `GET /check-alerts` | ?ㅼ젙???뚮┝ ?몃━嫄??뺤씤 |
+| **?ы듃?대━??* | `POST /portfolio/upload` | ?묒? ?뚯씪濡??ы듃?대━???낅줈??|
+| | `GET /portfolio/{user_id}` | 蹂댁쑀 醫낅ぉ 議고쉶 |
+| | `GET /portfolio/{user_id}/analysis` | ?ы듃?대━???섏씡瑜?遺꾩꽍 |
+| | `POST /portfolio/{user_id}/add` | 醫낅ぉ ?섎룞 異붽? |
+| | `DELETE /portfolio/{user_id}/{ticker}` | 醫낅ぉ ??젣 |
+
+## ?ㅽ뻾 諛⑸쾿
 
 ```bash
-# 의존성 설치
+# ?섏〈???ㅼ튂
 pip install -r requirements.txt
 
-# 서버 실행
+# ?쒕쾭 ?ㅽ뻾
 python main.py
 
-# 또는
-uvicorn main:app --reload
+# ?먮뒗 uvicorn 吏곸젒 ?ㅽ뻾
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-API 문서: http://localhost:8000/docs
+API 臾몄꽌: http://localhost:8000/docs
 
-## 지원 종목
+## 吏??醫낅ぉ
 
-### 한글 → 티커 자동 변환
-- 테슬라 → TSLA
-- 애플 → AAPL
-- 엔비디아 → NVDA
-- 삼성전자 → 005930
+### ?쒓? ???곗빱 ?먮룞 蹂??
+- ?뚯뒳????TSLA
+- ?좏뵆 ??AAPL
+- ?붾퉬?붿븘 ??NVDA
+- ?쇱꽦?꾩옄 ??005930
 - ...
 
-## 기술 스택
+## 湲곗닠 ?ㅽ깮
 
-- **FastAPI**: 비동기 웹 프레임워크
-- **FinanceDataReader**: 가격 데이터 수집
-- **yfinance**: 재무제표 + DCF 데이터
-- **APScheduler**: 백그라운드 스케줄링
+- **Back-end**: FastAPI
+- **Data**: FinanceDataReader, yfinance
+- **Scheduling**: APScheduler
+- **Analysis**: Pandas, NumPy
+- **Utils**: OpenPyxl (Excel 泥섎━)

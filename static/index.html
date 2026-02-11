@@ -9,105 +9,477 @@
         :root {
             --bg-color: #0f1115;
             --card-bg: #1a1d21;
+            --nav-bg: #15171b;
             --text-main: #e0e0e0;
             --text-sub: #9ca3af;
             --accent: #3b82f6;
+            --accent-hover: #2563eb;
             --up: #10b981;
             --down: #ef4444;
+            --border: #2d3748;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Inter', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-main);
-            padding: 20px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* 스크롤은 컨텐츠 영역에서만 */
         }
-        .container { max-width: 1800px; margin: 0 auto; }
         
-        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        h1 { font-size: 1.5rem; font-weight: 700; color: #fff; }
-        
+        /* GNB (Global Navigation Bar) */
+        .gnb {
+            background-color: var(--nav-bg);
+            border-bottom: 1px solid var(--border);
+            padding: 0 20px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 5px;
+            height: 100%;
+        }
+        .nav-item {
+            padding: 0 20px;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            color: var(--text-sub);
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .nav-item:hover {
+            color: #fff;
+            background: rgba(255,255,255,0.03);
+        }
+        .nav-item.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        /* Main Content Area */
+        .main-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            max-width: 1800px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        .page-section.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Common Components */
         .macro-bar {
             display: flex; gap: 15px; overflow-x: auto;
-            padding-bottom: 10px;
+            padding-bottom: 15px;
+            margin-bottom: 10px;
         }
         .macro-item {
             background: var(--card-bg);
-            padding: 10px 15px;
+            padding: 12px 16px;
             border-radius: 8px;
-            min-width: 140px;
+            min-width: 150px;
             display: flex; flex-direction: column;
-            border: 1px solid #2d3748;
+            border: 1px solid var(--border);
         }
         .macro-label { font-size: 0.8rem; color: var(--text-sub); }
         .macro-val { font-size: 1.1rem; font-weight: 600; margin-top: 4px; }
         
         .grid { display: grid; grid-template-columns: 3fr 1fr; gap: 20px; }
+        .card { background: var(--card-bg); border-radius: 12px; padding: 20px; border: 1px solid var(--border); height: 100%; }
         
-        .card { background: var(--card-bg); border-radius: 12px; padding: 20px; border: 1px solid #2d3748; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th { text-align: left; color: var(--text-sub); font-size: 0.85rem; padding: 10px; border-bottom: 1px solid #374151; }
-        td { padding: 12px 10px; border-bottom: 1px solid #2d3748; font-size: 0.95rem; }
-        
+        h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; color: var(--text-sub); font-size: 0.85rem; padding: 12px 10px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); }
+        td { padding: 14px 10px; border-bottom: 1px solid var(--border); font-size: 0.95rem; vertical-align: middle; }
+        tr:hover td { background: rgba(255,255,255,0.02); }
+
         .ticker { font-weight: 700; color: #fff; }
         .name { font-size: 0.8rem; color: var(--text-sub); display: block; }
         .price-up { color: var(--up); }
         .price-down { color: var(--down); }
         
-        .badge { padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 4px; }
-        .bg-up { background: rgba(16, 185, 129, 0.2); color: var(--up); }
-        .bg-down { background: rgba(239, 68, 68, 0.2); color: var(--down); }
-        
-        .alert-list { list-style: none; max-height: 800px; overflow-y: auto; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; display: inline-block; }
+        .bg-up { background: rgba(16, 185, 129, 0.15); color: var(--up); border: 1px solid rgba(16, 185, 129, 0.2); }
+        .bg-down { background: rgba(239, 68, 68, 0.15); color: var(--down); border: 1px solid rgba(239, 68, 68, 0.2); }
+        .bg-neutral { background: #2d3748; color: #cbd5e0; }
+
+        .btn { padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; border: none; transition: background 0.2s; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-sub); }
+        .btn-outline:hover { border-color: var(--text-main); color: var(--text-main); }
+
+        /* Inputs */
+        input, select {
+            width: 100%; padding: 10px; background: #2d3748; border: 1px solid #4a5568; 
+            color: white; border-radius: 6px; font-size: 1rem; outline: none;
+        }
+        input:focus { border-color: var(--accent); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-color); }
+        ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #718096; }
+
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>🚀 Stock Advisor Pro</h1>
-            <div style="text-align: right;">
-                <span id="last-updated" style="color: #6b7280; font-size: 0.9rem;">Updating...</span>
+
+    <!-- GNB -->
+    <nav class="gnb">
+        <div class="logo">
+            <span>🚀</span> Stock Advisor Pro
+        </div>
+        <div class="nav-links">
+            <a class="nav-item active" onclick="switchTab('dashboard')">Dashboard</a>
+            <a class="nav-item" onclick="switchTab('portfolio')">Portfolio</a>
+            <a class="nav-item" onclick="switchTab('market')">Market Watch</a>
+            <a class="nav-item" onclick="switchTab('dcf')">DCF Simulator</a>
+            <a class="nav-item" onclick="switchTab('settings')">Settings</a>
+        </div>
+        <div style="font-size: 0.85rem; color: var(--text-sub);">
+            <span id="last-updated">Waiting...</span>
+        </div>
+    </nav>
+
+    <div class="main-container">
+        
+        <!-- 1. DASHBOARD TAB -->
+        <div id="dashboard" class="page-section active">
+            <div class="macro-bar" id="macro-container">
+                <!-- Macro items injected by JS -->
+                <div class="macro-item">
+                    <span class="macro-label">Loading Market Data...</span>
+                </div>
             </div>
-        </header>
 
-        <div class="macro-bar" id="macro-container"></div>
+            <div class="grid">
+                <!-- Portfolio Summary Table -->
+                <div class="card">
+                    <h2>
+                        <span>📊 Portfolio Summary</span>
+                        <button class="btn btn-primary" onclick="switchTab('portfolio')">Manage Portfolio →</button>
+                    </h2>
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th>Price</th>
+                                    <th>Chg / Chg%</th>
+                                    <th>Pre-Mkt</th>
+                                    <th>EMA 5</th>
+                                    <th>EMA 10</th>
+                                    <th>EMA 20</th>
+                                    <th>EMA 60</th>
+                                    <th>EMA 120</th>
+                                    <th>EMA 200</th>
+                                    <th>DCF Fair</th>
+                                    <th>RSI (14)</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dash-stock-table">
+                                <tr><td colspan="13" style="text-align: center; padding: 20px; color: var(--text-sub);">Loading data...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
 
-        <div class="grid" style="margin-top: 20px;">
+                <!-- Recent Alerts & News -->
+                <div class="card">
+                    <h2>🔔 Recent Alerts</h2>
+                    <ul id="alert-box" style="list-style: none; color: var(--text-sub); font-size: 0.9rem;">
+                        <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">No new alerts.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. PORTFOLIO TAB -->
+        <div id="portfolio" class="page-section">
             <div class="card">
-                <h2 style="margin-bottom: 15px;">📊 Portfolio Analysis (Full List)</h2>
+                <h2>
+                    <span>💼 My Portfolio</span>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <input type="file" id="excelInput" accept=".xlsx, .xls" style="display:none" onchange="uploadExcel()">
+                        <button class="btn btn-outline" onclick="document.getElementById('excelInput').click()">📂 Upload Excel</button>
+                        <button class="btn btn-primary" onclick="openModal()">+ Add Trade</button>
+                    </div>
+                </h2>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
                                 <th>Ticker</th>
-                                <th>Price</th>
-                                <th>Rtn%</th>
-                                <th>RSI</th>
-                                <th>EMA Trend</th>
-                                <th>DCF Fair</th>
-                                <th>Upside</th>
+                                <th>Avg Price</th>
+                                <th>Current</th>
+                                <th>Qty</th>
+                                <th>Valuation</th>
+                                <th>Return</th>
+                                <th>Fair Value (DCF)</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
-                        <tbody id="stock-table">
-                            <tr><td colspan="7" style="text-align: center; padding: 20px;">Loading data...</td></tr>
+                        <tbody id="portfolio-table">
+                            <tr><td colspan="8" style="text-align: center; padding: 20px;">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
+        </div>
 
-            <div class="card">
-                <h2 style="margin-bottom: 15px;">🔔 Alerts</h2>
-                <ul class="alert-list" id="alert-box">
-                    <li style="color: #6b7280; font-size: 0.9rem;">No alerts yet.</li>
+        <!-- 3. MARKET TAB -->
+        <div id="market" class="page-section">
+            <div class="grid" style="grid-template-columns: 1fr 1fr;">
+                <div class="card">
+                    <h2>📈 Market Movers (Top 20)</h2>
+                    <p style="color: var(--text-sub); margin-bottom: 10px;">Real-time monitoring of major US stocks.</p>
+                    <div style="overflow-x: auto; max-height: 600px;">
+                        <table id="market-table">
+                            <thead>
+                                <tr>
+                                    <th>Ticker</th>
+                                    <th>Price</th>
+                                    <th>RSI</th>
+                                    <th>Signal</th>
+                                </tr>
+                            </thead>
+                            <tbody id="top20-body">
+                                <tr><td colspan="4" style="text-align: center;">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>📰 News & Search</h2>
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <input type="text" id="newsTicker" placeholder="Enter Ticker (e.g. TSLA)" style="flex:1;">
+                        <button class="btn btn-primary" onclick="searchNews()">Search</button>
+                    </div>
+                    <div id="news-results" style="max-height: 550px; overflow-y: auto;">
+                        <p style="color: var(--text-sub);">Search for a ticker to see latest news.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. DCF SIMULATOR TAB -->
+        <div id="dcf" class="page-section">
+            <div class="card" style="max-width: 900px; margin: 0 auto;">
+                <h2>🧬 DCF Value Simulator</h2>
+                <p style="color: var(--text-sub); margin-bottom: 20px;">Adjust growth and discount rates to find your own fair value.</p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                    <div>
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Ticker</label>
+                            <input type="text" id="dcfTicker" placeholder="e.g. AAPL" onchange="updateDcf()">
+                        </div>
+                        
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Stage 1 Growth Rate (10Y) : <span id="valGrowth">10</span>%</label>
+                            <input type="range" id="rangeGrowth" min="-0.1" max="0.5" step="0.01" value="0.10" oninput="updateDcf()">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Discount Rate (WACC) : <span id="valDiscount">9</span>%</label>
+                            <input type="range" id="rangeDiscount" min="0.04" max="0.20" step="0.005" value="0.09" oninput="updateDcf()">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display:block; color:#a0aec0; margin-bottom:8px;">Terminal Growth Rate : <span id="valTerminal">3</span>%</label>
+                            <input type="range" id="rangeTerminal" min="0" max="0.05" step="0.005" value="0.03" oninput="updateDcf()">
+                        </div>
+                    </div>
+
+                    <div style="background: #0f1115; border-radius: 12px; padding: 30px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px dashed var(--border);">
+                        <span style="color: var(--text-sub); font-size: 0.9rem; margin-bottom: 10px;">Estimated Fair Value</span>
+                        <h1 id="dcfResult" style="font-size: 3.5rem; color: var(--accent);">$0.00</h1>
+                        <p id="dcfStatus" style="margin-top: 15px; color: var(--text-sub); text-align: center;">Enter a ticker to start</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5. SETTINGS TAB -->
+        <div id="settings" class="page-section">
+            <div class="card" style="max-width: 600px; margin: 0 auto;">
+                <h2>⚙️ Settings & Alerts</h2>
+                <p style="color: var(--text-sub); margin-bottom: 20px;">Configure price alerts for your favorite stocks.</p>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display:block; color:#a0aec0; margin-bottom:5px;">Target Ticker</label>
+                    <input type="text" id="alertTicker" placeholder="e.g. NVDA">
+                </div>
+                
+                <div style="display:flex; gap:15px; margin-bottom: 20px;">
+                    <div style="flex:1;">
+                        <label style="display:block; color:#a0aec0; margin-bottom:5px;">Condition</label>
+                        <select id="alertCond">
+                            <option value="above">Price Above (>=)</option>
+                            <option value="below">Price Below (<=)</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;">
+                        <label style="display:block; color:#a0aec0; margin-bottom:5px;">Target Price ($)</label>
+                        <input type="number" id="alertPrice" step="any">
+                    </div>
+                </div>
+                
+                <button class="btn btn-primary" style="width: 100%;" onclick="addAlert()">Set Alert</button>
+
+                <h3 style="margin-top: 30px; margin-bottom: 10px; font-size: 1rem;">Active Alerts</h3>
+                <ul id="active-alerts-list" style="list-style: none; padding: 0;">
+                    <li style="padding: 10px; background: #2d3748; border-radius: 6px; margin-bottom: 5px;">Loading...</li>
                 </ul>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Trade Modal -->
+    <div id="tradeModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center; backdrop-filter: blur(4px);">
+        <div style="background:#1a202c; padding:30px; border-radius:12px; width:400px; border:1px solid #2d3748; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);">
+            <h3 style="margin-bottom:20px; color:#fff; font-size:1.2rem;">Add Trade</h3>
+            
+            <div style="margin-bottom:20px;">
+                <label style="display:block; color:#a0aec0; margin-bottom:8px; font-size:0.85rem;">Action</label>
+                <div style="display:flex; gap:10px;">
+                    <button id="btnBuy" onclick="setMode('buy')" style="flex:1; padding:12px; border-radius:8px; border:1px solid #064e3b; background:#064e3b; color:#10b981; font-weight:700; cursor:pointer;">BUY</button>
+                    <button id="btnSell" onclick="setMode('sell')" style="flex:1; padding:12px; border-radius:8px; border:1px solid #2d3748; background:transparent; color:#718096; font-weight:700; cursor:pointer;">SELL</button>
+                </div>
+            </div>
+
+            <div style="margin-bottom:15px;">
+                <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Ticker Symbol</label>
+                <input type="text" id="txTicker" placeholder="e.g. AAPL">
+            </div>
+
+            <div style="display:flex; gap:15px; margin-bottom:25px;">
+                <div style="flex:1;">
+                    <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Quantity</label>
+                    <input type="number" id="txQty" step="any" placeholder="0">
+                </div>
+                <div style="flex:1;">
+                    <label style="display:block; color:#a0aec0; margin-bottom:5px; font-size:0.9rem;">Price ($)</label>
+                    <input type="number" id="txPrice" step="any" placeholder="0.00">
+                </div>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:10px;">
+                <button onclick="closeModal()" class="btn btn-outline">Cancel</button>
+                <button onclick="submitTrade()" class="btn btn-primary">Submit Trade</button>
             </div>
         </div>
     </div>
 
     <script>
-        async function fetchAnalysis() {
+        // --- Excel Upload ---
+        async function uploadExcel() {
+            const input = document.getElementById('excelInput');
+            if (!input.files || !input.files[0]) return;
+            
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('user_id', 'sean'); // Fixed user for now
+
             try {
-                // 1. 매크로 데이터 (임시 하드코딩, 추후 API 연동 가능)
+                // UI Loading feedback
+                const btn = document.querySelector('button[onclick*="excelInput"]');
+                const origText = btn.innerText;
+                btn.innerText = 'Uploading...';
+                
+                const res = await fetch('/portfolio/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (res.ok) {
+                    const result = await res.json();
+                    alert(result.message);
+                    fetchPortfolio(); // Refresh list
+                } else {
+                    const err = await res.json();
+                    alert('Upload failed: ' + (err.detail || 'Unknown error'));
+                }
+                btn.innerText = origText;
+            } catch (e) {
+                console.error(e);
+                alert('Error uploading file');
+            } finally {
+                input.value = ''; // Reset input
+            }
+        }
+
+        // --- Tab Management ---
+        function switchTab(tabId) {
+            // Update Nav
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            event.target.classList.add('active'); // Note: this assumes click event
+
+            // Update Content
+            document.querySelectorAll('.page-section').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            
+            // Refresh data for the specific tab
+            if (tabId === 'dashboard') fetchDashboardData();
+            if (tabId === 'portfolio') fetchPortfolio();
+            if (tabId === 'market') fetchMarketData();
+            if (tabId === 'settings') fetchAlerts();
+            // dcf는 사용자 입력 기반이므로 자동 fetch 안함
+        }
+
+        // Handle specific nav click to ensure class active works even if triggered manually
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', function() {
+                document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+                this.classList.add('active');
+            });
+        });
+
+
+        // --- Data Fetching ---
+        
+        async function fetchDashboardData() {
+            try {
+                // Macro
                 const macroData = [
                     { label: "US 10Y Yield", val: "4.20%", change: "-0.01" },
                     { label: "VIX", val: "17.5", change: "-2.1" },
@@ -116,17 +488,129 @@
                     { label: "Oil", val: "$76.2", change: "-0.3%" }
                 ];
                 renderMacro(macroData);
-
-                // 2. 전체 포트폴리오 데이터 조회
+                
+                // Fetch simple portfolio list for dashboard
                 const res = await fetch('/portfolio/sean/full-report');
                 const data = await res.json();
-                renderTable(data);
-                
+                renderDashTable(data.slice(0, 5)); // Show top 5 only
+
                 document.getElementById('last-updated').innerText = "Last Updated: " + new Date().toLocaleTimeString();
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchPortfolio() {
+            try {
+                const res = await fetch('/portfolio/sean/full-report');
+                const data = await res.json();
+                renderPortfolioTable(data);
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchMarketData() {
+            try {
+                const res = await fetch('/market/top20');
+                const data = await res.json();
+                
+                // Convert dict to array if needed or handle object
+                // Assuming data is { "AAPL": { "price": ... }, ... }
+                const tbody = document.getElementById('top20-body');
+                if (!data || Object.keys(data).length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4">No data available</td></tr>';
+                    return;
+                }
+
+                let html = '';
+                for (const [ticker, info] of Object.entries(data)) {
+                    const rsi = info.rsi ? info.rsi.toFixed(1) : '-';
+                    const rsiClass = info.rsi < 30 ? 'bg-up' : (info.rsi > 70 ? 'bg-down' : 'bg-neutral');
+                    
+                    html += `
+                        <tr>
+                            <td class="ticker">${ticker}</td>
+                            <td>$${info.price.toFixed(2)}</td>
+                            <td><span class="badge ${rsiClass}">${rsi}</span></td>
+                            <td>${info.rsi < 30 ? '<span style="color:var(--up)">BUY</span>' : (info.rsi > 70 ? '<span style="color:var(--down)">SELL</span>' : '-')}</td>
+                        </tr>
+                    `;
+                }
+                tbody.innerHTML = html;
+            } catch (e) { console.error(e); }
+        }
+        
+        async function searchNews() {
+            const ticker = document.getElementById('newsTicker').value;
+            if (!ticker) return;
+            
+            const div = document.getElementById('news-results');
+            div.innerHTML = 'Loading news...';
+            
+            try {
+                const res = await fetch(`/news/${ticker}`);
+                const news = await res.json();
+                
+                if (!news || news.length === 0) {
+                    div.innerHTML = 'No news found.';
+                    return;
+                }
+                
+                div.innerHTML = news.map(item => `
+                    <div style="padding: 10px; border-bottom: 1px solid var(--border);">
+                        <a href="${item.link}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 500;">${item.title}</a>
+                        <div style="font-size: 0.8rem; color: var(--text-sub); margin-top: 4px;">${item.publisher || 'Source'} • ${item.date || 'Recent'}</div>
+                    </div>
+                `).join('');
             } catch (e) {
-                console.error("Fetch error:", e);
+                div.innerHTML = 'Error fetching news.';
             }
         }
+
+        async function fetchAlerts() {
+            // Placeholder: Implement alert fetching logic if API exists
+            // Currently just static placeholder
+            const list = document.getElementById('active-alerts-list');
+            try {
+                const res = await fetch('/alerts/pending'); // Or check-alerts
+                const data = await res.json();
+                // Render alerts...
+                list.innerHTML = '<li style="color:var(--text-sub)">No active alerts configured.</li>';
+            } catch(e) { console.error(e); }
+        }
+
+        // --- DCF Simulator Logic ---
+        async function updateDcf() {
+            const ticker = document.getElementById('dcfTicker').value;
+            if(!ticker) return;
+
+            const growth = parseFloat(document.getElementById('rangeGrowth').value);
+            const discount = parseFloat(document.getElementById('rangeDiscount').value);
+            const terminal = parseFloat(document.getElementById('rangeTerminal').value);
+
+            // Update labels
+            document.getElementById('valGrowth').innerText = (growth * 100).toFixed(0);
+            document.getElementById('valDiscount').innerText = (discount * 100).toFixed(1);
+            document.getElementById('valTerminal').innerText = (terminal * 100).toFixed(1);
+
+            document.getElementById('dcfStatus').innerText = 'Calculating...';
+
+            try {
+                const url = `/valuation/dcf-custom?ticker=${encodeURIComponent(ticker)}&growth_rate=${growth}&discount_rate=${discount}&terminal_growth=${terminal}`;
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.fair_value) {
+                    document.getElementById('dcfResult').innerText = '$' + data.fair_value;
+                    document.getElementById('dcfStatus').innerText = `Based on Growth ${(growth*100).toFixed(1)}% / WACC ${(discount*100).toFixed(1)}%`;
+                } else {
+                    document.getElementById('dcfResult').innerText = 'Error';
+                    document.getElementById('dcfStatus').innerText = data.error || 'Calculation failed';
+                }
+            } catch (e) {
+                console.error(e);
+                document.getElementById('dcfStatus').innerText = 'Network error';
+            }
+        }
+
+        // --- Render Helpers ---
 
         function renderMacro(data) {
             const container = document.getElementById('macro-container');
@@ -140,55 +624,196 @@
             `).join('');
         }
 
-        function renderTable(data) {
-            const tbody = document.getElementById('stock-table');
-            if (!data || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px;">No Data Found</td></tr>';
-                return;
+        function renderDashTable(data) {
+        const tbody = document.getElementById('dash-stock-table');
+        if (!data.length) { tbody.innerHTML = '<tr><td colspan="8">No portfolio data</td></tr>'; return; }
+        
+        tbody.innerHTML = data.map(info => {
+            const rsiVal = info.rsi ? info.rsi.toFixed(1) : '-';
+            const rsiClass = info.rsi < 30 ? 'bg-up' : (info.rsi > 70 ? 'bg-down' : 'bg-neutral');
+            
+            // Change color logic
+            const change = info.change || 0;
+            const changePct = info.change_pct || 0;
+            const changeClass = change >= 0 ? 'price-up' : 'price-down';
+            const changeSign = change >= 0 ? '+' : '';
+            const chgStr = `${changeSign}${change.toFixed(2)}`;
+            const pctStr = `(${changeSign}${changePct.toFixed(2)}%)`;
+
+            // Pre-market logic
+            let preHtml = '<span style="color:var(--text-sub)">-</span>';
+            if (info.pre_price) {
+                const preChangePct = info.pre_change_pct || 0;
+                const preClass = preChangePct >= 0 ? 'price-up' : 'price-down';
+                const preSign = preChangePct >= 0 ? '+' : '';
+                
+                preHtml = `
+                    <div style="font-size:0.9rem;">$${info.pre_price.toFixed(2)}</div>
+                    <div class="${preClass}" style="font-size:0.75rem;">${preSign}${preChangePct.toFixed(2)}%</div>
+                `;
             }
+
+            // EMA & DCF
+            const fmtEma = (val) => val ? '$' + val.toFixed(1) : '-';
+            
+            let dcfHtml = '<span style="color:var(--text-sub)">-</span>';
+            if (info.dcf_fair) {
+                const upside = info.dcf_upside || 0;
+                const dcfClass = upside > 0 ? 'price-up' : 'price-down';
+                const dcfSign = upside > 0 ? '+' : '';
+                dcfHtml = `
+                    <div style="font-size:0.9rem;">$${info.dcf_fair.toFixed(2)}</div>
+                    <div class="${dcfClass}" style="font-size:0.75rem;">${dcfSign}${upside.toFixed(1)}%</div>
+                `;
+            }
+
+            return `
+                <tr>
+                    <td>
+                        <div class="ticker">${info.ticker}</div>
+                        <span class="name">${info.name || ''}</span>
+                    </td>
+                    <td>
+                        <div style="font-weight:600">$${info.price ? info.price.toFixed(2) : '-'}</div>
+                    </td>
+                    <td>
+                        <div class="${changeClass}" style="font-weight:500">${chgStr}</div>
+                        <div class="${changeClass}" style="font-size:0.8rem">${pctStr}</div>
+                    </td>
+                    <td>${preHtml}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema5)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema10)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema20)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema60)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema120)}</td>
+                    <td style="color:#a0aec0; font-size:0.9rem">${fmtEma(info.ema200)}</td>
+                    <td>${dcfHtml}</td>
+                    <td><span class="badge ${rsiClass}">${rsiVal}</span></td>
+                    <td>
+                        <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.75rem;" onclick="openTradeFor('${info.ticker}')">Trade</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+        
+        function renderPortfolioTable(data) {
+            const tbody = document.getElementById('portfolio-table');
+            if (!data.length) { tbody.innerHTML = '<tr><td colspan="8">No holdings</td></tr>'; return; }
             
             tbody.innerHTML = data.map(info => {
-                // 값 안전 처리 (null/undefined 체크)
-                const rsiVal = (info.rsi !== null && info.rsi !== undefined) ? info.rsi.toFixed(1) : '-';
-                const emaVal = (info.ema200 !== null && info.ema200 !== undefined) ? '$' + info.ema200.toFixed(2) : '-';
-                const dcfVal = (info.dcf_fair !== null && info.dcf_fair !== undefined) ? '$' + info.dcf_fair : '-';
-                
-                const rsiClass = info.rsi < 30 ? 'bg-up' : (info.rsi > 70 ? 'bg-down' : '');
-                const upside = info.dcf_upside;
+                const price = info.price || 0;
                 
                 return `
                     <tr>
+                        <td class="ticker">${info.ticker}<br><span class="name">${info.name || ''}</span></td>
+                        <td>$${info.buy_price ? info.buy_price.toFixed(2) : '-'}</td>
+                        <td>$${price.toFixed(2)}</td>
+                        <td>${info.quantity ? info.quantity.toFixed(4) : '-'}</td>
+                        <td>$${info.current_value ? info.current_value.toFixed(2) : '-'}</td>
+                        <td class="${info.return_pct >= 0 ? 'price-up' : 'price-down'}">${info.return_pct ? info.return_pct.toFixed(2)+'%' : '-'}</td>
+                        <td>$${info.dcf_fair || '-'} <span style="font-size:0.8rem">(${info.dcf_upside ? info.dcf_upside+'%' : '-'})</span></td>
                         <td>
-                            <div class="ticker">${info.ticker}</div>
-                            <span class="name">${info.name || ''}</span>
-                        </td>
-                        <td>
-                            <div>$${info.price ? info.price.toFixed(2) : '-'}</div>
-                        </td>
-                        <td>
-                            <div class="${info.return_pct >= 0 ? 'price-up' : 'price-down'}">
-                                ${info.return_pct !== undefined ? (info.return_pct >= 0 ? '+' : '') + info.return_pct.toFixed(2) + '%' : '-'}
-                            </div>
-                        </td>
-                        <td><span class="badge ${rsiClass}">${rsiVal}</span></td>
-                        <td>
-                            <span class="badge" style="background: #2d3748">EMA200 ${emaVal}</span>
-                        </td>
-                        <td>
-                            <div>${dcfVal}</div>
-                        </td>
-                        <td>
-                            <div style="color: ${upside > 0 ? 'var(--up)' : 'var(--text-sub)'}">
-                                ${upside ? upside + '%' : '-'}
-                            </div>
+                             <button class="btn btn-outline" style="padding:4px 8px; color:#ef4444; border-color:#ef4444;" onclick="deleteHolding('${info.ticker}')">🗑️</button>
                         </td>
                     </tr>
                 `;
             }).join('');
         }
 
-        fetchAnalysis();
-        setInterval(fetchAnalysis, 30000);
+        async function deleteHolding(ticker) {
+            const input = prompt(`To delete ${ticker}, please type "${ticker}" below:`);
+            if (input !== ticker) {
+                if (input !== null) alert("Ticker mismatch. Deletion cancelled.");
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/portfolio/sean/${ticker}`, { method: 'DELETE' });
+                if(res.ok) {
+                    fetchPortfolio(); // Refresh
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + (err.detail || 'Failed to delete'));
+                }
+            } catch(e) {
+                console.error(e);
+                alert('Error deleting holding');
+            }
+        }
+
+        // --- Trade Modal Logic ---
+        let tradeMode = 'buy';
+        
+        function openModal() {
+            document.getElementById('tradeModal').style.display = 'flex';
+            setMode('buy');
+        }
+
+        function openTradeFor(ticker) {
+            openModal();
+            document.getElementById('txTicker').value = ticker;
+        }
+        
+        function closeModal() {
+            document.getElementById('tradeModal').style.display = 'none';
+            document.getElementById('txTicker').value = '';
+            document.getElementById('txQty').value = '';
+            document.getElementById('txPrice').value = '';
+        }
+        
+        function setMode(mode) {
+            tradeMode = mode;
+            const btnBuy = document.getElementById('btnBuy');
+            const btnSell = document.getElementById('btnSell');
+            
+            if(mode === 'buy') {
+                btnBuy.style.background = '#064e3b';
+                btnBuy.style.color = '#10b981';
+                btnBuy.style.border = '1px solid #10b981';
+                btnSell.style.background = 'transparent';
+                btnSell.style.color = '#718096';
+                btnSell.style.border = '1px solid #2d3748';
+            } else {
+                btnSell.style.background = '#7f1d1d';
+                btnSell.style.color = '#ef4444';
+                btnSell.style.border = '1px solid #ef4444';
+                btnBuy.style.background = 'transparent';
+                btnBuy.style.color = '#718096';
+                btnBuy.style.border = '1px solid #2d3748';
+            }
+        }
+        
+        async function submitTrade() {
+            const ticker = document.getElementById('txTicker').value;
+            const qty = document.getElementById('txQty').value;
+            const price = document.getElementById('txPrice').value;
+            
+            if(!ticker || !qty || !price) { alert('Please fill in all fields'); return; }
+            
+            try {
+                const url = `/portfolio/sean/trade?ticker=${encodeURIComponent(ticker)}&action=${tradeMode}&quantity=${qty}&price=${price}`;
+                const res = await fetch(url, { method: 'POST' });
+                if(res.ok) {
+                    closeModal();
+                    // Refresh current tab
+                    const activeTab = document.querySelector('.nav-item.active').innerText.toLowerCase();
+                    if(activeTab.includes('dashboard')) fetchDashboardData();
+                    else fetchPortfolio();
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + (err.detail || 'Unknown error'));
+                }
+            } catch(e) { console.error(e); alert('Failed to submit trade'); }
+        }
+
+        window.onclick = function(event) {
+            if (event.target == document.getElementById('tradeModal')) closeModal();
+        }
+
+        // Init
+        fetchDashboardData();
+        setInterval(fetchDashboardData, 30000); // Auto refresh dashboard
     </script>
 </body>
 </html>
