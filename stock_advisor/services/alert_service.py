@@ -1,8 +1,12 @@
-import requests
 from typing import Optional, List
+import requests
+from stock_advisor.config import Config
 from stock_advisor.services.news_service import NewsService
 from stock_advisor.models.schemas import PriceAlert
 from stock_advisor.services.data_service import DataService
+from stock_advisor.utils.logger import get_logger
+
+logger = get_logger("alert_service")
 
 class AlertService:
     """
@@ -20,10 +24,21 @@ class AlertService:
     
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
-        """알림을 대기열에 추가합니다 (에이전트가 수거해감)"""
-        print(f"[Alert Generated] {message}")
-        cls._pending_alerts.append(message)
-        return True
+        """슬랙으로 실제 알림을 전송합니다."""
+        webhook_url = cls._webhook_url or Config.SLACK_WEBHOOK_URL
+        if not webhook_url:
+            print(f"⚠️ Slack Webhook URL not configured. Log: {message}")
+            return False
+            
+        try:
+            payload = {"text": message}
+            response = requests.post(webhook_url, json=payload, timeout=5)
+            response.raise_for_status()
+            logger.info(f"✅ Slack message sent successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to send Slack alert: {e}")
+            return False
 
     @classmethod
     def get_pending_alerts(cls) -> list:

@@ -3,7 +3,9 @@ from typing import Dict, List, Optional
 from collections import deque
 import logging
 
-logger = logging.getLogger("ticker_state")
+from stock_advisor.utils.logger import get_logger
+
+logger = get_logger("ticker_state")
 
 @dataclass
 class TickerState:
@@ -18,6 +20,8 @@ class TickerState:
     
     # 지표들
     ema: Dict[int, float] = None # {5: 1000, 20: 950, ...}
+    rsi: float = 0.0             # RSI (14)
+    bollinger: Dict[str, float] = None # {upper, middle, lower}
     dcf_value: float = 0.0       # 적정주가 (DCF)
     
     # 데이터 버퍼 (최근 N개의 종가, 실시간 EMA 계산용)
@@ -27,6 +31,8 @@ class TickerState:
     def __post_init__(self):
         if self.ema is None:
             self.ema = {}
+        if self.bollinger is None:
+            self.bollinger = {}
 
     def update_from_socket(self, data_dict: dict):
         """
@@ -56,18 +62,43 @@ class TickerState:
             
             # 전일 종가는 보통 별도 조회 필요 (실시간 데이터에도 포함될 수 있으나 계산용으로 미리 세팅 권장)
             
-            # 지표 실시간 업데이트 트리거 (옵션)
-            # self.recalculate_indicators()
+            # 지표 실시간 업데이트
+            self.recalculate_indicators()
             
         except Exception as e:
             logger.error(f"Error updating ticker state: {e}")
 
-    def update_indicators(self, emas: Dict[int, float], dcf: float = None):
-        """외부에서 계산된 지표 주입"""
+    def recalculate_indicators(self):
+        """현재가를 기준으로 실시간 지표(EMA 등) 재계산"""
+        if not self.ema or self.current_price <= 0:
+            return
+            
+        # 일봉 기준 실시간 EMA 추정
+        # EMA_today = (Price_today * alpha) + (EMA_yesterday * (1 - alpha))
+        for n, prev_ema_val in list(self.ema.items()):
+            try:
+                # 키가 정수인 경우에만 수행 (예: 5, 20, 100...)
+                period = int(n)
+                alpha = 2 / (period + 1)
+                self.ema[period] = round((self.current_price * alpha) + (prev_ema_val * (1 - alpha)), 2)
+            except (ValueError, TypeError):
+                continue
+            
+    def update_indicators(self, emas: Dict[int, float], dcf: float = None, rsi: float = None):
+        """외부에서 계산된 지표 주입 (Warm-up 또는 정기 갱신용)"""
         if emas:
-            self.ema.update(emas)
+            # 모든 키를 정수로 변환하여 저장
+            processed_emas = {}
+            for k, v in emas.items():
+                try:
+                    processed_emas[int(k)] = v
+                except:
+                    continue
+            self.ema.update(processed_emas)
         if dcf is not None:
             self.dcf_value = dcf
+        if rsi is not None:
+            self.rsi = rsi
 
     @property
     def is_undervalued(self) -> bool:

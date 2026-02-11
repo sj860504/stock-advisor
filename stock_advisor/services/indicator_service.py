@@ -50,11 +50,11 @@ class IndicatorService:
         
         # EMA 모음
         emas = {}
-        for span in [5, 10, 20, 60, 120, 200]:
+        for span in [5, 10, 20, 60, 100, 120, 200]:
             if len(series) >= span:
-                emas[f"ema{span}"] = round(series.ewm(span=span, adjust=False).mean().iloc[-1], 2)
+                emas[span] = round(series.ewm(span=span, adjust=False).mean().iloc[-1], 2)
             else:
-                emas[f"ema{span}"] = None
+                emas[span] = None
                 
         # RSI
         rsi_series = IndicatorService.calculate_rsi(series)
@@ -62,5 +62,5 @@ class IndicatorService:
         
         return {
             "rsi": rsi,
-            **emas
+            "ema": emas
         }

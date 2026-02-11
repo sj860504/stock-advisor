@@ -7,21 +7,21 @@ from stock_advisor.services.kis_ws_service import kis_ws_service
 from stock_advisor.routers import analysis, market, alerts, portfolio, reports, trading
 import os
 import asyncio
+from stock_advisor.services.trading_strategy_service import TradingStrategyService # 추가
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 앱 시작 시 스케줄러 실행
-    SchedulerService.start()
+    # 앱 시작 시
+    from stock_advisor.services.alert_service import AlertService
+    AlertService.send_slack_alert("🚀 [시스템 알림] Sean's Stock Advisor 서버가 시작되었습니다. 실시간 감시 및 매매 전략 가동을 시작합니다.")
     
-    # 웹소켓 서비스 시작 (백그라운드 태스크로 실행)
-    # run_in_executor 등을 사용하거나 create_task 사용
-    task = asyncio.create_task(kis_ws_service.connect())
+    # 스케줄러 실행
+    SchedulerService.start()
     
     yield
     
-    # 앱 종료 시 정리 (필요시)
-    # await kis_ws_service.close() 
-    task.cancel() # 태스크 취소
+    # 앱 종료 시
+    AlertService.send_slack_alert("🛑 [시스템 알림] 서버가 종료되었습니다. 모든 실시간 감시 및 스케줄러가 중단됩니다.")
 
 app = FastAPI(
     title="Sean's Stock Advisor", 
@@ -50,6 +50,20 @@ app.include_router(alerts.router)
 app.include_router(portfolio.router)
 app.include_router(reports.router)
 app.include_router(trading.router)
+
+@app.get("/api/trading/start")
+async def start_trading():
+    TradingStrategyService.set_enabled(True)
+    msg = "🚀 Automated trading engine has been STARTED by user. All signals will now be processed."
+    AlertService.send_slack_alert(msg)
+    return {"status": "success", "message": "Trading engine started"}
+
+@app.get("/api/trading/stop")
+async def stop_trading():
+    TradingStrategyService.set_enabled(False)
+    msg = "🛑 Automated trading engine has been STOPPED by user. Analysis will be skipped."
+    AlertService.send_slack_alert(msg)
+    return {"status": "success", "message": "Trading engine stopped"}
 
 if __name__ == "__main__":
     import uvicorn

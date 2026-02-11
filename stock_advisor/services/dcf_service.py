@@ -49,3 +49,9 @@ class DcfService:
             "discount_rate": round(discount_rate, 4),
             "growth_rate": round(growth_rate, 4)
         }
+
+    @staticmethod
+    def calculate_dcf(ticker: str) -> float:
+        """티커 기반 단순 DCF 프록시 (데이터 수집 로직 보완 필요)"""
+        # 현재는 재무 데이터 수집 인터페이스가 복잡하므로 0.0을 반환
+        return 0.0
