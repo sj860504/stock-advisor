@@ -1,6 +1,7 @@
 import requests
 import json
 import time
+import os
 from datetime import datetime
 from config import Config
 from utils.logger import get_logger
@@ -9,18 +10,34 @@ logger = get_logger("kis_service")
 
 class KisService:
     """
-    ?쒓뎅?ъ옄利앷텒 API ?곕룞 ?쒕퉬??
+    한국투자증권 API 연동 서비스
     """
     _access_token = None
     _token_expiry = None
     
     @classmethod
     def get_access_token(cls):
-        """?묎렐 ?좏겙 諛쒓툒 諛?媛깆떊"""
-        # 湲곗〈 ?좏겙???덇퀬 留뚮즺?섏? ?딆븯?쇰㈃ ?ъ궗??
+        """접근 토큰 발급 및 갱신 (파일 기반 캐시 적용)"""
+        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_token.json')
+        
+        # 1. 메모리 캐시 확인
         if cls._access_token and cls._token_expiry and datetime.now() < cls._token_expiry:
             return cls._access_token
             
+        # 2. 파일 캐시 확인
+        if os.path.exists(token_cache_path):
+            try:
+                with open(token_cache_path, 'r') as f:
+                    cache = json.load(f)
+                    expiry = datetime.fromisoformat(cache['expiry'])
+                    if datetime.now() < expiry:
+                        cls._access_token = cache['token']
+                        cls._token_expiry = expiry
+                        logger.info("📄 KIS Access Token loaded from session file.")
+                        return cls._access_token
+            except: pass
+
+        # 3. 새로운 토큰 발급
         url = f"{Config.KIS_BASE_URL}/oauth2/tokenP"
         headers = {"content-type": "application/json; charset=utf-8"}
         body = {
@@ -30,32 +47,31 @@ class KisService:
         }
         
         try:
-            # json=body瑜??ъ슜?섎㈃ headers瑜??섏젙?섏? ?딆븘??application/json?쇰줈 ?꾩넚?⑸땲??
             res = requests.post(url, json=body, timeout=5)
-            
-            # ?먮윭 諛쒖깮 ???곸꽭 ?댁슜 ?뺤씤???꾪빐 癒쇱? json ?뚯떛 ?쒕룄
-            try:
-                data = res.json()
-            except:
-                data = res.text
-                
             res.raise_for_status()
+            data = res.json()
             
             cls._access_token = data['access_token']
-            # 留뚮즺 ?쒓컙 ?ㅼ젙 (?ъ쑀 ?덇쾶 1?쒓컙 ?꾩쑝濡??≪쓬, ?ㅼ젣 ?섎챸? 蹂댄넻 24?쒓컙)
-            # API ?묐떟?먮뒗 expires_in??珥??⑥쐞濡???
-            cls._token_expiry = datetime.now().replace(microsecond=0) # ?⑥닚?? 留ㅻ쾲 媛깆떊?섏? ?딅룄濡?硫붾え由ъ뿉留??좎?
+            from datetime import timedelta
+            cls._token_expiry = datetime.now() + timedelta(hours=2)
             
-            logger.info("?뵎 KIS Access Token issued successfully.")
+            # 파일 캐시 저장
+            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
+            with open(token_cache_path, 'w') as f:
+                json.dump({
+                    "token": cls._access_token,
+                    "expiry": cls._token_expiry.isoformat()
+                }, f)
+                
+            logger.info("🔑 KIS Access Token issued and saved to file.")
             return cls._access_token
         except Exception as e:
-            logger.error(f"??Failed to get access token: {e}")
-            logger.error(f"Response: {res.text if 'res' in locals() else 'No response'}")
+            logger.error(f"❌ Failed to get access token: {e}")
             raise
 
     @classmethod
     def get_headers(cls, tr_id: str):
-        """API 怨듯넻 ?ㅻ뜑 ?앹꽦"""
+        """API 공통 헤더 생성"""
         token = cls.get_access_token()
         return {
             "content-type": "application/json; charset=utf-8",
@@ -67,17 +83,11 @@ class KisService:
 
     @classmethod
     def get_balance(cls):
-        """
-        二쇱떇 ?붽퀬 議고쉶 (TTTC8434R : 二쇱떇?붽퀬議고쉶_?ㅽ쁽?먯씡?ы븿 - 紐⑥쓽?ъ옄??
-        * ?ㅼ쟾?ъ옄??TR_ID媛 ?ㅻ? ???덉쓬 (TTTC8434R ?ъ슜)
-        """
-        # 紐⑥쓽?ъ옄??TR_ID: VTTC8434R (二쇱떇 ?붽퀬 議고쉶)
+        """주식 잔고 조회 (국내 모의투자 기준)"""
         tr_id = "VTTC8434R" 
-        
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
         headers = cls.get_headers(tr_id)
         
-        # 荑쇰━ ?뚮씪誘명꽣
         params = {
             "CANO": Config.KIS_ACCOUNT_NO,
             "ACNT_PRDT_CD": "01",
@@ -98,7 +108,7 @@ class KisService:
             data = res.json()
             
             if data['rt_cd'] != '0':
-                logger.error(f"??Balance fetch failed: {data['msg1']}")
+                logger.error(f"❌ Balance fetch failed: {data['msg1']}")
                 return None
                 
             return {
@@ -106,18 +116,12 @@ class KisService:
                 "summary": data['output2']
             }
         except Exception as e:
-            logger.error(f"??Error fetching balance: {e}")
+            logger.error(f"❌ Error fetching balance: {e}")
             return None
 
     @classmethod
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy"):
-        """
-        二쇱떇 二쇰Ц (留ㅼ닔/留ㅻ룄)
-        order_type: "buy" (留ㅼ닔) or "sell" (留ㅻ룄)
-        price: 0?대㈃ ?쒖옣媛(01), 0蹂대떎 ?щ㈃ 吏?뺢?(00)
-        """
-        # 紐⑥쓽?ъ옄??TR_ID
-        # 留ㅼ닔: VTTC0802U, 留ㅻ룄: VTTC0801U
+        """국내 주식 주문 (매수/매도)"""
         if order_type == "buy":
             tr_id = "VTTC0802U" 
         else:
@@ -126,17 +130,16 @@ class KisService:
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         headers = cls.get_headers(tr_id)
         
-        # 二쇰Ц 援щ텇 (00: 吏?뺢?, 01: ?쒖옣媛)
         ord_dvsn = "00" if price > 0 else "01"
         ord_price = str(price) if price > 0 else "0"
         
         body = {
             "CANO": Config.KIS_ACCOUNT_NO,
             "ACNT_PRDT_CD": "01",
-            "PDNO": ticker,         # 醫낅ぉ肄붾뱶 (6?먮━)
-            "ORD_DVSN": ord_dvsn,   # 二쇰Ц援щ텇
-            "ORD_QTY": str(quantity), # 二쇰Ц?섎웾
-            "ORD_UNPR": ord_price   # 二쇰Ц?④?
+            "PDNO": ticker,
+            "ORD_DVSN": ord_dvsn,
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": ord_price
         }
         
         try:
@@ -145,36 +148,25 @@ class KisService:
             data = res.json()
             
             if data['rt_cd'] != '0':
-                logger.error(f"??Order failed: {data['msg1']}")
+                logger.error(f"❌ Order failed: {data['msg1']}")
                 return {"status": "failed", "msg": data['msg1']}
                 
-            logger.info(f"??Order Success! [{order_type.upper()}] {ticker} {quantity}qty")
+            logger.info(f"✅ Order Success! [{order_type.upper()}] {ticker} {quantity}qty")
             return {"status": "success", "data": data['output']}
             
         except Exception as e:
-            logger.error(f"??Error sending order: {e}")
+            logger.error(f"❌ Error sending order: {e}")
             return {"status": "error", "msg": str(e)}
 
     @classmethod
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD"):
-        """
-        ?댁쇅 二쇱떇 二쇰Ц (誘멸뎅)
-        ticker: 醫낅ぉ肄붾뱶 (?? TSLA)
-        market: 嫄곕옒??(NASD: ?섏뒪?? NYS: ?댁슃, AMS: ?꾨찕??
-        price: 0?대㈃ ?쒖옣媛
-        """
-        # 紐⑥쓽?ъ옄 誘멸뎅 二쇱떇 TR_ID
-        # 留ㅼ닔: VTTT1002U, 留ㅻ룄: VTTT1001U
+        """해외 주식 주문 (미국 기준)"""
         tr_id = "VTTT1002U" if order_type == "buy" else "VTTT1001U"
-        
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/order"
         headers = cls.get_headers(tr_id)
         
-        # 二쇰Ц 援щ텇 (00: 吏?뺢?) - ?댁쇅 二쇱떇? ?쒖옣媛(01) 吏???щ?媛 利앷텒?щ쭏???ㅻⅤ誘濡?吏?뺢? 沅뚯옣
-        ord_dvsn = "00" 
         if price <= 0:
-             # 媛寃?誘몄엯?????먮윭 泥섎━ (?덉쟾???꾪빐)
-             return {"status": "error", "msg": "?댁쇅 二쇱떇 二쇰Ц ??吏?뺢?(price)瑜??낅젰?댁빞 ?⑸땲??"}
+             return {"status": "error", "msg": "해외 주식 주문 시 지정가(price)를 입력해야 합니다."}
 
         body = {
             "CANO": Config.KIS_ACCOUNT_NO,
@@ -184,7 +176,7 @@ class KisService:
             "ORD_QTY": str(quantity),
             "OVRS_ORD_UNPR": str(price),
             "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": ord_dvsn
+            "ORD_DVSN": "00"
         }
         
         try:
@@ -193,12 +185,32 @@ class KisService:
             data = res.json()
             
             if data['rt_cd'] != '0':
-                logger.error(f"??Overseas Order failed: {data['msg1']}")
+                logger.error(f"❌ Overseas Order failed: {data['msg1']}")
                 return {"status": "failed", "msg": data['msg1']}
                 
-            logger.info(f"??Overseas Order Success! [{order_type.upper()}] {ticker} {quantity}qty @ ${price}")
+            logger.info(f"✅ Overseas Order Success! [{order_type.upper()}] {ticker} {quantity}qty @ ${price}")
             return {"status": "success", "data": data['output']}
-            
         except Exception as e:
-            logger.error(f"??Error sending overseas order: {e}")
+            logger.error(f"❌ Error sending overseas order: {e}")
             return {"status": "error", "msg": str(e)}
+
+    # --- 확장된 메서드 (Modular 통합용) ---
+    @classmethod
+    def get_financials(cls, ticker: str, meta: dict = None):
+        """국내 주식 재무/기본 지표 조회 (KisFetcher 활용)"""
+        from services.fetch.kis_fetcher import KisFetcher
+        token = cls.get_access_token()
+        return KisFetcher.fetch_domestic_price(token, ticker, meta=meta)
+
+    @classmethod
+    def get_overseas_financials(cls, ticker: str, market: str = "NASD", meta: dict = None):
+        """해외 주식 재무/기본 지표 조회 (KisFetcher 활용)"""
+        from services.fetch.kis_fetcher import KisFetcher
+        token = cls.get_access_token()
+        return KisFetcher.fetch_overseas_price(token, ticker, meta=meta)
+    @classmethod
+    def get_overseas_ranking(cls, excd: str = "NAS"):
+        """해외 주식 시가총액 순위 조회 (KisFetcher 활용)"""
+        from services.fetch.kis_fetcher import KisFetcher
+        token = cls.get_access_token()
+        return KisFetcher.fetch_overseas_ranking(token, excd=excd)
