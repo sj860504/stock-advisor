@@ -1,6 +1,6 @@
 import json
 
-portfolio_path = 'stock_advisor/data/portfolio_sean.json'
+portfolio_path = 'data/portfolio_sean.json'
 
 try:
     with open(portfolio_path, 'r', encoding='utf-8') as f:

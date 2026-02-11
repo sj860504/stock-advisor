@@ -2,7 +2,7 @@ import json
 import os
 
 # Load Portfolio
-portfolio_path = 'stock_advisor/data/portfolio_sean.json'
+portfolio_path = 'data/portfolio_sean.json'
 
 if not os.path.exists(portfolio_path):
     print(f"Error: Portfolio file not found at {portfolio_path}")

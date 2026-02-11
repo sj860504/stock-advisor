@@ -1,12 +1,12 @@
 import json
 import os
 from datetime import datetime, timedelta
-from stock_advisor.services.macro_service import MacroService
-from stock_advisor.services.portfolio_service import PortfolioService
-from stock_advisor.services.market_data_service import MarketDataService # 추가
-from stock_advisor.services.kis_service import KisService
-from stock_advisor.services.alert_service import AlertService
-from stock_advisor.utils.logger import get_logger
+from services.macro_service import MacroService
+from services.portfolio_service import PortfolioService
+from services.market_data_service import MarketDataService # 추가
+from services.kis_service import KisService
+from services.alert_service import AlertService
+from utils.logger import get_logger
 
 logger = get_logger("strategy_service")
 
@@ -105,7 +105,11 @@ class TradingStrategyService:
 
         profit_pct = 0.0
         if holding:
-            profit_pct = (curr_price - holding['buy_price']) / holding['buy_price'] * 100
+            buy_price = holding['buy_price']
+            if buy_price > 0:
+                profit_pct = (curr_price - buy_price) / buy_price * 100
+            else:
+                profit_pct = 0.0
 
         cash_ratio = cash_balance / total_assets if total_assets > 0 else 0
         panic_locks = user_state.get('panic_locks', {})

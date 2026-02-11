@@ -15,21 +15,20 @@ async def upload_portfolio(
     user_id: str = Form(default="default")
 ):
     """
-    ?묒? ?뚯씪???낅줈?쒗븯???ы듃?대━?ㅻ? ?깅줉?⑸땲??
+    엑셀 파일을 업로드하여 포트폴리오를 등록합니다.
     
-    ?묒? ?뺤떇:
-    | ?곗빱/醫낅ぉ紐?| ?섎웾 | 留ㅼ닔媛 | (留ㅼ닔?? |
+    엑셀 형식:
+    | 티커/종목명 | 수량 | 매수가 | (매수일) |
     |------------|------|--------|---------|
     | AAPL       | 10   | 150    | 2024-01-15 |
-    | ?쇱꽦?꾩옄   | 50   | 70000  | 2024-02-01 |
+    | 삼성전자   | 50   | 70000  | 2024-02-01 |
     """
     try:
         content = await file.read()
-        holdings = PortfolioService.parse_excel(content, file.filename)
-        PortfolioService.save_portfolio(user_id, holdings)
+        holdings = PortfolioService.upload_portfolio(content, file.filename, user_id)
         
         return {
-            "message": f"?ы듃?대━???낅줈???깃났! {len(holdings)}媛?醫낅ぉ ?깅줉??,
+            "message": f"포트폴리오 업로드 성공! {len(holdings)}개 종목 등록됨",
             "holdings": holdings
         }
     except Exception as e:
@@ -38,17 +37,17 @@ async def upload_portfolio(
 @router.get("/{user_id}")
 def get_portfolio(user_id: str = "default"):
     """
-    ??λ맂 ?ы듃?대━?ㅻ? 議고쉶?⑸땲??
+    저장된 포트폴리오를 조회합니다.
     """
     holdings = PortfolioService.load_portfolio(user_id)
     if not holdings:
-        return {"message": "?깅줉???ы듃?대━?ㅺ? ?놁뒿?덈떎.", "holdings": []}
+        return {"message": "등록된 포트폴리오가 없습니다.", "holdings": []}
     return {"holdings": holdings}
 
 @router.get("/{user_id}/analysis")
 def analyze_portfolio(user_id: str = "default"):
     """
-    ?ы듃?대━???섏씡瑜좎쓣 遺꾩꽍?⑸땲??
+    포트폴리오 수익률을 분석합니다.
     """
     price_cache = SchedulerService.get_all_cached_prices()
     result = PortfolioService.analyze_portfolio(user_id, price_cache)
@@ -57,7 +56,7 @@ def analyze_portfolio(user_id: str = "default"):
 @router.get("/{user_id}/full-report")
 def get_full_portfolio_report(user_id: str = "default"):
     """
-    蹂댁쑀 醫낅ぉ ?꾩껜??????곸꽭 遺꾩꽍 ?곗씠?곕? 諛섑솚?⑸땲??
+    보유 종목 전체에 대한 상세 분석 데이터를 반환합니다.
     """
     holdings = PortfolioService.load_portfolio(user_id)
     price_cache = SchedulerService.get_all_cached_prices()
@@ -67,7 +66,7 @@ def get_full_portfolio_report(user_id: str = "default"):
         ticker = item['ticker']
         if not ticker: continue
         
-        # 罹먯떆???곗씠???쒖슜
+        # 캐시된 데이터 사용
         cached = price_cache.get(ticker, {})
         price = cached.get('price') or item['buy_price']
         
@@ -110,20 +109,49 @@ def add_holding(
     name: Optional[str] = None
 ):
     """
-    ?섎룞?쇰줈 蹂댁쑀 醫낅ぉ??異붽??⑸땲??
+    수동으로 보유 종목을 추가합니다.
     """
-    # ?곗빱 蹂??
+    # 티커 변환
     resolved_ticker = TickerService.resolve_ticker(ticker)
-    holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, buy_price, name)
-    return {"message": f"{resolved_ticker} 異붽? ?꾨즺", "holdings": holdings}
+    
+    # 기존 목록 로드
+    holdings = PortfolioService.load_portfolio(user_id)
+    
+    # 중복 체크 (간단히)
+    found = False
+    for h in holdings:
+        if h['ticker'] == resolved_ticker:
+            # 평단 수정 등 복잡한 로직은 생략하고 덮어쓰기 또는 추가 매수 로직 구현 필요
+            # 여기서는 단순히 추가 (평단 희석 로직 필요)
+            total_qty = h['quantity'] + quantity
+            avg_price = ((h['quantity'] * h['buy_price']) + (quantity * buy_price)) / total_qty
+            h['quantity'] = total_qty
+            h['buy_price'] = avg_price
+            found = True
+            break
+            
+    if not found:
+        holdings.append({
+            "ticker": resolved_ticker,
+            "name": name or resolved_ticker,
+            "quantity": quantity,
+            "buy_price": buy_price,
+            "current_price": buy_price, # 초기값
+            "sector": "Unknown"
+        })
+        
+    PortfolioService.save_portfolio(user_id, holdings)
+    return {"message": f"{resolved_ticker} 추가 완료", "holdings": holdings}
 
 @router.delete("/{user_id}/{ticker}")
 def remove_holding(user_id: str, ticker: str):
     """
-    蹂댁쑀 醫낅ぉ???쒓굅?⑸땲??
+    보유 종목을 제거합니다.
     """
-    holdings = PortfolioService.remove_holding(user_id, ticker)
-    return {"message": f"{ticker} ?쒓굅 ?꾨즺", "holdings": holdings}
+    holdings = PortfolioService.load_portfolio(user_id)
+    new_holdings = [h for h in holdings if h['ticker'] != ticker]
+    PortfolioService.save_portfolio(user_id, new_holdings)
+    return {"message": f"{ticker} 제거 완료", "holdings": new_holdings}
 
 @router.post("/{user_id}/trade")
 def trade_holding(
@@ -134,18 +162,49 @@ def trade_holding(
     price: float
 ):
     """
-    二쇱떇 留ㅼ닔/留ㅻ룄 ?듯빀 泥섎━
-    - action: 'buy' ?먮뒗 'sell'
+    주식 매수/매도 통합 처리
+    - action: 'buy' 또는 'sell'
     """
     resolved_ticker = TickerService.resolve_ticker(ticker)
     
+    holdings = PortfolioService.load_portfolio(user_id)
+    target = next((h for h in holdings if h['ticker'] == resolved_ticker), None)
+    
     try:
         if action.lower() == "buy":
-            holdings = PortfolioService.add_holding(user_id, resolved_ticker, quantity, price)
+            # 매수 (추가)
+            if target:
+                total_qty = target['quantity'] + quantity
+                avg_price = ((target['quantity'] * target['buy_price']) + (quantity * price)) / total_qty
+                target['quantity'] = total_qty
+                target['buy_price'] = avg_price
+            else:
+                holdings.append({
+                    "ticker": resolved_ticker,
+                    "name": resolved_ticker, # 이름 조회 필요하면 추가
+                    "quantity": quantity,
+                    "buy_price": price,
+                    "current_price": price,
+                    "sector": "Unknown"
+                })
+                
         elif action.lower() == "sell":
-            holdings = PortfolioService.sell_holding(user_id, resolved_ticker, quantity, price)
+            # 매도 (차감)
+            if not target:
+                raise ValueError("보유하지 않은 종목입니다.")
+            
+            if target['quantity'] < quantity:
+                raise ValueError("매도 수량이 보유 수량보다 많습니다.")
+                
+            target['quantity'] -= quantity
+            if target['quantity'] <= 0:
+                holdings = [h for h in holdings if h['ticker'] != resolved_ticker]
+                
         else:
             raise HTTPException(status_code=400, detail="Invalid action. Use 'buy' or 'sell'.")
+            
+        PortfolioService.save_portfolio(user_id, holdings)
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
         

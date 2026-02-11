@@ -10,7 +10,7 @@ from services.alert_service import AlertService
 
 class PortfolioService:
     """
-    ?ы듃?대━??愿由??쒕퉬??(Refactored)
+    포트폴리오 관리 서비스 (Refactored)
     """
     _portfolios: Dict[str, List[dict]] = {}
     _data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
@@ -22,16 +22,16 @@ class PortfolioService:
             
     @classmethod
     def upload_portfolio(cls, file_content: bytes, filename: str, user_id: str = "sean") -> List[dict]:
-        """?묒? ?뚯씪 ?낅줈??諛????""
-        # FileService???뚯떛 ?꾩엫
+        """엑셀 파일 업로드 및 저장"""
+        # FileService로 파싱 위임
         holdings = FileService.parse_portfolio_file(file_content, filename)
         
-        # ?곗빱 蹂??泥섎━
+        # 티커 변환 처리
         for h in holdings:
             if not h['ticker'] and h['name']:
                 h['ticker'] = TickerService.resolve_ticker(h['name'])
                 
-        # ?좏슚???곗씠?곕쭔 ?꾪꽣留?
+        # 유효한 데이터만 필터링
         valid_holdings = [h for h in holdings if h['ticker'] and h['quantity'] > 0]
         
         cls.save_portfolio(user_id, valid_holdings)
@@ -60,7 +60,7 @@ class PortfolioService:
 
     @classmethod
     def sync_with_kis(cls, user_id: str = "sean") -> List[dict]:
-        """KIS ?ㅼ젣 ?붽퀬? ?숆린??""
+        """KIS 실제 잔고와 동기화"""
         balance_data = KisService.get_balance()
         if not balance_data:
             return []
@@ -68,7 +68,7 @@ class PortfolioService:
         holdings = []
         for item in balance_data.get('holdings', []):
             ticker = item.get('pdno')
-            if not ticker or not ticker.isdigit(): # 醫낅ぉ踰덊샇媛 ?レ옄媛 ?꾨땲硫?(?⑷퀎 ???? ?쒖쇅
+            if not ticker or not ticker.isdigit(): # 종목번호가 숫자가 아니면 (합계 등) 제외
                 continue
                 
             holdings.append({
@@ -80,15 +80,15 @@ class PortfolioService:
                 "sector": "Others"
             })
             
-        # 珥??덉닔湲????(output2?먯꽌 媛?몄샂)
+        # 총 예수금 저장 (output2에서 가져옴)
         summary_list = balance_data.get('summary', [])
         summary = summary_list[0] if summary_list else {}
-        cash = float(summary.get('dnca_tot_amt', 0)) # 二쇰Ц 媛??湲덉븸
+        cash = float(summary.get('dnca_tot_amt', 0)) # 주문 가능 금액
         
-        # ?ы듃?대━?????(罹먯떆 ?꾨뱶 異붽?)
+        # 포트폴리오 저장 (캐시 필드 추가)
         cls.save_portfolio(user_id, holdings)
         
-        # ?꾧툑 ?뺣낫 蹂꾨룄 ???(媛꾩냼?붾? ?꾪빐 ?뚯씪??吏곸젒 湲곕줉)
+        # 현금 정보 별도 저장 (간소화를 위해 파일에 직접 기록)
         cash_path = os.path.join(cls._data_dir, f'cash_{user_id}.json')
         with open(cash_path, 'w') as f:
             json.dump({"cash": cash, "updated_at": datetime.now().isoformat()}, f)
@@ -105,7 +105,7 @@ class PortfolioService:
 
     @classmethod
     def set_target_weights(cls, user_id: str, weights: Dict[str, float]):
-        """紐⑺몴 鍮꾩쨷 ?ㅼ젙 (?? {"005930": 0.3, "AAPL": 0.2, "Cash": 0.5})"""
+        """목표 비중 설정 (예: {"005930": 0.3, "AAPL": 0.2, "Cash": 0.5})"""
         target_path = os.path.join(cls._data_dir, f'target_{user_id}.json')
         with open(target_path, 'w') as f:
             json.dump(weights, f, ensure_ascii=False, indent=2)
@@ -120,16 +120,16 @@ class PortfolioService:
 
     @classmethod
     def rebalance_portfolio(cls, user_id: str = "sean"):
-        """紐⑺몴 鍮꾩쨷???곕Ⅸ ?먮룞 由щ갭?곗떛 ?ㅽ뻾"""
-        # 1. ?꾩옱 ?곹깭 濡쒕뱶
+        """목표 비중에 따른 자동 리밸런싱 실행"""
+        # 1. 현재 상태 로드
         holdings = cls.sync_with_kis(user_id)
         cash = cls.load_cash(user_id)
         targets = cls.load_target_weights(user_id)
         
         if not targets:
-            return {"status": "error", "msg": "紐⑺몴 鍮꾩쨷???ㅼ젙?섏? ?딆븯?듬땲??"}
+            return {"status": "error", "msg": "목표 비중이 설정되지 않았습니다."}
             
-        # 2. ?꾩옱 珥??먯궛 媛移?怨꾩궛
+        # 2. 현재 총 자산 가치 계산
         total_value = sum(h['current_price'] * h['quantity'] for h in holdings) + cash
         
         signals = []
@@ -142,7 +142,7 @@ class PortfolioService:
             
             diff_value = target_value - current_value
             
-            # 理쒖냼 嫄곕옒 湲덉븸 ?ㅼ젙 (?? 10,000???댁긽 李⑥씠 ???뚮쭔)
+            # 최소 거래 금액 설정 (예: 10,000원 이상 차이 날 때만)
             if abs(diff_value) > 10000:
                 price = current_holding['current_price'] if current_holding else DataService.get_current_price(ticker)
                 if not price: continue
@@ -158,28 +158,28 @@ class PortfolioService:
                         "diff_value": diff_value
                     })
 
-        # 3. ?좊낫 ?꾩넚 諛??뚮┝
+        # 3. 신호 전송 및 알림
         if not signals:
-            return {"status": "success", "msg": "由щ갭?곗떛???꾩슂?섏? ?딆뒿?덈떎."}
+            return {"status": "success", "msg": "리밸런싱이 필요하지 않습니다."}
             
         for s in signals:
-            side_kr = "留ㅼ닔" if s['side'] == "buy" else "留ㅻ룄"
-            msg = f"?뽳툘 **[由щ갭?곗떛 ?쒓렇?? {s['ticker']}**\n- ?묒뾽: {side_kr}\n- ?섎웾: {s['quantity']}二?n- ?ъ쑀: 鍮꾩쨷 議곗젅 (李⑥븸: {s['diff_value']:,.0f}??"
+            side_kr = "매수" if s['side'] == "buy" else "매도"
+            msg = f"🔔 **[리밸런싱 시그널] {s['ticker']}**\n- 작업: {side_kr}\n- 수량: {s['quantity']}주\n- 사유: 비중 조절 (차액: {s['diff_value']:,.0f}원)"
             AlertService.send_slack_alert(msg)
-            # KisService.send_order(...) # ?ㅼ젣 二쇰Ц? ?ъ슜???뺤씤 ???섑뻾?섍굅???먮룞??媛??
+            # KisService.send_order(...) # 실제 주문은 사용자 확인 후 수행하거나 자동으로 가능
             
         return {"status": "success", "signals": signals}
 
     @classmethod
     def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
-        """?ы듃?대━???섏씡瑜?遺꾩꽍"""
+        """포트폴리오 수익률 분석"""
         holdings = cls.load_portfolio(user_id)
         results = []
         total_invested = 0
         total_current = 0
         
-        # ?꾧툑 鍮꾩쨷 (portfolio_{user_id}.json ??'cash' ?꾨뱶媛 ?덈떎怨?媛?뺥븯嫄곕굹 0?쇰줈 ?쒖옉)
-        # TODO: ?ㅼ젣 ?꾧툑 愿由?濡쒖쭅 異붽? ?꾩슂
+        # 현금 비중 (portfolio_{user_id}.json 에 'cash' 필드가 있다고 가정하거나 0으로 시작)
+        # TODO: 실제 현금 관리 로직 추가 필요
         cash = 0 
         
         for h in holdings:
@@ -187,8 +187,8 @@ class PortfolioService:
             qty = h['quantity']
             buy_price = h['buy_price']
             
-            # ?꾩옱媛 議고쉶 (罹먯떆 ?곗꽑)
-            curr = h.get('current_price') # ?묒?媛?
+            # 현재가 조회 (캐시 우선)
+            curr = h.get('current_price') # 잔고값
             if not curr:
                 if ticker and ticker in price_cache:
                     curr = price_cache[ticker].get('price')
@@ -225,27 +225,27 @@ class PortfolioService:
             }
         }
         
-        # 諛몃윴??遺꾩꽍 異붽?
+        # 밸런스 분석 추가
         analysis['balances'] = cls.calculate_balances(results, cash)
         
         return analysis
 
     @classmethod
     def calculate_balances(cls, holdings: List[dict], cash: float) -> dict:
-        """留덉폆 諛??뱁꽣蹂?鍮꾩쨷 怨꾩궛"""
+        """마켓 및 섹터별 비중 계산"""
         total_value = sum(h['current_price'] * h['quantity'] for h in holdings) + cash
         if total_value == 0:
             return {}
 
-        # 1. 留덉폆 蹂?諛몃윴??(KR/US/Cash)
+        # 1. 마켓 별 밸런스 (KR/US/Cash)
         market_vals = {'KR': 0, 'US': 0, 'Cash': cash}
         for h in holdings:
             market_vals[h['market']] += h['current_price'] * h['quantity']
             
         market_balance = {k: round((v / total_value) * 100, 2) for k, v in market_vals.items()}
 
-        # 2. ?뱁꽣 蹂?諛몃윴??(Tech/Semiconductor/Value)
-        # 'sector' ?뺣낫媛 ?놁쑝硫?'Others'濡?遺꾨쪟
+        # 2. 섹터 별 밸런스 (Tech/Semiconductor/Value)
+        # 'sector' 정보가 없으면 'Others'로 분류
         sector_vals = {'Technology': 0, 'Semiconductor': 0, 'Value': 0, 'Others': 0}
         ticker_total_val = total_value - cash
         

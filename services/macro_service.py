@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-from stock_advisor.config import Config
+from config import Config
 
 class MacroService:
     """

@@ -1,13 +1,13 @@
 class ReportService:
     """
-    Slack 硫붿떆吏 諛?由ы룷???띿뒪???앹꽦 ?꾨떞 ?쒕퉬??
-    (?곗씠?곕? 諛쏆븘???덉걶 臾몄옄?대줈 蹂??
+    Slack 메시지 및 리포트 텍스트 생성 전담 서비스
+    (데이터를 받아서 예쁜 문자열로 변환)
     """
 
     @staticmethod
     def format_comprehensive_report(data: dict) -> str:
-        """醫낇빀 遺꾩꽍 ?곗씠?곕? Slack 硫붿떆吏???띿뒪?몃줈 蹂??""
-        if "error" in data: return f"??遺꾩꽍 ?ㅽ뙣: {data['error']}"
+        """종합 분석 데이터를 Slack 메시지 텍스트로 변환"""
+        if "error" in data: return f"❌ 분석 실패: {data['error']}"
         
         p = data.get('price_info', {})
         f = data.get('fundamental', {})
@@ -15,85 +15,85 @@ class ReportService:
         port = data.get('portfolio', {})
         m = data.get('macro_context', {})
         
-        msg = f"?뵇 **[{data.get('name')} ({data.get('ticker')})] 醫낇빀 遺꾩꽍 由ы룷??*\n\n"
+        msg = f"📊 **[{data.get('name')} ({data.get('ticker')})] 종합 분석 리포트**\n\n"
         
-        # 1. 媛寃?諛??ы듃?대━??
-        change_icon = "??" if p.get('change_pct', 0) > 0 else "?뱣"
-        msg += f"?뮥 **?꾩옱媛**: ${p.get('current')} ({p.get('change_pct', 0):+.2f}%) {change_icon}\n"
+        # 1. 가격 및 포트폴리오
+        change_icon = "📈" if p.get('change_pct', 0) > 0 else "📉"
+        msg += f"💰 **현재가**: ${p.get('current')} ({p.get('change_pct', 0):+.2f}%) {change_icon}\n"
         if port.get('owned'):
-            msg += f"?몳 **?섏쓽 ?됰떒**: ${port.get('avg_cost')} (?꾩옱 ?섏씡瑜? {port.get('return_pct', 0):+.2f}%)\n"
+            msg += f"💼 **나의 평단**: ${port.get('avg_cost')} (현재 수익률 {port.get('return_pct', 0):+.2f}%)\n"
         msg += "\n"
         
-        # 2. 媛移??됯?
-        msg += "?뭿 **?댁옱 媛移?遺꾩꽍**\n"
+        # 2. 가치 평가
+        msg += "💎 **내재 가치 분석**\n"
         dcf_fair = f.get('dcf_fair', 'N/A')
         upside = f.get('upside_dcf', 0)
-        msg += f"??DCF ?곸젙媛: **${dcf_fair}** (?곸듅?щ젰 {upside:+.1f}%)\n"
+        msg += f"🔸 DCF 적정가: **${dcf_fair}** (상승여력 {upside:+.1f}%)\n"
         
         target = f.get('analyst_target')
         if target:
             t_upside = f.get('upside_analyst', 0)
-            msg += f"??湲곌? 紐⑺몴媛: **${target}** (?곸듅?щ젰 {t_upside:+.1f}%)\n\n"
+            msg += f"🔸 기관 목표가: **${target}** (상승여력 {t_upside:+.1f}%)\n\n"
         
-        # 3. 湲곗닠??吏??
+        # 3. 기술적 지표
         rsi = t.get('rsi', 50)
-        rsi_status = "?뵶 怨쇰ℓ?? if rsi > 70 else ("?윟 怨쇰ℓ?? if rsi < 30 else "??以묐┰")
-        msg += f"?뱢 **湲곗닠??吏??*\n"
-        msg += f"??RSI: {rsi} ({rsi_status})\n"
+        rsi_status = "🔥 과매수" if rsi > 70 else ("🥶 과매도" if rsi < 30 else "⚖️ 중립")
+        msg += f"🛠 **기술적 지표**\n"
+        msg += f"🔸 RSI: {rsi} ({rsi_status})\n"
         
         emas = t.get('emas', {})
         current = p.get('current', 0)
         ema200 = emas.get('ema200')
         if ema200:
             dist = round((current - ema200)/ema200*100, 1)
-            msg += f"??EMA200 ?鍮? {dist:+.1f}% ({'?뺣같?? if current > ema200 else '??같??})\n\n"
+            msg += f"🔸 EMA200 대비: {dist:+.1f}% ({'정배열' if current > ema200 else '역배열'})\n\n"
         
-        # 4. 嫄곗떆 ?섍꼍
+        # 4. 거시 환경
         if m:
-            msg += f"?뙇 **嫄곗떆 ?섍꼍**: {m.get('regime')} Market (VIX: {m.get('vix')})\n\n"
+            msg += f"🌍 **거시 환경**: {m.get('regime')} Market (VIX: {m.get('vix')})\n\n"
         
-        # 5. ?댁뒪
+        # 5. 뉴스
         if 'news_summary' in data:
             msg += data['news_summary']
         
-        # 6. 寃곕줎
-        conclusion = "?먮떒 ?좊낫"
+        # 6. 결론
+        conclusion = "판단 유보"
         if isinstance(upside, (int, float)) and upside > 20 and rsi < 40: 
-            conclusion = "?뵦 **媛뺣젰 留ㅼ닔 李ъ뒪 (??됯?+怨쇰ℓ??**"
+            conclusion = "🚀 **강력 매수 찬스 (저평가+과매도)**"
         elif isinstance(upside, (int, float)) and upside > 10: 
-            conclusion = "??**留ㅼ닔 怨좊젮 (??됯?)**"
+            conclusion = "✅ **매수 고려 (저평가)**"
         elif rsi > 75: 
-            conclusion = "?좑툘 **留ㅻ룄/?듭젅 怨좊젮 (?④린 怨쇱뿴)**"
+            conclusion = "⚠️ **매도/익절 고려 (단기 과열)**"
         else: 
-            conclusion = "?? **蹂댁쑀 諛?愿留?*"
+            conclusion = "👀 **보유 및 관망**"
         
-        msg += f"\n?뮕 **AI 寃곕줎**: {conclusion}"
+        msg += f"\n💡 **AI 결론**: {conclusion}"
         
         return msg
 
     @staticmethod
     def format_hourly_gainers(gainers: list, macro: dict) -> str:
-        """?쒓컙蹂??곸듅 醫낅ぉ 由ы룷???щ㎎??""
-        msg = f"?뙇 **?쒖옣 ?곹솴 ?붿빟**\n"
+        """시간별 급등 종목 리포트 포맷팅"""
+        msg = f"🌍 **시장 현황 요약**\n"
         if macro:
             regime = macro.get('market_regime', {})
-            msg += f"??**?곹깭**: {regime.get('status')} ({regime.get('diff_pct', 0):+.1f}% above MA200)\n"
-            msg += f"??**湲덈━**: {macro.get('us_10y_yield')}%\n"
-            msg += f"??**VIX**: {macro.get('vix')}\n"
+            msg += f"🔸 **상태**: {regime.get('status')} ({regime.get('diff_pct', 0):+.1f}% above MA200)\n"
+            msg += f"🔸 **금리**: {macro.get('us_10y_yield')}%\n"
+            msg += f"🔸 **VIX**: {macro.get('vix')}\n"
             
             btc = macro.get('crypto', {}).get('BTC')
             if btc:
-                msg += f"??**BTC**: ${btc['price']:,.0f} ({btc['change']:+.2f}%)\n"
+                msg += f"🔸 **BTC**: ${btc['price']:,.0f} ({btc['change']:+.2f}%)\n"
             
             commodities = macro.get('commodities', {})
             gold = commodities.get('Gold')
             oil = commodities.get('Oil')
             if gold and oil:
-                msg += f"??**Gold**: ${gold['price']:,.1f} ({gold['change']:+.2f}%) | **Oil**: ${oil['price']:,.2f} ({oil['change']:+.2f}%)\n"
+                msg += f"🔸 **Gold**: ${gold['price']:,.1f} ({gold['change']:+.2f}%) | **Oil**: ${oil['price']:,.2f} ({oil['change']:+.2f}%)\n"
         
-        msg += "\n?뙔 **?꾨텋 ?ㅽ????곸듅 由ы룷??(?꾩껜)**\n"
+        msg += "\n🚀 **전분 시그널 급등 리포트 (전체)**\n"
         for g in gainers: 
-            state_icon = "?뙌" if g['market'] == "Pre-market" else "??"
+            state_icon = "🌙" if g['market'] == "Pre-market" else "☀️"
             msg += f"{state_icon} **{g['name']} ({g['ticker']})**: +{g['change']:.2f}% (${g['price']:.2f})\n"
             
         return msg

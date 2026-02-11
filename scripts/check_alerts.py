@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime
 
 # Load Portfolio
-portfolio_path = 'stock_advisor/data/portfolio_sean.json'
+portfolio_path = 'data/portfolio_sean.json'
 with open(portfolio_path, 'r', encoding='utf-8') as f:
     holdings = json.load(f)
 

@@ -14,19 +14,19 @@ class TickerState:
     open_price: float = 0.0
     high_price: float = 0.0
     low_price: float = 0.0
-    prev_close: float = 0.0  # ?꾩씪 醫낃?
+    prev_close: float = 0.0  # 전일 종가
     volume: int = 0
-    change_rate: float = 0.0 # ?깅씫瑜?(%)
+    change_rate: float = 0.0 # 등락률 (%)
     
-    # 吏?쒕뱾
+    # 지표들
     ema: Dict[int, float] = None # {5: 1000, 20: 950, ...}
     rsi: float = 0.0             # RSI (14)
     bollinger: Dict[str, float] = None # {upper, middle, lower}
-    dcf_value: float = 0.0       # ?곸젙二쇨? (DCF)
+    dcf_value: float = 0.0       # 적정주가 (DCF)
     
-    # ?곗씠??踰꾪띁 (理쒓렐 N媛쒖쓽 醫낃?, ?ㅼ떆媛?EMA 怨꾩궛??
-    # ?ㅼ젣濡쒕뒗 ?쇰큺 ?곗씠??濡쒕뵫 ?? ?ㅼ떆媛?媛寃⑹씠 蹂????'?ㅻ뒛??醫낃?(?꾩옱媛)'濡?媛?뺥븯怨?EMA瑜??ш퀎?고븯??諛⑹떇???쇰컲??
-    # ?먮뒗 遺꾨큺 湲곗??대씪硫?遺꾨큺 ?꾩꽦 ?쒖젏???뺤젙. ?ш린?쒕뒗 '?쇰큺 湲곗? ?ㅼ떆媛?EMA'瑜?異붿젙?쒕떎怨?媛??
+    # 데이터 버퍼 (최근 N개의 종가, 실시간 EMA 계산용)
+    # 실제로는 일봉 데이터 로딩 후, 실시간 가격이 변할 때 '오늘의 종가(현재가)'로 가정하고 EMA를 재계산하는 방식이 일반적
+    # 또는 분봉 기준이라면 분봉 완성 시점에 확정. 여기서는 '일봉 기준 실시간 EMA'를 추정한다고 가정.
     
     def __post_init__(self):
         if self.ema is None:
@@ -36,48 +36,48 @@ class TickerState:
 
     def update_from_socket(self, data_dict: dict):
         """
-        WebSocket ?섏떊 ?곗씠?곕줈 ?곹깭 ?낅뜲?댄듃
-        data_dict: KIS Websocket H0STCNT0 ?щ㎎ ?뚯떛 寃곌낵
+        WebSocket 수신 데이터로 상태 업데이트
+        data_dict: KIS Websocket H0STCNT0 포맷 파싱 결과
         """
         try:
-            # KIS ?ㅼ떆媛?泥닿껐媛 ?곗씠??留ㅽ븨
-            # H0STCNT0: ?좉?利앷텒 ?⑥텞 醫낅ぉ肄붾뱶(0), ?곸뾽?쒓컙(1), ?꾩옱媛(2), ?꾩씪?鍮꾧뎄遺?3), ?꾩씪?鍮?4), ?꾩씪?鍮꾩쑉(5)... ?쒓?(7), 怨좉?(8), ?媛(9)...
+            # KIS 실시간 체결가 데이터 매핑
+            # H0STCNT0: 유가증권 단축 종목코드(0), 영업시간(1), 현재가(2), 전일대비구분(3), 전일대비(4), 전일대비율(5)... 시가(7), 고가(8), 저가(9)...
             
-            # ?뚯떛 濡쒖쭅? ?몃??먯꽌 泥섎━?댁꽌 源붾걫??dict濡??섍꺼二쇰뒗 寃?醫뗭쓬
-            # ?? {'price': 70000, 'rate': 1.5, 'open': 69000, ...}
+            # 파싱 로직은 외부에서 처리해서 깔끔한 dict로 넘겨주는 게 좋음
+            # 예: {'price': 70000, 'rate': 1.5, 'open': 69000, ...}
             
-            new_price = float(data_dict.get('mksc_shrn_iscd', 0)) # ?ㅼ떆媛?泥닿껐媛??2踰덉㎏媛 ?꾨땲???뚯떛??dict ???ъ슜
-            # 二쇱쓽: WebSocket raw data ?뚯떛? Service ?덈꺼?먯꽌 ?섑뻾?섍퀬 ?ш린??媛믩쭔 ?꾨떖
+            new_price = float(data_dict.get('mksc_shrn_iscd', 0)) # 실시간 체결가는 2번째가 아니라 파싱된 dict 키 사용
+            # 주의: WebSocket raw data 파싱은 Service 레벨에서 수행하고 여기엔 값만 전달
             
-            self.current_price = float(data_dict.get('stck_prpr', self.current_price)) # ?꾩옱媛
-            self.open_price = float(data_dict.get('stck_oprc', self.open_price))       # ?쒓?
-            self.high_price = float(data_dict.get('stck_hgpr', self.high_price))       # 怨좉?
-            self.low_price = float(data_dict.get('stck_lwpr', self.low_price))         # ?媛
+            self.current_price = float(data_dict.get('stck_prpr', self.current_price)) # 현재가
+            self.open_price = float(data_dict.get('stck_oprc', self.open_price))       # 시가
+            self.high_price = float(data_dict.get('stck_hgpr', self.high_price))       # 고가
+            self.low_price = float(data_dict.get('stck_lwpr', self.low_price))         # 저가
             
-            # ?꾩씪 ?鍮꾩쑉
+            # 전일 대비율
             self.change_rate = float(data_dict.get('rt_cd', 0.0)) 
             
-            # 嫄곕옒??(?꾩쟻 嫄곕옒??
+            # 거래량 (누적 거래량)
             self.volume = int(data_dict.get('acml_vol', self.volume))
             
-            # ?꾩씪 醫낃???蹂댄넻 蹂꾨룄 議고쉶 ?꾩슂 (?ㅼ떆媛??곗씠?곗뿉???ы븿?????덉쑝??怨꾩궛?⑹쑝濡?誘몃━ ?명똿 沅뚯옣)
+            # 전일 종가는 보통 별도 조회 필요 (실시간 데이터에도 포함될 수 있으나 계산용으로 미리 세팅 권장)
             
-            # 吏???ㅼ떆媛??낅뜲?댄듃
+            # 지표 실시간 업데이트
             self.recalculate_indicators()
             
         except Exception as e:
             logger.error(f"Error updating ticker state: {e}")
 
     def recalculate_indicators(self):
-        """?꾩옱媛瑜?湲곗??쇰줈 ?ㅼ떆媛?吏??EMA ?? ?ш퀎??""
+        """현재가를 기준으로 실시간 지표(EMA 등) 재계산"""
         if not self.ema or self.current_price <= 0:
             return
             
-        # ?쇰큺 湲곗? ?ㅼ떆媛?EMA 異붿젙
+        # 일봉 기준 실시간 EMA 추정
         # EMA_today = (Price_today * alpha) + (EMA_yesterday * (1 - alpha))
         for n, prev_ema_val in list(self.ema.items()):
             try:
-                # ?ㅺ? ?뺤닔??寃쎌슦?먮쭔 ?섑뻾 (?? 5, 20, 100...)
+                # 키가 정수인 경우만 수행 (예: 5, 20, 100...)
                 period = int(n)
                 alpha = 2 / (period + 1)
                 self.ema[period] = round((self.current_price * alpha) + (prev_ema_val * (1 - alpha)), 2)
@@ -85,9 +85,9 @@ class TickerState:
                 continue
             
     def update_indicators(self, emas: Dict[int, float], dcf: float = None, rsi: float = None):
-        """?몃??먯꽌 怨꾩궛??吏??二쇱엯 (Warm-up ?먮뒗 ?뺢린 媛깆떊??"""
+        """외부에서 계산된 지표 주입 (Warm-up 또는 정기 갱신)"""
         if emas:
-            # 紐⑤뱺 ?ㅻ? ?뺤닔濡?蹂?섑븯?????
+            # 모든 키를 정수로 변환하여 저장
             processed_emas = {}
             for k, v in emas.items():
                 try:
@@ -102,5 +102,5 @@ class TickerState:
 
     @property
     def is_undervalued(self) -> bool:
-        """DCF ?鍮???됯? ?щ?"""
+        """DCF 대비 저평가 여부"""
         return self.current_price < self.dcf_value if self.dcf_value > 0 else False
