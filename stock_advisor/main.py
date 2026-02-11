@@ -3,16 +3,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from stock_advisor.services.scheduler_service import SchedulerService
-from stock_advisor.routers import analysis, market, alerts, portfolio, reports
+from stock_advisor.services.kis_ws_service import kis_ws_service
+from stock_advisor.routers import analysis, market, alerts, portfolio, reports, trading
 import os
-
+import asyncio
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 앱 시작 시 스케줄러 실행
     SchedulerService.start()
+    
+    # 웹소켓 서비스 시작 (백그라운드 태스크로 실행)
+    # run_in_executor 등을 사용하거나 create_task 사용
+    task = asyncio.create_task(kis_ws_service.connect())
+    
     yield
-    # 앱 종료 시 정리
+    
+    # 앱 종료 시 정리 (필요시)
+    # await kis_ws_service.close() 
+    task.cancel() # 태스크 취소
 
 app = FastAPI(
     title="Sean's Stock Advisor", 
@@ -40,9 +49,8 @@ app.include_router(market.router)
 app.include_router(alerts.router)
 app.include_router(portfolio.router)
 app.include_router(reports.router)
+app.include_router(trading.router)
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
