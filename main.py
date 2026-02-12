@@ -2,13 +2,13 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
-from services.scheduler_service import SchedulerService
-from services.kis_ws_service import kis_ws_service
+from services.base.scheduler_service import SchedulerService
+from services.kis.kis_ws_service import kis_ws_service
 from routers import analysis, market, alerts, portfolio, reports, trading
 import os
 import asyncio
-from services.trading_strategy_service import TradingStrategyService # 추가
-from services.alert_service import AlertService
+from services.strategy.trading_strategy_service import TradingStrategyService # 추가
+from services.notification.alert_service import AlertService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Sean's Stock Advisor", 
-    description="FinanceDataReader + yfinance 기반 주식 분석 및 알림 API",
+    description="한국투자증권(KIS) API 및 WebSocket 기반 주식 분석 및 알림 API",
     version="2.0.0",
     lifespan=lifespan
 )

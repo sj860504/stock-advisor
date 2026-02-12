@@ -39,3 +39,16 @@ class NewsItem(BaseModel):
     link: str
     source: str
     published_at: Optional[str] = None
+
+class HoldingSchema(BaseModel):
+    ticker: str
+    name: Optional[str] = None
+    quantity: int
+    buy_price: float
+    current_price: Optional[float] = None
+    sector: Optional[str] = None
+
+class PortfolioSchema(BaseModel):
+    user_id: str
+    cash_balance: float
+    holdings: List[HoldingSchema]

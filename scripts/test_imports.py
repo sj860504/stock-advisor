@@ -5,9 +5,9 @@ import os
 sys.path.append(os.getcwd())
 
 try:
-    from services.portfolio_service import PortfolioService
-    from services.ticker_service import TickerService
-    from services.data_service import DataService
+    from services.trading.portfolio_service import PortfolioService
+    from services.market.ticker_service import TickerService
+    from services.market.data_service import DataService
     print("Imports successful")
 except Exception as e:
     print(f"Import failed: {e}")

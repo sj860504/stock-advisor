@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from services.scheduler_service import SchedulerService
-from services.alert_service import AlertService
+from services.base.scheduler_service import SchedulerService
+from services.notification.alert_service import AlertService
 
 router = APIRouter(
     prefix="/summary",

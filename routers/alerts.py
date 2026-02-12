@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from services.alert_service import AlertService
-from services.ticker_service import TickerService
+from services.notification.alert_service import AlertService
+from services.market.ticker_service import TickerService
 from models.schemas import PriceAlert
 
 router = APIRouter(

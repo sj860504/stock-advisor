@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from typing import Optional
-from services.portfolio_service import PortfolioService
-from services.ticker_service import TickerService
-from services.scheduler_service import SchedulerService
+from services.trading.portfolio_service import PortfolioService
+from services.market.ticker_service import TickerService
+from services.base.scheduler_service import SchedulerService
 
 router = APIRouter(
     prefix="/portfolio",

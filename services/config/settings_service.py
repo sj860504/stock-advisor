@@ -1,0 +1,101 @@
+from models.settings import Settings
+from services.market.stock_meta_service import StockMetaService
+from config import Config
+from utils.logger import get_logger
+
+logger = get_logger("settings_service")
+
+class SettingsService:
+    """
+    시스템 설정 관리 서비스
+    """
+    
+    # 기본 설정값 정의 (Config에서 가져옴)
+    DEFAULT_SETTINGS = {
+        "STRATEGY_TARGET_CASH_RATIO": (str(Config.STRATEGY_TARGET_CASH_RATIO), "목표 현금 비중 (0.0 ~ 1.0)"),
+        "STRATEGY_PER_TRADE_RATIO": (str(Config.STRATEGY_PER_TRADE_RATIO), "1회 매매 비중 (자산 대비)"),
+        "STRATEGY_BASE_SCORE": (str(Config.STRATEGY_BASE_SCORE), "기본 점수"),
+        "STRATEGY_BUY_THRESHOLD": (str(Config.STRATEGY_BUY_THRESHOLD), "매수 점수 임계값"),
+        "STRATEGY_SELL_THRESHOLD": (str(Config.STRATEGY_SELL_THRESHOLD), "매도 점수 임계값"),
+        "STRATEGY_SPLIT_COUNT": (str(Config.STRATEGY_SPLIT_COUNT), "분할 매매 횟수"),
+        "STRATEGY_STOP_LOSS_PCT": (str(Config.STRATEGY_STOP_LOSS_PCT), "손절 기준 수익률 (%)"),
+        "STRATEGY_TAKE_PROFIT_PCT": (str(Config.STRATEGY_TAKE_PROFIT_PCT), "익절 기준 수익률 (%)"),
+        "STRATEGY_DIP_BUY_PCT": (str(Config.STRATEGY_DIP_BUY_PCT), "급락 매수 기준 (%)"),
+        "STRATEGY_OVERSOLD_RSI": (str(Config.STRATEGY_OVERSOLD_RSI), "과매도 RSI 기준"),
+        "STRATEGY_OVERBOUGHT_RSI": (str(Config.STRATEGY_OVERBOUGHT_RSI), "과매수 RSI 기준"),
+    }
+
+    @classmethod
+    def init_defaults(cls):
+        """기본 설정값이 DB에 없으면 초기화"""
+        session = StockMetaService.get_session()
+        try:
+            for key, (default_val, desc) in cls.DEFAULT_SETTINGS.items():
+                setting = session.query(Settings).filter_by(key=key).first()
+                if not setting:
+                    setting = Settings(key=key, value=default_val, description=desc)
+                    session.add(setting)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"❌ Error initializing default settings: {e}")
+
+    @classmethod
+    def get_setting(cls, key: str, default=None):
+        """설정값 조회 (캐싱 없이 DB 조회)"""
+        session = StockMetaService.get_session()
+        setting = session.query(Settings).filter_by(key=key).first()
+        if setting:
+            return setting.value
+        
+        # DB에 없으면 기본값(Config) 확인
+        if key in cls.DEFAULT_SETTINGS:
+            return cls.DEFAULT_SETTINGS[key][0]
+            
+        return default
+
+    @classmethod
+    def get_float(cls, key: str, default: float = 0.0) -> float:
+        try:
+            val = cls.get_setting(key)
+            return float(val) if val is not None else default
+        except:
+            return default
+
+    @classmethod
+    def get_int(cls, key: str, default: int = 0) -> int:
+        try:
+            val = cls.get_setting(key)
+            return int(float(val)) if val is not None else default
+        except:
+            return default
+
+    @classmethod
+    def set_setting(cls, key: str, value: str):
+        """설정값 변경"""
+        session = StockMetaService.get_session()
+        try:
+            setting = session.query(Settings).filter_by(key=key).first()
+            if setting:
+                setting.value = str(value)
+            else:
+                desc = cls.DEFAULT_SETTINGS.get(key, ("", ""))[1]
+                setting = Settings(key=key, value=str(value), description=desc)
+                session.add(setting)
+            session.commit()
+            logger.info(f"⚙️ Setting updated: {key} = {value}")
+            return setting
+        except Exception as e:
+            session.rollback()
+            logger.error(f"❌ Error setting value for {key}: {e}")
+            return None
+
+    @classmethod
+    def get_all_settings(cls):
+        """전체 설정 조회"""
+        # 먼저 초기화 보장
+        cls.init_defaults()
+        
+        session = StockMetaService.get_session()
+        settings = session.query(Settings).all()
+        return {s.key: {"value": s.value, "description": s.description} for s in settings}

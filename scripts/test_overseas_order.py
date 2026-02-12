@@ -1,4 +1,4 @@
-from services.kis_service import KisService
+from services.kis.kis_service import KisService
 
 def test_buy_tesla():
     print("\n?슅 Testing Buy Order (Tesla - TSLA 1 share @ $380)...")

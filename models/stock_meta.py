@@ -53,6 +53,16 @@ class Financials(Base):
     current_price = Column(Float)
     market_cap = Column(Float)
     
+    # 추가 지표 (기술적/기본적)
+    rsi = Column(Float)
+    ema5 = Column(Float)
+    ema10 = Column(Float)
+    ema20 = Column(Float)
+    ema60 = Column(Float)
+    ema120 = Column(Float)
+    ema200 = Column(Float)
+    dcf_value = Column(Float)
+    
     updated_at = Column(DateTime, default=datetime.now)
     
     stock_meta = relationship("StockMeta", back_populates="financials")

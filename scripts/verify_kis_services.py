@@ -7,10 +7,10 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
 from config import Config
-from services.kis_service import KisService
-from services.financial_service import FinancialService
-from services.dcf_service import DcfService
-from services.analyzer.financial_analyzer import FinancialAnalyzer
+from services.kis.kis_service import KisService
+from services.analysis.financial_service import FinancialService
+from services.analysis.dcf_service import DcfService
+from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 
 # --- 검증용 하드코딩 토큰 (필요 시 여기에 직접 입력하여 403 방지 가능) ---
 HARDCODED_TOKEN = "" 

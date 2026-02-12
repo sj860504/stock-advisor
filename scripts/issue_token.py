@@ -5,7 +5,7 @@ import sys
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-from services.kis_service import KisService
+from services.kis.kis_service import KisService
 
 def issue_and_print_token():
     print("🔑 KIS 엑세스 토큰 발급 중...")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from typing import List
-from services.scheduler_service import SchedulerService
-from services.news_service import NewsService
+from services.base.scheduler_service import SchedulerService
+from services.market.news_service import NewsService
 from models.schemas import NewsItem
 
 router = APIRouter(
@@ -34,7 +34,7 @@ def get_news(ticker_input: str):
     """
     # Note: ticker_input resolving is needed. It's better to import resolve_ticker_or_404 if shared, or reimplement.
     # For simplicity, using TickerService directly here as resolve logic is simple.
-    from services.ticker_service import TickerService
+    from services.market.ticker_service import TickerService
     real_ticker = TickerService.resolve_ticker(ticker_input)
     if not real_ticker:
         return [] # Or raise 404

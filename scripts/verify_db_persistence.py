@@ -6,9 +6,9 @@ from datetime import datetime
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-from services.stock_meta_service import StockMetaService
-from services.financial_service import FinancialService
-from services.data_service import DataService
+from services.market.stock_meta_service import StockMetaService
+from services.analysis.financial_service import FinancialService
+from services.market.data_service import DataService
 
 def verify_db_integration():
     print("=== 데이터베이스 연동 및 영속화 검증 시작 ===")

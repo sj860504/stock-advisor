@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
-from services.analysis_service import AnalysisService
-from services.financial_service import FinancialService
-from services.ticker_service import TickerService
+from services.analysis.analysis_service import AnalysisService
+from services.analysis.financial_service import FinancialService
+from services.market.ticker_service import TickerService
 from models.schemas import ValuationResult, ReturnAnalysis
 
 router = APIRouter(
@@ -75,7 +75,7 @@ def get_custom_dcf(
     calc_growth = growth_rate if growth_rate is not None else metrics.get('growth_5y', 0.10)
     calc_beta = metrics.get('beta', 1.0)
     
-    from services.dcf_service import DcfService
+    from services.analysis.dcf_service import DcfService
     result = DcfService.calculate_fair_value(
         fcf_per_share=fcf_per_share,
         growth_rate=calc_growth,

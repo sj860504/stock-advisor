@@ -1,4 +1,4 @@
-from services.kis_service import KisService
+from services.kis.kis_service import KisService
 import time
 
 def test_connection():

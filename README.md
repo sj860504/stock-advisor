@@ -1,80 +1,52 @@
 # Stock Advisor API
 
-?ㅼ떆媛?二쇱떇 遺꾩꽍, 媛移섑룊媛 諛??ы듃?대━??愿由?API (FastAPI + FinanceDataReader + yfinance)
+한국투자증권(KIS) API 및 WebSocket 기반 주식 분석 및 알림 API (FastAPI + FinanceDataReader + KIS)
 
-## 二쇱슂 湲곕뒫
+## 주요 기능
 
-### ?뱤 ?ㅼ떆媛?紐⑤땲?곕쭅
-- 誘멸뎅 ?쒖킑 Top 20 醫낅ぉ ?먮룞 ?섏쭛 (1遺?二쇨린)
-- DCF ?곸젙二쇨? 怨꾩궛 (30遺?二쇨린)
-- 湲곗닠??吏?? RSI, EMA(5, 10, 20, 60, 100, 200)
-- 二쇱슂 吏??肄붿뒪?? ?섏뒪???? ?꾪솴 議고쉶
+### 📡 실시간 모니터링
+- KIS WebSocket(kis_ws)을 통한 실시간 시세 수신
+- KIS API를 통한 해외/국내 상위 종목 자동 수집
+- 기술적 지표 계산: RSI, EMA(5, 10, 20, 60, 100, 200)
+- 주요 지수(S&P 500, KOSPI 등) 실시간 현황 조회
 
-### ?뮥 媛移섑룊媛 諛?遺꾩꽍
-- **DCF (?꾧툑?먮쫫 ?좎씤踰?**: yfinance FCF ?곗씠??湲곕컲 ?곸젙二쇨? ?곗텧
-- **?좊ː??寃利?*: DCF ?鍮??꾩옱媛 愿대━??遺꾩꽍
-- **?섏씡瑜?遺꾩꽍**: YTD ?섏씡瑜?諛?MDD(理쒕? ?숉룺) 怨꾩궛
-- **?щТ吏??*: PER, PBR, ROE ??二쇱슂 吏???쒓났
+### 📊 가치평가 및 분석
+- **DCF (현금흐름할인법)**: KIS API 재무 데이터를 기반으로 적정주가 산출
+- **기술적 분석**: RSI 및 이평선 기반 매매 신호 포착
+- **수익률 분석**: YTD 수익률 및 MDD(최대 낙폭) 계산
+- **재무지표**: PER, PBR, ROE 등 주요 지표 제공
 
-### ?뱚 ?ы듃?대━??愿由?
-- **?묒? ?낅줈??*: 蹂댁쑀 醫낅ぉ ?쇨큵 ?깅줉 (?곗빱, ?섎웾, 留ㅼ닔媛)
-- **?섏씡瑜?遺꾩꽍**: ?ы듃?대━???꾩껜 諛?醫낅ぉ蹂??섏씡瑜??꾪솴
-- **醫낅ぉ 愿由?*: 媛쒕퀎 醫낅ぉ 異붽?/??젣
+### 💼 포트폴리오 관리
+- **엑셀 업로드**: 보유 종목 일괄 등록 (티커, 수량, 매수가)
+- **수익률 추적**: 포트폴리오 전체 및 종목별 수익률 현황
+- **종목 관리**: 개별 종목 추가/삭제
 
-### ?뵒 留ㅻℓ ?좏샇 諛??뚮┝
-- 怨쇰ℓ???뚮┝ (RSI < 30)
-- 怨쇰ℓ???뚮┝ (RSI > 70)
-- DCF ??됯? ?뚮┝ (?꾩옱媛 < DCF * 0.8)
-- EMA200 吏吏???곗튂 ?뚮┝
+### 🚨 매매 신호 및 알림
+- 과매도 알림 (RSI < 30)
+- 과매수 알림 (RSI > 70)
+- DCF 저평가 알림 (현재가 < DCF * 0.8)
+- EMA200 지지선 터치 알림
 
-## API ?붾뱶?ъ씤??
-
-| 移댄뀒怨좊━ | ?붾뱶?ъ씤??| ?ㅻ챸 |
-|---|---|---|
-| **?쒖옣/遺꾩꽍** | `GET /market/top20` | ?ㅼ떆媛?Top 20 ?쒖꽭 + 吏??|
-| | `GET /market` | 二쇱슂 ?쒖옣 吏???꾪솴 |
-| | `GET /valuation/{ticker}` | 醫낅ぉ 媛移섑룊媛 (DCF, 湲곗닠??吏?? |
-| | `GET /returns/{ticker}` | ?섏씡瑜?諛?MDD 遺꾩꽍 |
-| | `GET /metrics/{ticker}` | ?щТ吏??(PER, PBR, ROE ?? |
-| | `GET /news/{ticker}` | 愿???댁뒪 留곹겕 ?쒓났 |
-| **?좏샇/?뚮┝** | `GET /signals` | ?꾩옱 留ㅻℓ ?좏샇 (怨쇰ℓ??怨쇰ℓ???? |
-| | `GET /summary` | ?쇱씪 ?붿빟 由ы룷??|
-| | `POST /alerts` | 媛寃??뚮┝ ?ㅼ젙 |
-| | `GET /check-alerts` | ?ㅼ젙???뚮┝ ?몃━嫄??뺤씤 |
-| **?ы듃?대━??* | `POST /portfolio/upload` | ?묒? ?뚯씪濡??ы듃?대━???낅줈??|
-| | `GET /portfolio/{user_id}` | 蹂댁쑀 醫낅ぉ 議고쉶 |
-| | `GET /portfolio/{user_id}/analysis` | ?ы듃?대━???섏씡瑜?遺꾩꽍 |
-| | `POST /portfolio/{user_id}/add` | 醫낅ぉ ?섎룞 異붽? |
-| | `DELETE /portfolio/{user_id}/{ticker}` | 醫낅ぉ ??젣 |
-
-## ?ㅽ뻾 諛⑸쾿
+## 실행 방법
 
 ```bash
-# ?섏〈???ㅼ튂
+# 의존성 설치
 pip install -r requirements.txt
 
-# ?쒕쾭 ?ㅽ뻾
+# 서버 실행
 python main.py
 
-# ?먮뒗 uvicorn 吏곸젒 ?ㅽ뻾
+# 또는 uvicorn 직접 실행
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-API 臾몄꽌: http://localhost:8000/docs
+API 문서: http://localhost:8000/docs
 
-## 吏??醫낅ぉ
-
-### ?쒓? ???곗빱 ?먮룞 蹂??
-- ?뚯뒳????TSLA
-- ?좏뵆 ??AAPL
-- ?붾퉬?붿븘 ??NVDA
-- ?쇱꽦?꾩옄 ??005930
-- ...
-
-## 湲곗닠 ?ㅽ깮
+## 기술 스택
 
 - **Back-end**: FastAPI
-- **Data**: FinanceDataReader, yfinance
+- **Data**: KIS API (REST/WebSocket)
+- **Real-time**: KIS WebSocket
 - **Scheduling**: APScheduler
 - **Analysis**: Pandas, NumPy
-- **Utils**: OpenPyxl (Excel 泥섎━)
+- **Utils**: OpenPyxl (Excel 처리)

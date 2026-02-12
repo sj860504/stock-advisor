@@ -1,4 +1,4 @@
-from services.backtest_service import BacktestService
+from services.strategy.backtest_service import BacktestService
 
 try:
     results = BacktestService.run_rsi_backtest('AAPL', years=3)
