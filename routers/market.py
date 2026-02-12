@@ -101,3 +101,36 @@ def get_trading_signals():
             })
     
     return signals
+
+from models.schemas import WatchItem, NewsItem
+
+@router.get("/watching", response_model=List[WatchItem])
+def get_watching_list():
+    """
+    현재 감시 중인(실시간 데이터 수신 중인) 종목 목록을 반환합니다.
+    """
+    from services.market.market_data_service import MarketDataService
+    
+    all_states = MarketDataService.get_all_states()
+    result = []
+    
+    for ticker, state in all_states.items():
+        # 전일 종가가 0이면 변동폭 계산 불가, 0 처리
+        change = state.current_price - state.prev_close if state.prev_close > 0 else 0
+        
+        # EMA 20일선 가져오기 (없으면 None)
+        ma20 = state.ema.get(20) if state.ema else None
+        
+        result.append(WatchItem(
+            ticker=ticker,
+            price=state.current_price,
+            change=change,
+            change_rate=state.change_rate,
+            volume=float(state.volume),
+            rsi=state.rsi,
+            ma20=ma20
+        ))
+    
+    # 티커 순 정렬
+    result.sort(key=lambda x: x.ticker)
+    return result

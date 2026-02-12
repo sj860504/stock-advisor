@@ -9,3 +9,6 @@ lxml
 apscheduler
 websockets
 python-dotenv
+sqlalchemy
+python-multipart
+pytz

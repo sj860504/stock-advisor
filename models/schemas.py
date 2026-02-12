@@ -52,3 +52,12 @@ class PortfolioSchema(BaseModel):
     user_id: str
     cash_balance: float
     holdings: List[HoldingSchema]
+
+class WatchItem(BaseModel):
+    ticker: str
+    price: float
+    change: float
+    change_rate: float
+    volume: float
+    rsi: Optional[float] = None
+    ma20: Optional[float] = None

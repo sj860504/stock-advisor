@@ -10,6 +10,9 @@ from services.notification.alert_service import AlertService
 
 from models.portfolio import Portfolio, PortfolioHolding
 from services.market.stock_meta_service import StockMetaService
+from utils.logger import get_logger
+
+logger = get_logger("portfolio_service")
 
 class PortfolioService:
     """

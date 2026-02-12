@@ -10,6 +10,7 @@ from services.kis.fetch.kis_fetcher import KisFetcher
 from services.market.stock_meta_service import StockMetaService
 from services.analysis.indicator_service import IndicatorService
 from services.analysis.financial_service import FinancialService
+from services.market.market_hour_service import MarketHourService
 
 logger = get_logger("data_service")
 
@@ -33,13 +34,14 @@ class DataService:
                     name = item.get('hts_kor_isnm')
                     if ticker:
                         tickers.append(ticker)
+                        tr_id, path = StockMetaService.get_api_info("주식현재가_시세")
                         StockMetaService.upsert_stock_meta(
                             ticker=ticker,
                             name_ko=name,
                             market_type="KR",
                             exchange_code="KRX",
-                            api_path="/uapi/domestic-stock/v1/quotations/inquire-price",
-                            api_tr_id="FHKST01010100",
+                            api_path=path,
+                            api_tr_id=tr_id,
                             api_market_code="J"
                         )
             if not tickers:
@@ -78,18 +80,39 @@ class DataService:
                 ticker = item['ticker']
                 if ticker:
                     tickers.append(ticker)
+                    tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
                     StockMetaService.upsert_stock_meta(
                         ticker=ticker,
                         name_ko=item['name'],
                         market_type="US",
                         exchange_code="NASD" if item['excd'] == "NAS" else "NYSE",
-                        api_path="/uapi/overseas-stock/v1/quotations/price-detail",
-                        api_tr_id="HHDFS70200200",
+                        api_path=path,
+                        api_tr_id=tr_id,
                         api_market_code=item['excd']
                     )
             if not tickers:
-                tickers = ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST", "NFLX"]
-                logger.info(f"⚠️ US ranking empty. Using fallback list: {len(tickers)} tickers.")
+                # 폴백 리스트 (종목코드, 마켓)
+                fallback_data = [
+                    ("AAPL", "NAS", "NASD"), ("NVDA", "NAS", "NASD"), ("MSFT", "NAS", "NASD"), 
+                    ("AMZN", "NAS", "NASD"), ("GOOGL", "NAS", "NASD"), ("META", "NAS", "NASD"), 
+                    ("TSLA", "NAS", "NASD"), ("AVGO", "NAS", "NASD"), ("COST", "NAS", "NASD"), 
+                    ("NFLX", "NAS", "NASD"), ("JPM", "NYS", "NYSE"), ("V", "NYS", "NYSE"),
+                    ("LLY", "NYS", "NYSE"), ("XOM", "NYS", "NYSE"), ("UNH", "NYS", "NYSE")
+                ]
+                tickers = []
+                tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
+                for t, excd, ex_name in fallback_data:
+                    tickers.append(t)
+                    StockMetaService.upsert_stock_meta(
+                        ticker=t,
+                        name_ko=t, # 폴백은 이름도 티커로
+                        market_type="US",
+                        exchange_code=ex_name,
+                        api_path=path,
+                        api_tr_id=tr_id,
+                        api_market_code=excd
+                    )
+                logger.info(f"⚠️ US ranking empty. Using fallback list: {len(tickers)} tickers with metadata.")
             return tickers
         except Exception as e:
             logger.error(f"Error fetching top US tickers via KIS: {e}")
@@ -100,6 +123,11 @@ class DataService:
         """KIS API를 통해 과거 N일간의 가격 데이터를 가져옵니다."""
         # 기존에 fetch_daily_price, fetch_overseas_daily_price를 이미 구현/정리했음을 가정
         from services.kis.fetch.kis_fetcher import KisFetcher
+        # 과거 시세 조회는 시장 운영 시간과 무관하게 허용됨 (MarketHourService.can_fetch_history() 반영)
+        is_kr = ticker.isdigit()
+        
+        logger.info(f"💾 Fetching history for {ticker} (Last {days} days)...")
+
         try:
             token = KisService.get_access_token()
             from datetime import timedelta
@@ -123,8 +151,17 @@ class DataService:
                     "fid_period_div_code": "D"
                 }
                 headers = KisService.get_headers(tr_id)
-                res = requests.get(f"{Config.KIS_BASE_URL}{path}", headers=headers, params=params)
-                data = res.json()
+                res = requests.get(f"{Config.KIS_BASE_URL}{path}", headers=headers, params=params, timeout=5)
+                if res.status_code != 200:
+                    logger.error(f"❌ Index Fetch Error {res.status_code}: {res.text}")
+                    return pd.DataFrame()
+                
+                try:
+                    data = res.json()
+                except Exception as je:
+                    logger.error(f"❌ JSON Decode Error for {ticker}: {je} | Response: {res.text[:100]}")
+                    return pd.DataFrame()
+
                 if not data.get('output2'): return pd.DataFrame()
                 df = pd.DataFrame(data['output2'])
                 df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
@@ -132,12 +169,49 @@ class DataService:
                 res = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
                 if not res.get('output'): return pd.DataFrame()
                 df = pd.DataFrame(res['output'])
-                df = df.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                # HHDFS76240000 는 clos, high, low, open, xymd 사용
+                if 'clos' in df.columns:
+                    df = df.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                else:
+                    df = df.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+
+            if 'Close' not in df.columns:
+                logger.error(f"❌ 'Close' column missing for {ticker}. Columns: {df.columns.tolist()}")
+                return pd.DataFrame()
+
+            # [OPTIMIZATION] 100건 이상 데이터가 필요한 경우 추가 호출 (KIS 100건 제한 대응)
+            if len(df) >= 100 and days > 150:
+                try:
+                    # 가장 오래된 날짜를 기준으로 이전 100건 추가 요청
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    earliest_date = df['Date'].min()
+                    new_end_date = (earliest_date - timedelta(days=1)).strftime("%Y%m%d")
+                    
+                    logger.info(f"➕ Fetching additional 100 rows for {ticker} (End Date: {new_end_date})")
+                    if ticker.isdigit():
+                        res2 = KisFetcher.fetch_daily_price(token, ticker, start_date, new_end_date)
+                        if res2 and res2.get('output2'):
+                            df2 = pd.DataFrame(res2['output2'])
+                            df2 = df2.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
+                            df = pd.concat([df, df2], ignore_index=True)
+                    else:
+                        res2 = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, new_end_date)
+                        output2 = res2.get('output') or res2.get('output2')
+                        if output2:
+                            df2 = pd.DataFrame(output2)
+                            if 'clos' in df2.columns:
+                                df2 = df2.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                            else:
+                                df2 = df2.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                            df = pd.concat([df, df2], ignore_index=True)
+                except Exception as ex:
+                    logger.warning(f"⚠️ Failed to fetch additional rows for {ticker}: {ex}")
 
             df['Date'] = pd.to_datetime(df['Date'])
             df.set_index('Date', inplace=True)
             for col in ['Close', 'High', 'Low', 'Open']:
-                df[col] = pd.to_datetime(df[col], errors='coerce') if col == 'Date' else pd.to_numeric(df[col], errors='coerce')
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             
             return df.sort_index()
         except Exception as e:
@@ -157,6 +231,11 @@ class DataService:
         
         for ticker, market in all_tickers:
             try:
+                # 시장 시간 체크
+                if not MarketHourService.should_fetch(market):
+                    # logger.debug(f"😴 {market} market is closed. skipping {ticker}.")
+                    continue
+
                 logger.info(f"🔄 Processing {ticker} ({market})...")
                 
                 # A. 시세 및 기본 지표 (PER, PBR, Cap 등)

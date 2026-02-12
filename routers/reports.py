@@ -10,8 +10,8 @@ router = APIRouter(
 @router.get("")
 def get_daily_summary():
     """
-    ?꾩옱 Top 20 醫낅ぉ???쇱씪 ?붿빟 由ы룷?몃? ?앹꽦?⑸땲??
-    怨쇰ℓ??怨쇰ℓ????됯? 醫낅ぉ???쒕늿??蹂댁뿬以띾땲??
+    현재 Top 100 종목의 실시간 요약 리포트를 생성합니다.
+    과매수/과매도 및 시가총액 급등 종목을 한눈에 보여줍니다.
     """
     data = SchedulerService.get_all_cached_prices()
     if not data:

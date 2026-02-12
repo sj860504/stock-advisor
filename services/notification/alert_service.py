@@ -10,13 +10,13 @@ logger = get_logger("alert_service")
 
 class AlertService:
     """
-    ?щ옓 ?뚮┝ 諛??ъ슜???뚮┝ ?쒕퉬??(Refactored)
+    슬랙 알림 및 사용자 알림 서비스 (Refactored)
     """
     _webhook_url: Optional[str] = None
-    _sent_alerts = set()  # 以묐났 ?뚮┝ 諛⑹?
+    _sent_alerts = set()  # 중복 알림 방지
     _prev_data = {}  # {ticker: {price, ema20, ...}}
-    _pending_alerts = [] # ?먯씠?꾪듃 ?꾩넚 ?湲곗뿴
-    _user_alerts: List[PriceAlert] = [] # ?ъ슜???ㅼ젙 媛寃??뚮┝
+    _pending_alerts = [] # 에이전트 전송 대기열
+    _user_alerts: List[PriceAlert] = [] # 사용자 설정 가격 알림
     
     @classmethod
     def set_webhook(cls, webhook_url: str):
@@ -24,37 +24,37 @@ class AlertService:
     
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
-        """?щ옓?쇰줈 ?ㅼ젣 ?뚮┝???꾩넚?⑸땲??"""
+        """슬랙으로 실제 알림을 전송합니다."""
         webhook_url = cls._webhook_url or Config.SLACK_WEBHOOK_URL
         if not webhook_url:
-            print(f"?좑툘 Slack Webhook URL not configured. Log: {message}")
+            print(f"⚠️ Slack Webhook URL not configured. Log: {message}")
             return False
             
         try:
             payload = {"text": message}
             response = requests.post(webhook_url, json=payload, timeout=5)
             response.raise_for_status()
-            logger.info(f"??Slack message sent successfully.")
+            logger.info(f"✅ Slack message sent successfully.")
             return True
         except Exception as e:
-            logger.error(f"??Failed to send Slack alert: {e}")
+            logger.error(f"❌ Failed to send Slack alert: {e}")
             return False
 
     @classmethod
     def get_pending_alerts(cls) -> list:
-        """?湲?以묒씤 ?뚮┝??諛섑솚?섍퀬 鍮꾩썎?덈떎."""
+        """대기 중인 알림을 반환하고 비웁니다."""
         alerts = list(cls._pending_alerts)
         cls._pending_alerts.clear()
         return alerts
 
     @classmethod
     def add_user_alert(cls, alert: PriceAlert):
-        """?ъ슜???뚮┝ 異붽?"""
+        """사용자 알림 추가"""
         cls._user_alerts.append(alert)
 
     @classmethod
     def check_user_alerts(cls) -> List[str]:
-        """?ъ슜???ㅼ젙 ?뚮┝ ?뺤씤"""
+        """사용자 설정 알림 확인"""
         triggered = []
         for alert in cls._user_alerts:
             if not alert.is_active:
@@ -63,30 +63,60 @@ class AlertService:
             current_price = DataService.get_current_price(alert.ticker)
             if current_price:
                 if alert.condition == "above" and current_price >= alert.target_price:
-                    triggered.append(f"?뵒 {alert.ticker} ?꾨떖! ?꾩옱媛: {current_price} >= 紐⑺몴媛: {alert.target_price}")
+                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} >= 목표가: {alert.target_price}")
                 elif alert.condition == "below" and current_price <= alert.target_price:
-                    triggered.append(f"?뵒 {alert.ticker} ?꾨떖! ?꾩옱媛: {current_price} <= 紐⑺몴媛: {alert.target_price}")
+                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} <= 목표가: {alert.target_price}")
         return triggered
     
     @classmethod
     def check_and_alert(cls, ticker: str, data: dict) -> list:
-        """醫낅ぉ ?곗씠?곕? ?뺤씤?섍퀬 議곌굔??留욎쑝硫??뚮┝???앹꽦?⑸땲??"""
+        """종목 데이터를 확인하고 조건에 맞으면 알림을 생성합니다."""
         alerts = []
         
-        # 媛?泥댄겕 濡쒖쭅???낅┰ ?⑥닔濡?遺꾨━?섏뿬 ?몄텧
+        # 각 체크 로직은 독립 함수로 분리하여 호출
         alerts.extend(cls._check_volatility(ticker, data))
         alerts.extend(cls._check_rsi(ticker, data))
         alerts.extend(cls._check_undervalued(ticker, data))
         alerts.extend(cls._check_ma_crossover(ticker, data))
         
-        # ?꾩옱 ?곗씠?곕? ?댁쟾 ?곗씠?곕줈 ???(?ㅼ쓬 鍮꾧탳瑜??꾪빐)
+        # 현재 데이터를 이전 데이터로 저장 (다음 비교를 위해)
         cls._save_current_state(ticker, data)
         
         return alerts
 
     @classmethod
+    def generate_daily_summary(cls, data: dict) -> str:
+        """현 시점의 시장 요약 리포트를 생성합니다."""
+        if not data:
+            return "분석 데이터가 아직 수집되지 않았습니다."
+            
+        summary = "📊 **실시간 시장 분석 요약**\n\n"
+        
+        # RSI 과매도 종목 (기회)
+        oversold = [t for t, info in data.items() if info.get('rsi', 50) < 35]
+        if oversold:
+            summary += "🔵 **RSI 과매도 (매수 기회)**:\n"
+            for t in oversold[:5]:
+                summary += f"- {t}: RSI {data[t]['rsi']:.1f}\n"
+        
+        # RSI 과매수 종목 (위험/익절)
+        overbought = [t for t, info in data.items() if info.get('rsi', 50) > 65]
+        if overbought:
+            summary += "\n🔴 **RSI 과매수 (단기 과열)**:\n"
+            for t in overbought[:5]:
+                summary += f"- {t}: RSI {data[t]['rsi']:.1f}\n"
+                
+        # 급등 종목
+        gainers = sorted(data.items(), key=lambda x: x[1].get('change_pct', 0), reverse=True)[:5]
+        summary += "\n📈 **실시간 급등 Top 5**:\n"
+        for t, info in gainers:
+            summary += f"- {t}: {info['change_pct']:+.2f}% (${info['price']})\n"
+            
+        return summary
+
+    @classmethod
     def _check_volatility(cls, ticker: str, data: dict) -> list:
-        """1. 湲됰벑/湲됰씫 ?뚮┝ (Volatility)"""
+        """1. 급등/급락 알림 (Volatility)"""
         alerts = []
         price = data.get('price')
         prev = cls._prev_data.get(ticker, {})
@@ -99,17 +129,17 @@ class AlertService:
         msg = ""
         
         if change_ratio >= 2.5:
-            msg = f"?뵦 **{ticker}** 1遺?????뭾 湲됰벑! (+{change_ratio:.1f}%) - ?꾩옱媛: ${price}"
+            msg = f"🚀 **{ticker}** 1분 만에 급등! (+{change_ratio:.1f}%) - 현재가: ${price}"
             is_urgent = True
         elif change_ratio <= -2.5:
-            msg = f"?슚 **{ticker}** 湲닿툒! ?⑤땳 ?留?媛먯? (-{change_ratio:.1f}%) - ?꾩옱媛: ${price}"
+            msg = f"📉 **{ticker}** 긴급! 패닉 셀 감지 (-{change_ratio:.1f}%) - 현재가: ${price}"
             is_urgent = True
             
         if is_urgent:
             try:
                 news = NewsService.get_latest_news(ticker, limit=2)
                 summary = NewsService.summarize_news(ticker, news)
-                msg += f"\n\n?쨺 **Why? (愿???댁뒪)**\n{summary}"
+                msg += f"\n\n📰 **Why? (관련 뉴스)**\n{summary}"
             except:
                 pass
             alerts.append(msg)
@@ -118,27 +148,27 @@ class AlertService:
 
     @classmethod
     def _check_rsi(cls, ticker: str, data: dict) -> list:
-        """2. RSI 怨쇰ℓ??怨쇰ℓ???뚮┝"""
+        """2. RSI 과매수 과매도 알림"""
         alerts = []
         rsi = data.get('rsi')
         if not rsi: return []
         
-        alert_key = f"{ticker}_{data.get('time', '')[:13]}_rsi" # ?쒓컙??1??
+        alert_key = f"{ticker}_{data.get('time', '')[:13]}_rsi" # 시간당 1회
         
         if rsi < 30:
             if f"{alert_key}_oversold" not in cls._sent_alerts:
-                alerts.append(f"?윟 **{ticker}** 以띿쨳 李ъ뒪! (RSI: {rsi:.1f}) - ?媛 留ㅼ닔 援ш컙")
+                alerts.append(f"💎 **{ticker}** 줍줍 찬스! (RSI: {rsi:.1f}) - 저가 매수 구간")
                 cls._sent_alerts.add(f"{alert_key}_oversold")
         elif rsi > 70:
             if f"{alert_key}_overbought" not in cls._sent_alerts:
-                alerts.append(f"?뵶 **{ticker}** ?④린 怨쇱뿴! (RSI: {rsi:.1f}) - ?듭젅 怨좊젮")
+                alerts.append(f"🔥 **{ticker}** 단기 과열! (RSI: {rsi:.1f}) - 익절 고려")
                 cls._sent_alerts.add(f"{alert_key}_overbought")
         
         return alerts
 
     @classmethod
     def _check_undervalued(cls, ticker: str, data: dict) -> list:
-        """3. DCF ??됯? ?뚮┝"""
+        """3. DCF 저평가 알림"""
         alerts = []
         price = data.get('price')
         dcf = data.get('fair_value_dcf')
@@ -149,14 +179,14 @@ class AlertService:
         
         if f"{alert_key}_undervalued" not in cls._sent_alerts:
             upside = ((dcf - price) / price) * 100
-            alerts.append(f"?뭿 **{ticker}** ??됯? ?곕웾二? ?곸젙媛 ${dcf:.2f} (?곸듅?щ젰 {upside:.1f}%)")
+            alerts.append(f"🎁 **{ticker}** 저평가 우량주! 적정가 ${dcf:.2f} (상승여력 {upside:.1f}%)")
             cls._sent_alerts.add(f"{alert_key}_undervalued")
             
         return alerts
 
     @classmethod
     def _check_ma_crossover(cls, ticker: str, data: dict) -> list:
-        """4. 吏吏??EMA) ?뚰뙆/?댄깉 ?뚮┝"""
+        """4. 지지선(EMA) 돌파/이탈 알림"""
         alerts = []
         price = data.get('price')
         prev = cls._prev_data.get(ticker, {})
@@ -165,31 +195,31 @@ class AlertService:
         if not (prev_price and price): return []
         
         ema_list = [
-            (data.get('ema5'), "EMA5(?④린)"), 
-            (data.get('ema10'), "EMA10(?④린)"), 
-            (data.get('ema20'), "EMA20(?앸챸??"), 
-            (data.get('ema60'), "EMA60(?섍툒??"), 
-            (data.get('ema120'), "EMA120(寃쎄린??"), 
-            (data.get('ema200'), "EMA200(異붿꽭??")
+            (data.get('ema5'), "EMA5(단기)"), 
+            (data.get('ema10'), "EMA10(단기)"), 
+            (data.get('ema20'), "EMA20(생명선)"), 
+            (data.get('ema60'), "EMA60(수급선)"), 
+            (data.get('ema120'), "EMA120(경기선)"), 
+            (data.get('ema200'), "EMA200(추세선)")
         ]
         
         for ema_val, name in ema_list:
             if not ema_val: continue
             prev_ema = prev.get(name.split('(')[0].lower()) or ema_val
             
-            # 怨⑤뱺?щ줈??
+            # 골든크로스
             if prev_price <= prev_ema and price > ema_val:
-                alerts.append(f"?? **{ticker}** {name} ?곹뼢 ?뚰뙆! (吏吏?? ${ema_val:.2f}, ?꾩옱媛: ${price})")
+                alerts.append(f"✨ **{ticker}** {name} 상향 돌파! (지지선: ${ema_val:.2f}, 현재가: ${price})")
             
-            # ?곕뱶?щ줈??
+            # 데드크로스
             elif prev_price >= prev_ema and price < ema_val:
-                alerts.append(f"?좑툘 **{ticker}** {name} ?섑뼢 ?댄깉! (吏吏?? ${ema_val:.2f}, ?꾩옱媛: ${price})")
+                alerts.append(f"🚨 **{ticker}** {name} 하향 이탈! (지지선: ${ema_val:.2f}, 현재가: ${price})")
                 
         return alerts
 
     @classmethod
     def _save_current_state(cls, ticker: str, data: dict):
-        """?꾩옱 ?곹깭瑜????(?ㅼ쓬 ??鍮꾧탳??"""
+        """현재 상태를 저장 (다음 번 비교용)"""
         cls._prev_data[ticker] = {
             'price': data.get('price'),
             'ema5': data.get('ema5'),

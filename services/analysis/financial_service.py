@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from datetime import datetime
 import pandas as pd
 from config import Config
 from utils.logger import get_logger
@@ -96,17 +97,26 @@ class FinancialService:
                 return cached
 
         try:
-            # DB 캐시 확인
+            # 1. DB 캐시 확인
             latest = StockMetaService.get_latest_financials(ticker)
-            
+            if latest and latest.eps and latest.bps:
+                # DB에 유효한 재무 데이터가 있다면 사용
+                return {
+                    "fcf_per_share": latest.eps * 0.8, # FCF 추정 (EPS의 80%로 단순화)
+                    "beta": 1.0,
+                    "growth_rate": 0.05,
+                    "timestamp": latest.base_date.timestamp()
+                }
+
+            # 2. API 호출 (DB에 없거나 부족할 경우)
             if ticker.isdigit():
                 raw_data = KisService.get_financials(ticker)
                 metrics = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=raw_data)
             else:
+                # 상세 시세를 위해 fetch_overseas_detail을 사용하는 메서드로 호출 권장 (나중에 KisService 보완 필요)
                 raw_data = KisService.get_overseas_financials(ticker)
                 metrics = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=raw_data)
             
-            # DB 기반 FCF 등 보정이 필요할 수 있으나 현재는 API 우선
             result = {
                 "fcf_per_share": metrics.get('fcf_per_share'),
                 "beta": metrics.get('beta', 1.0),

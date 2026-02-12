@@ -41,6 +41,7 @@ class Financials(Base):
     
     id = Column(Integer, primary_key=True)
     stock_id = Column(Integer, ForeignKey('stock_meta.id'), nullable=False)
+    name = Column(String(100)) # 조인 없이 확인하기 위한 종목명 필드 추가
     base_date = Column(DateTime, nullable=False, index=True) # 조회/기준 일자
     
     # 주요 지표 (KIS API 필드 매핑 고려)
@@ -52,6 +53,12 @@ class Financials(Base):
     dividend_yield = Column(Float)
     current_price = Column(Float)
     market_cap = Column(Float)
+    
+    # 52주 및 시세 상세
+    high52 = Column(Float) # 52주 최고가
+    low52 = Column(Float)  # 52주 최저가
+    volume = Column(Float) # 거래량
+    amount = Column(Float) # 거래대금
     
     # 추가 지표 (기술적/기본적)
     rsi = Column(Float)
@@ -81,7 +88,8 @@ class ApiTrMeta(Base):
     api_name = Column(String(100), unique=True, index=True)
     tr_id_real = Column(String(50))
     tr_id_vts = Column(String(50))
-    api_path = Column(String(200))
+    api_path = Column(String(200)) # 기본/Real 경로
+    api_path_vts = Column(String(200)) # VTS 전용 경로 (필요시)
     
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

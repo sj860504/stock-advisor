@@ -95,3 +95,25 @@ async def update_setting(key: str = Body(..., embed=True), value: str = Body(...
             raise HTTPException(status_code=400, detail="Failed to update setting")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/start")
+async def start_trading():
+    """
+    자동 매매 시작 (전략 활성화)
+    """
+    try:
+        TradingStrategyService.set_enabled(True)
+        return {"status": "success", "message": "Trading Strategy Started"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/stop")
+async def stop_trading():
+    """
+    자동 매매 중지 (전략 비활성화)
+    """
+    try:
+        TradingStrategyService.set_enabled(False)
+        return {"status": "success", "message": "Trading Strategy Stopped"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

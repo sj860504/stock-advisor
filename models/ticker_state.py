@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque
 import logging
@@ -10,6 +10,7 @@ logger = get_logger("ticker_state")
 @dataclass
 class TickerState:
     ticker: str
+    name: str = ""                # 종목명 추가
     current_price: float = 0.0
     open_price: float = 0.0
     high_price: float = 0.0
@@ -19,20 +20,22 @@ class TickerState:
     change_rate: float = 0.0 # 등락률 (%)
     
     # 지표들
-    ema: Dict[int, float] = None # {5: 1000, 20: 950, ...}
+    ema: Dict[int, float] = field(default_factory=dict) # {5: 1000, 20: 950, ...}
     rsi: float = 0.0             # RSI (14)
-    bollinger: Dict[str, float] = None # {upper, middle, lower}
+    bollinger: Dict[str, float] = field(default_factory=dict) # {upper, middle, lower}
     dcf_value: float = 0.0       # 적정주가 (DCF)
+    
+    # 전략 타겟가
+    target_buy_price: float = 0.0  # 목표 진입가
+    target_sell_price: float = 0.0 # 목표 매도가
     
     # 데이터 버퍼 (최근 N개의 종가, 실시간 EMA 계산용)
     # 실제로는 일봉 데이터 로딩 후, 실시간 가격이 변할 때 '오늘의 종가(현재가)'로 가정하고 EMA를 재계산하는 방식이 일반적
     # 또는 분봉 기준이라면 분봉 완성 시점에 확정. 여기서는 '일봉 기준 실시간 EMA'를 추정한다고 가정.
     
     def __post_init__(self):
-        if self.ema is None:
-            self.ema = {}
-        if self.bollinger is None:
-            self.bollinger = {}
+        # field(default_factory=dict) 를 사용하므로 명시적 초기화 불필요
+        pass
 
     def update_from_socket(self, data_dict: dict):
         """
@@ -84,14 +87,15 @@ class TickerState:
             except (ValueError, TypeError):
                 continue
             
-    def update_indicators(self, emas: Dict[int, float], dcf: float = None, rsi: float = None):
+    def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None):
         """외부에서 계산된 지표 주입 (Warm-up 또는 정기 갱신)"""
         if emas:
             # 모든 키를 정수로 변환하여 저장
             processed_emas = {}
             for k, v in emas.items():
+                if v is None: continue # None 값 건너뛰기
                 try:
-                    processed_emas[int(k)] = v
+                    processed_emas[int(k)] = float(v)
                 except:
                     continue
             self.ema.update(processed_emas)
@@ -104,3 +108,19 @@ class TickerState:
     def is_undervalued(self) -> bool:
         """DCF 대비 저평가 여부"""
         return self.current_price < self.dcf_value if self.dcf_value > 0 else False
+
+    @property
+    def is_ready(self) -> bool:
+        """매매 점수 계산을 위한 기초 데이터가 모두 준비되었는지 여부"""
+        # 1. 시세 데이터 체크
+        if self.current_price <= 0: return False
+        
+        # 2. 필수 기술적 지표 체크 (RSI 필수)
+        if self.rsi <= 0: return False
+        
+        # 3. EMA 체크 (200일선이 없더라도 120선이나 60선이 있으면 분석 가능하다고 판단)
+        # KIS API 기본 반환 건수(100건) 제한으로 인해 EMA 200이 누락되는 상황 대응
+        ema_val = self.ema.get(200) or self.ema.get(120) or self.ema.get(60)
+        if not ema_val or ema_val <= 0: return False
+        
+        return True

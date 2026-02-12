@@ -28,7 +28,12 @@ class StockMetaService:
             return
             
         os.makedirs(os.path.dirname(cls.DB_PATH), exist_ok=True)
-        cls.engine = create_engine(f"sqlite:///{cls.DB_PATH}", echo=False)
+        cls.engine = create_engine(
+            f"sqlite:///{cls.DB_PATH}", 
+            echo=False,
+            pool_size=20,
+            max_overflow=20
+        )
         Base.metadata.create_all(cls.engine)
         cls.Session = scoped_session(sessionmaker(bind=cls.engine))
         logger.info(f"📁 Database initialized at: {cls.DB_PATH}")
@@ -92,11 +97,16 @@ class StockMetaService:
 
             # 지표 매핑
             mapping = {
+                "name": "name", # 종목명 매핑 추가
                 "per": "per", "pbr": "pbr", "roe": "roe", 
                 "eps": "eps", "bps": "bps", 
                 "dividend_yield": "dividend_yield",
                 "current_price": "current_price",
                 "market_cap": "market_cap",
+                "high52": "high52",
+                "low52": "low52",
+                "volume": "volume",
+                "amount": "amount",
                 "rsi": "rsi",
                 "dcf_value": "dcf_value"
             }
@@ -154,6 +164,31 @@ class StockMetaService:
                       .order_by(Financials.base_date.desc()).first()
 
     @classmethod
+    def get_batch_latest_financials(cls, tickers: list):
+        """여러 종목의 최신 재무 지표를 일괄 조회"""
+        if not tickers:
+            return {}
+            
+        session = cls.get_session()
+        # SQLite에서 각 stock_id별 가장 최근의 base_date 행을 가져오는 쿼리 (서브쿼리 활용)
+        from sqlalchemy import func
+        
+        # 1. 각 stock_id별 최신 base_date 찾기
+        subquery = session.query(
+            Financials.stock_id,
+            func.max(Financials.base_date).label('max_date')
+        ).group_by(Financials.stock_id).subquery()
+        
+        # 2. StockMeta와 조인하여 데이터 가져오기
+        results = session.query(StockMeta.ticker, Financials)\
+            .join(Financials, StockMeta.id == Financials.stock_id)\
+            .join(subquery, (Financials.stock_id == subquery.c.stock_id) & (Financials.base_date == subquery.c.max_date))\
+            .filter(StockMeta.ticker.in_(tickers))\
+            .all()
+            
+        return {ticker: fin for ticker, fin in results}
+
+    @classmethod
     def upsert_api_tr_meta(cls, api_name: str, **kwargs):
         """API별 TR ID 정보 저장"""
         session = cls.get_session()
@@ -188,11 +223,11 @@ class StockMetaService:
             # 2. 해외주식
             {"category": "해외주식", "api_name": "해외주식_미국매수", "tr_id_real": "TTTT1002U", "tr_id_vts": "VTTT1002U", "api_path": "/uapi/overseas-stock/v1/trading/order"},
             {"category": "해외주식", "api_name": "해외주식_미국매도", "tr_id_real": "TTTT1006U", "tr_id_vts": "VTTT1006U", "api_path": "/uapi/overseas-stock/v1/trading/order"},
-            {"category": "해외주식", "api_name": "해외주식_현재가", "tr_id_real": "HHDFS00000300", "tr_id_vts": "VTTT1101R", "api_path": "/uapi/overseas-stock/v1/quotations/price"},
-            {"category": "해외주식", "api_name": "해외주식_상세시세", "tr_id_real": "HHDFS70200200", "tr_id_vts": "VTTT1101R", "api_path": "/uapi/overseas-stock/v1/quotations/price-detail"},
+            {"category": "해외주식", "api_name": "해외주식_현재가", "tr_id_real": "HHDFS00000300", "tr_id_vts": "HHDFS00000300", "api_path": "/uapi/overseas-price/v1/quotations/price", "api_path_vts": "/uapi/overseas-price/v1/quotations/price"},
+            {"category": "해외주식", "api_name": "해외주식_상세시세", "tr_id_real": "HHDFS70200200", "tr_id_vts": "HHDFS00000300", "api_path": "/uapi/overseas-price/v1/quotations/price-detail", "api_path_vts": "/uapi/overseas-price/v1/quotations/price"}, # VTS는 price-detail이 없으므로 price로 대체
             {"category": "해외주식", "api_name": "해외주식_시가총액순위", "tr_id_real": "HHDFS76350100", "tr_id_vts": "HHDFS76350100", "api_path": "/uapi/overseas-stock/v1/ranking/market-cap"},
-            {"category": "해외주식", "api_name": "해외주식_기간별시세", "tr_id_real": "HHDFS76240000", "tr_id_vts": "HHDFS76240000", "api_path": "/uapi/overseas-stock/v1/quotations/dailyprice"},
-            {"category": "해외주식", "api_name": "해외주식_종목지수환율기간별", "tr_id_real": "FHKST03030100", "tr_id_vts": "FHKST03030100"},
+            {"category": "해외주식", "api_name": "해외주식_기간별시세", "tr_id_real": "HHDFS76240000", "tr_id_vts": "HHDFS76240000", "api_path": "/uapi/overseas-price/v1/quotations/dailyprice", "api_path_vts": "/uapi/overseas-price/v1/quotations/dailyprice"},
+            {"category": "해외주식", "api_name": "해외주식_종목지수환율기간별", "tr_id_real": "FHKST03030100", "tr_id_vts": "FHKST03030100", "api_path": "/uapi/overseas-stock/v1/quotations/inquire-daily-chartprice"},
             
             # 3. 공통/인증
             {"category": "공통", "api_name": "접근토큰발급", "tr_id_real": "tokenP", "tr_id_vts": "tokenP", "api_path": "/oauth2/tokenP"},
@@ -214,13 +249,22 @@ class StockMetaService:
         return session.query(ApiTrMeta).filter_by(api_name=api_name).first()
 
     @classmethod
-    def get_tr_id(cls, api_name: str, is_vts: bool = None):
-        """환경에 맞는 TR ID 조회 (기본값은 Config.KIS_IS_VTS 적용)"""
+    def get_api_info(cls, api_name: str, is_vts: bool = None):
+        """환경에 맞는 TR ID와 경로 조회"""
         if is_vts is None:
             from config import Config
             is_vts = Config.KIS_IS_VTS
             
         meta = cls.get_api_meta(api_name)
         if not meta:
-            return None
-        return meta.tr_id_vts if is_vts else meta.tr_id_real
+            return None, None
+            
+        tr_id = meta.tr_id_vts if is_vts else meta.tr_id_real
+        path = (meta.api_path_vts if is_vts and meta.api_path_vts else meta.api_path)
+        return tr_id, path
+
+    @classmethod
+    def get_tr_id(cls, api_name: str, is_vts: bool = None):
+        """환경에 맞는 TR ID 조회 (하위 호환)"""
+        tr_id, _ = cls.get_api_info(api_name, is_vts)
+        return tr_id

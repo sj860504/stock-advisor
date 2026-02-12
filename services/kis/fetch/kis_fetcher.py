@@ -16,16 +16,9 @@ class KisFetcher:
     
     @staticmethod
     def _get_api_info(api_name: str) -> tuple:
-        """DB에서 TR ID와 경로 정보를 가져옵니다."""
+        """DB에서 TR ID와 경로 정보를 가져옵니다 (환경 자동 선택)."""
         from services.market.stock_meta_service import StockMetaService
-        tr_id = StockMetaService.get_tr_id(api_name, is_vts=Config.KIS_IS_VTS)
-        meta = StockMetaService.get_api_meta(api_name)
-        
-        if not meta:
-            logger.warning(f"⚠️ API meta not found for: {api_name}")
-            return tr_id, None
-            
-        return tr_id, meta.api_path
+        return StockMetaService.get_api_info(api_name, is_vts=Config.KIS_IS_VTS)
 
     @staticmethod
     def _get_headers(token: str, tr_id: str) -> dict:
@@ -51,130 +44,196 @@ class KisFetcher:
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
             res = requests.get(url, headers=headers, params=params, timeout=5)
-            if res.status_code != 200:
-                logger.error(f"❌ KIS Domestic Price Error {res.status_code}: {res.text}")
-            res.raise_for_status()
-            data = res.json()
-            output = data.get('output', {})
-            if output:
+            
+            if res.status_code == 200:
+                data = res.json()
+                output = data.get('output', {})
+                if not output:
+                    logger.warning(f"⚠️ Domestic price output empty for {ticker}: {data.get('msg1')}")
+                    return {}
+                
+                def safe_float(val, default=0.0):
+                    try:
+                        if val is None or str(val).strip() == "": return default
+                        return float(val)
+                    except: return default
+
                 return {
-                    "price": float(output.get('stck_prpr', 0)),
-                    "prev_close": float(output.get('stck_sdpr', 0)),
-                    "change": float(output.get('prdy_vrss', 0)),
-                    "change_rate": float(output.get('prdy_ctrt', 0)),
-                    "per": float(output.get('per', 0)),
-                    "pbr": float(output.get('pbr', 0)),
-                    "eps": float(output.get('eps', 0)),
-                    "bps": float(output.get('bps', 0)),
-                    "market_cap": float(output.get('lstn_stcn', 0)) * float(output.get('stck_prpr', 0)) if output.get('lstn_stcn') else 0,
+                    "price": safe_float(output.get('stck_prpr')),
+                    "prev_close": safe_float(output.get('stck_sdpr')),
+                    "change": safe_float(output.get('prdy_vrss')),
+                    "change_rate": safe_float(output.get('prdy_ctrt')),
+                    "per": safe_float(output.get('per')),
+                    "pbr": safe_float(output.get('pbr')),
+                    "eps": safe_float(output.get('eps')),
+                    "bps": safe_float(output.get('bps')),
+                    "market_cap": safe_float(output.get('lstn_stcn')) * safe_float(output.get('stck_prpr')) if output.get('lstn_stcn') else 0,
+                    "high52": safe_float(output.get('h52_curr_prc')),
+                    "low52": safe_float(output.get('l52_curr_prc')),
+                    "volume": safe_float(output.get('acml_vol')),
+                    "amount": safe_float(output.get('acml_tr_pbmn')),
                     "name": output.get('hts_kor_isnm', ticker),
                     "raw": output
                 }
-            return {}
+            elif res.status_code == 500 or "초당" in res.text:
+                logger.warning(f"⏳ TPS Limit reached for {ticker}. Waiting 1.5s...")
+                time.sleep(1.5)
+                return {}
+            else:
+                logger.error(f"❌ KIS Domestic Price Error {res.status_code}: {res.text}")
+                return {}
         except Exception as e:
             logger.error(f"Error fetching domestic price for {ticker}: {e}")
             return {}
 
     @classmethod
-    def fetch_overseas_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
-        """해외 주식 상세 시세 조회 (VTS 대응)"""
-        # VTS에서는 마켓 코드에 따른 분기가 민감함. NAS vs NASD
-        market_map = {
-            "NASD": "NASD", "NAS": "NAS",  # NASD와 NAS를 혼용 시도
-            "NYSE": "NYSE", "NYS": "NYS", 
-            "AMEX": "AMEX", "AMS": "AMS"
-        }
-        market = (meta and meta.get('api_market_code')) or "NASD"
-        kis_market = market_map.get(market.upper(), market.upper())
-
-        # 1. 상세시세 시도 (HHDFS70200200)
+    def fetch_overseas_detail(cls, token: str, ticker: str, meta: dict = None) -> dict:
+        """해외 주식 상세 시세 조회 (PER, PBR, EPS 등 포함)"""
+        from models.kis_schemas import OverseasDetailPriceResponse
+        
         tr_id, path = cls._get_api_info("해외주식_상세시세")
-        if path:
-            # VTS에서 NASD로 시도
-            test_markets = [kis_market, "NASD", "NAS"] if "NAS" in kis_market else [kis_market]
-            for m in test_markets:
-                url = f"{Config.KIS_BASE_URL}{path}"
-                params = {"AUTH": "", "EXCD": m, "SYMB": ticker}
-                try:
-                    headers = cls._get_headers(token, tr_id=tr_id)
-                    res = requests.get(url, headers=headers, params=params, timeout=5)
-                    if res.status_code == 200:
-                        data = res.json()
-                        output = data.get('output', {})
-                        if output:
-                            return {
-                                "price": float(output.get('last', 0)),
-                                "prev_close": float(output.get('base', 0)),
-                                "change": float(output.get('diff', 0)),
-                                "change_rate": float(output.get('rate', 0)),
-                                "name": output.get('hnam', ticker),
-                                "raw": output
-                            }
-                    time.sleep(0.2) # 속도 제한 대응
-                except: pass
+        if not path:
+             path = "/uapi/overseas-price/v1/quotations/price-detail"
+        
+        market = (meta and meta.get('api_market_code')) or "NAS"
+        market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        kis_market = market_map_4to3.get(market.upper(), market.upper())
+        if len(kis_market) > 3 and kis_market != "IDX":
+             kis_market = kis_market[:3]
 
-        # 2. 폴백: 해외주식_현재가 (HHDFS00000300)
+        url = f"{Config.KIS_BASE_URL}{path}"
+        params = {"AUTH": "", "EXCD": kis_market, "SYMB": ticker}
+        
+        try:
+            headers = cls._get_headers(token, tr_id=tr_id)
+            res = requests.get(url, headers=headers, params=params, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                output_raw = data.get('output', {})
+                if output_raw:
+                    # 스키마를 통한 검증 및 파싱
+                    output = OverseasDetailPriceResponse(**output_raw)
+                    
+                    def safe_float(val, default=0.0):
+                        try:
+                            if val is None or str(val).strip() == "": return default
+                            return float(val)
+                        except: return default
+
+                    return {
+                        "price": safe_float(output.last),
+                        "prev_close": safe_float(output.base),
+                        "change": safe_float(output.t_xdif or output.p_xdif), # 당일/전일 대비 유연하게
+                        "change_rate": safe_float(output.t_xrat or output.p_xrat),
+                        "per": safe_float(output.perx),
+                        "pbr": safe_float(output.pbrx),
+                        "eps": safe_float(output.epsx),
+                        "bps": safe_float(output.bpsx),
+                        "market_cap": safe_float(output.tomv),
+                        "high52": safe_float(output.h52p),
+                        "low52": safe_float(output.l52p),
+                        "volume": safe_float(output.tvol),
+                        "amount": safe_float(output.tamt),
+                        "name": output.hnam or ticker,
+                        "raw": output.model_dump()
+                    }
+            return {}
+        except Exception as e:
+            logger.error(f"❌ Overseas Detail Price Exception for {ticker}: {e}")
+            return {}
+
+    @classmethod
+    def fetch_overseas_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
+        """해외 주식 기본 현재가 조회 (HHDFS00000300)"""
         tr_id, path = cls._get_api_info("해외주식_현재가")
-        if path:
-            url = f"{Config.KIS_BASE_URL}{path}"
-            params = {"AUTH": "", "EXCD": kis_market, "SYMB": ticker}
-            try:
-                headers = cls._get_headers(token, tr_id=tr_id)
-                res = requests.get(url, headers=headers, params=params, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    output = data.get('output', {})
-                    if output:
-                        return {
-                            "price": float(output.get('last', 0)),
-                            "prev_close": float(output.get('base', 0)),
-                            "change": float(output.get('diff', 0)),
-                            "change_rate": float(output.get('rate', 0)),
-                            "name": output.get('hnam', ticker),
-                            "raw": output
-                        }
-            except: pass
-        return {}
+        if not path: return {}
+            
+        market = (meta and meta.get('api_market_code')) or "NAS"
+        market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        kis_market = market_map_4to3.get(market.upper(), market.upper())
+        if len(kis_market) > 3 and kis_market != "IDX":
+             kis_market = kis_market[:3]
+
+        url = f"{Config.KIS_BASE_URL}{path}"
+        params = {"AUTH": "", "EXCD": kis_market, "SYMB": ticker}
+        
+        try:
+            headers = cls._get_headers(token, tr_id=tr_id)
+            res = requests.get(url, headers=headers, params=params, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                output = data.get('output', {})
+                if output:
+                    def safe_float(val, default=0.0):
+                        try:
+                            if val is None or str(val).strip() == "": return default
+                            return float(val)
+                        except: return default
+
+                    price = safe_float(output.get('last')) or safe_float(output.get('clos'))
+                    return {
+                        "price": price,
+                        "prev_close": safe_float(output.get('base')),
+                        "change": safe_float(output.get('diff')),
+                        "change_rate": safe_float(output.get('rate')),
+                        "name": output.get('hnam', ticker),
+                        "raw": output
+                    }
+            return {}
+        except Exception as e:
+            logger.error(f"❌ Overseas Price Exception for {ticker}: {e}")
+            return {}
 
     @classmethod
     def fetch_overseas_ranking(cls, token: str, excd: str = "NAS") -> dict:
-        """해외 주식 시가총액 순위 조회"""
+        """해외 주식 시가총액 순위 조회 (VTS 대응)"""
         tr_id, path = cls._get_api_info("해외주식_시가총액순위")
         if not path: return {}
         
-        # EXCD 보정
-        market_map = {"NASD": "NASD", "NAS": "NASD", "NYSE": "NYSE", "AMS": "AMEX"}
-        kis_excd = market_map.get(excd.upper(), excd.upper())
+        # EXCD 보정 (3자리만 사용)
+        market_map = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS", "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
+        kis_excd = market_map.get(excd.upper(), excd.upper()[:3])
 
         url = f"{Config.KIS_BASE_URL}{path}"
-        params = {"AUTH": "", "EXCD": kis_excd, "VOL_RANG": "0"}
+        params = {"AUTH": "", "EXCD": kis_excd, "GUBN": "0"}
         
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 headers = cls._get_headers(token, tr_id=tr_id)
-                res = requests.get(url, headers=headers, params=params, timeout=5)
+                res = requests.get(url, headers=headers, params=params, timeout=7)
                 if res.status_code == 200:
                     data = res.json()
-                    if data.get('output'):
+                    if data.get('output2'):
+                        data['output'] = data['output2'] # 필드 규격 통일
                         return data
                 elif res.status_code == 500 or "초당" in res.text:
-                    logger.warning(f"⏳ Rate limit hit (Overseas Ranking). Retrying in 1s...")
-                    time.sleep(1.1)
+                    logger.warning(f"⏳ Rate limit hit (Overseas Ranking {kis_excd}). Retrying in 1.5s...")
+                    time.sleep(1.5)
                     continue
-                else: break
-            except:
-                time.sleep(1.1)
+                else: 
+                    logger.error(f"❌ Overseas Ranking Error {res.status_code}: {res.text}")
+                    break
+            except Exception as e:
+                logger.error(f"❌ Overseas Ranking Exception: {e}")
+                time.sleep(1.5)
         return {}
 
     @classmethod
     def fetch_domestic_ranking(cls, token: str, mrkt_div: str = "0000") -> dict:
-        """국내 주식 시가총액 순위 조회"""
+        """국내 주식 시가총액 순위 조회 (VTS 대응 폴백 포함)"""
+        # 모의투자(VTS) 환경에서는 랭킹 API가 작동하지 않으므로 마스터 파일 기반 폴백 사용
+        if Config.KIS_IS_VTS:
+            from services.market.master_data_service import MasterDataService
+            top_stocks = MasterDataService.get_top_market_cap_tickers(100)
+            if top_stocks:
+                logger.info(f"💡 VTS mode: Using MasterDataService for domestic ranking.")
+                return {"output": top_stocks}
+
         tr_id, path = cls._get_api_info("국내주식_시가총액순위")
         if not path: return {}
         
         url = f"{Config.KIS_BASE_URL}{path}"
-        # VTS에서는 J와 0을 모두 시도하며 지연을 둡니다.
-        for div_code in ["J", "0"]:
+        for div_code in ["J"]: # '0'은 유효하지 않으므로 'J'만 시도
             params = {
                 "fid_cond_mrkt_div_code": div_code,
                 "fid_cond_scr_div_code": "20170",
@@ -189,13 +248,24 @@ class KisFetcher:
                 res = requests.get(url, headers=headers, params=params, timeout=5)
                 if res.status_code == 200:
                     data = res.json()
-                    if data.get('output'):
+                    # VTS 환경에서는 랭킹 데이터가 output2에 담겨오는 경우가 많음
+                    output = data.get('output') or data.get('output2')
+                    if output:
+                        logger.info(f"✅ Success fetching domestic ranking with div_code={div_code} (Count: {len(output)})")
+                        data['output'] = output # 평탄화
                         return data
+                    else:
+                        logger.warning(f"⚠️ Domestic ranking output empty for {div_code}: {data.get('msg1')}")
                 elif res.status_code == 500 or "초당" in res.text:
-                    time.sleep(1.1)
+                    logger.warning(f"⏳ Rate limit or 500 error for ranking. Waiting 1.5s...")
+                    time.sleep(1.5)
                     continue
-                time.sleep(1.1)
-            except: pass
+                else:
+                    logger.error(f"❌ Domestic Ranking Error {res.status_code}: {res.text}")
+                time.sleep(1.2)
+            except Exception as e:
+                logger.error(f"❌ Domestic Ranking Exception: {e}")
+                time.sleep(1.2)
         return {}
 
     @classmethod
@@ -216,6 +286,9 @@ class KisFetcher:
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
             res = requests.get(url, headers=headers, params=params, timeout=5)
+            if res.status_code == 500 or "초당" in res.text:
+                logger.warning(f"⏳ TPS Limit hit [Domestic Daily {ticker}]. Waiting 1.5s...")
+                time.sleep(1.5)
             return res.json()
         except Exception as e:
             logger.error(f"Error fetching daily price for {ticker}: {e}")
@@ -224,29 +297,66 @@ class KisFetcher:
     @classmethod
     def fetch_overseas_daily_price(cls, token: str, ticker: str, start_date: str, end_date: str) -> dict:
         """해외 주식 일자별 시세 조회"""
-        tr_id, path = cls._get_api_info("해외주식_기간별시세")
-        if not path: path = "/uapi/overseas-stock/v1/quotations/dailyprice"
+        from services.market.stock_meta_service import StockMetaService
+        tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
+        if not path:
+            path = "/uapi/overseas-stock/v1/quotations/dailyprice"
         
         url = f"{Config.KIS_BASE_URL}{path}"
         
-        # 지수(Index) 심볼 체크 (SPX, NAS, VIX 등)
         excd = "NAS"
         if ticker in ["SPX", "NAS", "VIX", "DJI", "TSX"]:
             excd = "IDX"
+        else:
+            try:
+                meta = StockMetaService.get_stock_meta(ticker)
+                if meta and meta.api_market_code:
+                    excd = meta.api_market_code
+            except: pass
+
+        if tr_id == "FHKST03030100":
+            # 차트 API (지수용 등)
+            mrkt_map = {"NASD": "N", "NAS": "N", "NYSE": "Y", "NYS": "Y", "AMEX": "A", "AMS": "A", "IDX": "U"}
+            mrkt_code = mrkt_map.get(excd.upper(), "N")
             
-        params = {
-            "AUTH": "",
-            "EXCD": excd, 
-            "SYMB": ticker,
-            "GUBN": "0",
-            "BYMD": "",
-            "MODP": "Y"
-        }
+            params = {
+                "fid_cond_mrkt_div_code": mrkt_code,
+                "fid_input_iscd": ticker,
+                "fid_input_date_1": start_date,
+                "fid_input_date_2": end_date,
+                "fid_period_div_code": "D"
+            }
+        else:
+            # 기존 해외주식_기간별시세 (HHDFS76240000)
+            # VTS여도 HHDFS TR이면 3자리를 기대함
+            market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+            kis_excd = market_map_4to3.get(excd.upper(), excd.upper())
+            if len(kis_excd) > 3 and kis_excd != "IDX": kis_excd = kis_excd[:3]
+                
+            params = {
+                "AUTH": "",
+                "EXCD": kis_excd, 
+                "SYMB": ticker,
+                "GUBN": "0",
+                "BYMD": "",
+                "MODP": "0" 
+            }
+
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
             res = requests.get(url, headers=headers, params=params, timeout=5)
-            # 해외주식은 응답 구조가 다를 수 있음
-            return res.json()
+            
+            if res.status_code == 500 or "초당" in res.text:
+                logger.warning(f"⏳ TPS Limit hit [Overseas Daily {ticker}]. Waiting 1.5s...")
+                time.sleep(1.5)
+                logger.error(f"❌ Overseas Price Error {res.status_code} [Daily]: {url} | TR: {tr_id} | Params: {params} | Body: {res.text}")
+                return {}
+            
+            data = res.json()
+            if data.get('output2') and not data.get('output'):
+                data['output'] = data['output2']
+                
+            return data
         except Exception as e:
             logger.error(f"Error fetching overseas daily price for {ticker}: {e}")
             return {}
