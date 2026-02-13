@@ -74,12 +74,13 @@ class SchedulerService:
             logger.info("✅ Scheduler and Real-time WebSocket Service Started.")
             
             # 3. 자동 매매 시작 여부 문의
-            cls._send_start_inquiry()
 
             # 4. 앱 기동 직후 KIS 잔고 동기화
             try:
                 PortfolioService.sync_with_kis("sean")
                 logger.info("✅ Portfolio synced with KIS on startup.")
+                cls._send_start_inquiry()
+
             except Exception as e:
                 logger.error(f"❌ Failed to sync portfolio with KIS on startup: {e}")
 

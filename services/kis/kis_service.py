@@ -4,6 +4,7 @@ import time
 import os
 from datetime import datetime
 from config import Config
+from services.market.market_hour_service import MarketHourService
 from utils.logger import get_logger
 
 logger = get_logger("kis_service")
@@ -137,19 +138,11 @@ class KisService:
         return None
 
     @classmethod
-    def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy"):
-        """국내 주식 주문 (매수/매도)"""
-        if order_type == "buy":
-            tr_id = "VTTC0802U" 
-        else:
-            tr_id = "VTTC0801U"
-            
+    def _send_domestic_order(cls, ticker: str, quantity: int, tr_id: str, ord_dvsn: str, ord_price: str, log_tag: str):
+        """국내주식 주문 공통 실행"""
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         headers = cls.get_headers(tr_id)
-        
-        ord_dvsn = "00" if price > 0 else "01"
-        ord_price = str(price) if price > 0 else "0"
-        
+
         body = {
             "CANO": Config.KIS_ACCOUNT_NO,
             "ACNT_PRDT_CD": "01",
@@ -158,22 +151,78 @@ class KisService:
             "ORD_QTY": str(quantity),
             "ORD_UNPR": ord_price
         }
-        
+
         try:
             res = requests.post(url, headers=headers, data=json.dumps(body))
             res.raise_for_status()
             data = res.json()
-            
+
             if data['rt_cd'] != '0':
-                logger.error(f"❌ Order failed: {data['msg1']}")
+                logger.error(f"❌ {log_tag} failed: {data['msg1']}")
                 return {"status": "failed", "msg": data['msg1']}
-                
-            logger.info(f"✅ Order Success! [{order_type.upper()}] {ticker} {quantity}qty")
-            return {"status": "success", "data": data['output']}
-            
+
+            logger.info(f"✅ {log_tag} success! {ticker} {quantity}qty")
+            return {"status": "success", "data": data.get('output', {})}
         except Exception as e:
-            logger.error(f"❌ Error sending order: {e}")
+            logger.error(f"❌ Error sending {log_tag}: {e}")
             return {"status": "error", "msg": str(e)}
+
+    @classmethod
+    def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy"):
+        """국내 주식 주문 (매수/매도)"""
+        if order_type == "buy":
+            tr_id = "VTTC0802U" 
+        else:
+            tr_id = "VTTC0801U"
+
+        ord_dvsn = "00" if price > 0 else "01"
+        ord_price = str(price) if price > 0 else "0"
+        return cls._send_domestic_order(
+            ticker=ticker,
+            quantity=quantity,
+            tr_id=tr_id,
+            ord_dvsn=ord_dvsn,
+            ord_price=ord_price,
+            log_tag=f"Order [{order_type.upper()}]"
+        )
+
+    @classmethod
+    def send_after_hours_order(cls, ticker: str, quantity: int, order_type: str = "buy", ord_dvsn: str = None):
+        """
+        한국 사후장 주문(실전 전용)
+        - Config.KIS_ENABLE_AFTER_HOURS_ORDER=True 일 때만 허용
+        - 모의투자(VTS)에서는 차단
+        """
+        if Config.KIS_IS_VTS:
+            return {"status": "failed", "msg": "사후장 주문은 모의투자(VTS)에서 지원하지 않습니다."}
+        if not Config.KIS_ENABLE_AFTER_HOURS_ORDER:
+            return {"status": "failed", "msg": "사후장 주문이 비활성화되어 있습니다. (KIS_ENABLE_AFTER_HOURS_ORDER=false)"}
+        if not ticker.isdigit():
+            return {"status": "failed", "msg": "사후장 주문은 국내 주식 티커만 지원합니다."}
+        if not MarketHourService.is_kr_after_hours_open():
+            return {"status": "failed", "msg": "한국 사후장 주문 가능 시간이 아닙니다."}
+
+        tr_id = "TTTC0802U" if order_type == "buy" else "TTTC0801U"
+        ord_dvsn_final = (ord_dvsn or Config.KIS_AFTER_HOURS_ORD_DVSN or "81").strip()
+
+        return cls._send_domestic_order(
+            ticker=ticker,
+            quantity=quantity,
+            tr_id=tr_id,
+            ord_dvsn=ord_dvsn_final,
+            ord_price="0",
+            log_tag=f"After-hours [{order_type.upper()}]"
+        )
+
+    @classmethod
+    def send_after_hours_buy(cls, ticker: str, quantity: int, ord_dvsn: str = None):
+        """한국 사후장 매수 주문 (실전+설정 활성화 전용)"""
+        return cls.send_after_hours_order(ticker=ticker, quantity=quantity, order_type="buy", ord_dvsn=ord_dvsn)
+
+    @classmethod
+    def send_after_hours_sell(cls, ticker: str, quantity: int, ord_dvsn: str = None):
+        """한국 사후장 매도 주문 (실전+설정 활성화 전용)"""
+        return cls.send_after_hours_order(ticker=ticker, quantity=quantity, order_type="sell", ord_dvsn=ord_dvsn)
 
     @classmethod
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD"):

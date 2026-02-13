@@ -12,6 +12,10 @@ class Config:
     KIS_WS_URL = os.getenv("KIS_WS_URL", "ws://ops.koreainvestment.com:21000")
     KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO")
     KIS_IS_VTS = os.getenv("KIS_IS_VTS", "true").lower() == "true"
+    # 실전투자 환경에서만 사후장(시간외) 주문 메서드 활성화
+    KIS_ENABLE_AFTER_HOURS_ORDER = os.getenv("KIS_ENABLE_AFTER_HOURS_ORDER", "false").lower() == "true"
+    # 사후장 주문 구분값(기본: 장후 시간외)
+    KIS_AFTER_HOURS_ORD_DVSN = os.getenv("KIS_AFTER_HOURS_ORD_DVSN", "81")
     
     # Slack 설정
     SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")

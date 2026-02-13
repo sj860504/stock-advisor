@@ -195,7 +195,10 @@ class TradingStrategyService:
         if ticker.isdigit():
             tz = pytz.timezone("Asia/Seoul")
             now = datetime.now(tz)
-            close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
+            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+            kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+            end_h, end_m = (18, 0) if kr_allow_extended else (15, 30)
+            close_time = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
             return now.weekday() < 5 and (close_time - timedelta(minutes=minutes)) <= now <= close_time
         tz = pytz.timezone("America/New_York")
         now = datetime.now(tz)
@@ -229,7 +232,7 @@ class TradingStrategyService:
         # 시장 시간 체크
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         if ticker.isdigit():
-            if not MarketHourService.is_kr_market_open():
+            if not MarketHourService.is_kr_market_open(allow_extended=allow_extended):
                 return False
         else:
             if not MarketHourService.is_us_market_open(allow_extended=allow_extended):
@@ -826,7 +829,7 @@ class TradingStrategyService:
             # 시장 운영 시간 체크
             allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             if ticker.isdigit():
-                if not MarketHourService.is_kr_market_open():
+                if not MarketHourService.is_kr_market_open(allow_extended=allow_extended):
                     logger.info(f"⏭️ {ticker} 한국시장 비개장. 매수 스킵.")
                     return False
             else:
@@ -916,7 +919,7 @@ class TradingStrategyService:
             # 시장 운영 시간 체크
             allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             if ticker.isdigit():
-                if not MarketHourService.is_kr_market_open():
+                if not MarketHourService.is_kr_market_open(allow_extended=allow_extended):
                     logger.info(f"⏭️ {ticker} 한국시장 비개장. 매도 스킵.")
                     return False
             else:

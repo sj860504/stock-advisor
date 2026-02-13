@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 import pytz
+from config import Config
 
 class MarketHourService:
     """한국 및 미국 시장 운영 시간 체크 서비스"""
@@ -13,7 +14,11 @@ class MarketHourService:
     
     @staticmethod
     def is_kr_market_open(allow_extended: bool = False) -> bool:
-        """한국 시장 운영 여부 (09:00 ~ 15:30, 평일)"""
+        """한국 시장 운영 여부 (평일)
+        - 정규장: 09:00 ~ 15:30
+        - 시간외 포함: 09:00 ~ 18:00 (실전)
+        - 모의투자(VTS): 시간외 미지원으로 정규장만 허용
+        """
         tz = pytz.timezone('Asia/Seoul')
         now = datetime.now(tz)
         
@@ -22,9 +27,19 @@ class MarketHourService:
             return False
             
         start_time = time(9, 0)
-        end_time = time(15, 30)
+        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        end_time = time(18, 0) if kr_allow_extended else time(15, 30)
         
         return start_time <= now.time() <= end_time
+
+    @staticmethod
+    def is_kr_after_hours_open() -> bool:
+        """한국 사후장(시간외) 주문 가능 여부 (평일 15:40 ~ 18:00)"""
+        tz = pytz.timezone('Asia/Seoul')
+        now = datetime.now(tz)
+        if now.weekday() >= 5:
+            return False
+        return time(15, 40) <= now.time() <= time(18, 0)
 
     @staticmethod
     def is_us_market_open(allow_extended: bool = False) -> bool:
@@ -66,9 +81,11 @@ class MarketHourService:
         if now_kr.weekday() >= 5 and now_us.weekday() >= 5:
             return False
 
-        # KR window: 08:00 ~ 15:30 (기본)
+        # KR window: 08:00 ~ 정규장/시간외 종료
+        # 모의투자(VTS)는 시간외 주문이 불가하여 KR 확장시간을 적용하지 않음
         kr_start = (datetime.combine(now_kr.date(), time(9, 0)) - timedelta(minutes=pre_open_lead_minutes)).time()
-        kr_end = time(15, 30)
+        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        kr_end = time(18, 0) if kr_allow_extended else time(15, 30)
         kr_open = now_kr.weekday() < 5 and cls._is_time_between(now_kr.time(), kr_start, kr_end)
 
         # US window
