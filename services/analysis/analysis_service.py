@@ -43,7 +43,7 @@ class AnalysisService:
             if not hist.empty:
                 indicators = IndicatorService.get_latest_indicators(hist['Close'])
                 rsi = indicators.get('rsi')
-                emas = {k: v for k, v in indicators.items() if k.startswith('ema')}
+                emas = indicators.get('ema', {})
                 
                 # Bollinger Bands
                 bb = IndicatorService.calculate_bollinger_bands(hist['Close'])

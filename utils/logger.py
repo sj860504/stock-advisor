@@ -4,27 +4,27 @@ from logging.handlers import RotatingFileHandler
 
 def get_logger(name: str):
     """
-    ?좏뵆由ъ??댁뀡 ?꾩뿭 濡쒓굅 ?ㅼ젙
-    - 肄섏넄 異쒕젰 (INFO ?덈꺼)
-    - ?뚯씪 ???(DEBUG ?덈꺼, rotating)
+    애플리케이션 공통 로거 설정
+    - 콘솔 출력 (INFO 이상)
+    - 파일 로그 (DEBUG 이상, rotating)
     """
     logger = logging.getLogger(name)
     
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
         
-        # ?щ㎎ ?ㅼ젙
+        # 포맷 설정
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         
-        # 1. 肄섏넄 ?몃뱾??
+        # 1. 콘솔 핸들러
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
         
-        # 2. ?뚯씪 ?몃뱾??(logs ?붾젆?좊━?????
+        # 2. 파일 핸들러 (logs 디렉터리 저장)
         log_dir = "logs"
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)

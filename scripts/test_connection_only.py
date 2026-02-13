@@ -3,16 +3,16 @@ import json
 import os
 from dotenv import load_dotenv
 
-# ?섍꼍蹂??濡쒕뱶
+# 환경변수 로드
 load_dotenv()
 
 APP_KEY = os.getenv("KIS_APP_KEY")
 APP_SECRET = os.getenv("KIS_APP_SECRET")
-# 媛뺤젣 ?ㅼ쟾?ъ옄 URL ?뚯뒪??
+# 실서버 URL
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 def test_token():
-    print("?뵎 Testing Token Issue (REAL SERVER)...")
+    print("🔑 토큰 발급 테스트(실서버)...")
     print(f"Target URL: {BASE_URL}")
     print(f"App Key (Start): {APP_KEY[:5]}...")
     
@@ -30,16 +30,16 @@ def test_token():
         
         if res.status_code == 200:
             data = res.json()
-            print("??Token Success!")
+            print("✅ Token Success!")
             print(f"Access Token: {data['access_token'][:10]}...")
             return data['access_token']
         else:
-            print("??Token Failed!")
+            print("❌ Token Failed!")
             print(f"Response: {res.text}")
             return None
             
     except Exception as e:
-        print(f"??Error: {e}")
+        print(f"❌ Error: {e}")
         return None
 
 if __name__ == "__main__":

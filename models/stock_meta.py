@@ -95,3 +95,18 @@ class ApiTrMeta(Base):
 
     def __repr__(self):
         return f"<ApiTrMeta(api='{self.api_name}', real='{self.tr_id_real}', vts='{self.tr_id_vts}')>"
+
+class DcfOverride(Base):
+    """
+    사용자 지정 DCF 입력값 저장
+    """
+    __tablename__ = 'dcf_overrides'
+    
+    ticker = Column(String(20), primary_key=True)
+    fcf_per_share = Column(Float)
+    beta = Column(Float)
+    growth_rate = Column(Float)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f"<DcfOverride(ticker='{self.ticker}')>"

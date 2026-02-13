@@ -3,13 +3,13 @@ import numpy as np
 
 class IndicatorService:
     """
-    湲곗닠??吏??怨꾩궛 ?꾨떞 ?쒕퉬??
-    紐⑤뱺 怨꾩궛? pandas Series ?먮뒗 DataFrame???낅젰諛쏆븘 泥섎━?⑸땲??
+    기술적 지표 계산 전담 서비스
+    모든 계산은 pandas Series 또는 DataFrame을 입력받아 처리합니다.
     """
 
     @staticmethod
     def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-        """RSI (Relative Strength Index) 怨꾩궛"""
+        """RSI (Relative Strength Index) 계산"""
         if series.empty: return pd.Series()
         
         delta = series.diff(1)
@@ -22,13 +22,13 @@ class IndicatorService:
 
     @staticmethod
     def calculate_ema(series: pd.Series, period: int) -> pd.Series:
-        """EMA (Exponential Moving Average) 怨꾩궛"""
+        """EMA (Exponential Moving Average) 계산"""
         if series.empty: return pd.Series()
         return series.ewm(span=period, adjust=False).mean()
 
     @staticmethod
     def calculate_bollinger_bands(series: pd.Series, window: int = 20, num_std: int = 2) -> dict:
-        """蹂쇰┛? 諛대뱶 怨꾩궛 (?곷떒, ?섎떒, 以묎컙??"""
+        """볼린저 밴드 계산 (상단, 하단, 중간선)"""
         if series.empty: return {}
         
         sma = series.rolling(window=window).mean()
@@ -45,10 +45,10 @@ class IndicatorService:
         
     @staticmethod
     def get_latest_indicators(series: pd.Series) -> dict:
-        """理쒖떊 ?쒖젏??二쇱슂 吏?쒕뱾????踰덉뿉 諛섑솚 (?ㅼ?以꾨윭??"""
+        """최신 시점의 주요 지표를 한 번에 반환 (RSI/EMA)"""
         if series.empty: return {}
         
-        # EMA 紐⑥쓬
+        # EMA 묶음
         emas = {}
         for span in [5, 10, 20, 60, 100, 120, 200]:
             if len(series) >= span:
@@ -60,7 +60,10 @@ class IndicatorService:
         rsi_series = IndicatorService.calculate_rsi(series)
         rsi = round(rsi_series.iloc[-1], 2) if not rsi_series.empty and not np.isnan(rsi_series.iloc[-1]) else None
         
+        # 하위 호환을 위해 EMA는 dict와 평탄화 키 둘 다 제공
+        flat_emas = {f"ema{span}": value for span, value in emas.items()}
         return {
             "rsi": rsi,
-            "ema": emas
+            "ema": emas,
+            **flat_emas
         }

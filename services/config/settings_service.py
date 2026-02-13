@@ -23,6 +23,15 @@ class SettingsService:
         "STRATEGY_DIP_BUY_PCT": (str(Config.STRATEGY_DIP_BUY_PCT), "급락 매수 기준 (%)"),
         "STRATEGY_OVERSOLD_RSI": (str(Config.STRATEGY_OVERSOLD_RSI), "과매도 RSI 기준"),
         "STRATEGY_OVERBOUGHT_RSI": (str(Config.STRATEGY_OVERBOUGHT_RSI), "과매수 RSI 기준"),
+        "STRATEGY_ALLOW_EXTENDED_HOURS": ("1", "미국 프리/애프터마켓 주문 허용(1=허용,0=미허용)"),
+        "STRATEGY_TICK_ENABLED": ("0", "틱매매 전략 사용 여부(1=사용,0=미사용)"),
+        "STRATEGY_TICK_TICKER": ("005930", "틱매매 대상 티커 (하루 1종목)"),
+        "STRATEGY_TICK_CASH_RATIO": ("0.20", "틱매매에 사용할 여유 현금 비중(총자산 대비)"),
+        "STRATEGY_TICK_ENTRY_PCT": ("-1.0", "틱매매 1차 진입 기준 등락률(%)"),
+        "STRATEGY_TICK_ADD_PCT": ("-3.0", "틱매매 2차 추가매수 기준 등락률(%)"),
+        "STRATEGY_TICK_TAKE_PROFIT_PCT": ("1.0", "틱매매 익절 기준 수익률(%)"),
+        "STRATEGY_TICK_STOP_LOSS_PCT": ("-5.0", "틱매매 손절 기준 수익률(%)"),
+        "STRATEGY_TICK_CLOSE_MINUTES": ("5", "장마감 전 현금화 시도 분")
     }
 
     @classmethod

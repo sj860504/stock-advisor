@@ -18,6 +18,8 @@ class PortfolioService:
     """
     포트폴리오 관리 서비스 (DB Version)
     """
+    _last_balance_summary = {}
+    _last_balance_summary: dict = {}
 
     @classmethod
     def save_portfolio(cls, user_id: str, holdings: List[dict], cash_balance: float = None):
@@ -100,18 +102,26 @@ class PortfolioService:
                 "ticker": ticker,
                 "name": item.get('prdt_name', 'Unknown'),
                 "quantity": int(item.get('hldg_qty', 0)),
-                "buy_price": float(item.get('pavg_unit_amt', 0)),
+                # KIS 잔고 응답 기준 평균단가: pchs_avg_pric
+                "buy_price": float(item.get('pchs_avg_pric') or item.get('pavg_unit_amt') or 0),
                 "current_price": float(item.get('prpr', 0)),
+                "change_rate": float(item.get('fltt_rt', 0) or 0),
                 "sector": "Others"
             })
             
         summary_list = balance_data.get('summary', [])
         summary = summary_list[0] if summary_list else {}
-        cash = float(summary.get('dnca_tot_amt', 0))
+        cls._last_balance_summary = summary
+        # 사용자가 지정한 기준: prvs_rcdl_excc_amt를 가용 현금으로 간주
+        cash = float(summary.get('prvs_rcdl_excc_amt') or summary.get('dnca_tot_amt') or 0)
         
         # DB에 영구 저장
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
         return holdings
+
+    @classmethod
+    def get_last_balance_summary(cls) -> dict:
+        return cls._last_balance_summary or {}
 
     # ... 기존 분석 및 리밸런싱 로직 (DB 기반으로 필드 연동 유지)
     @classmethod

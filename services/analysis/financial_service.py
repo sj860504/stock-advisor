@@ -1,5 +1,4 @@
 import os
-import json
 import time
 from datetime import datetime
 import pandas as pd
@@ -91,6 +90,19 @@ class FinancialService:
     @classmethod
     def get_dcf_data(cls, ticker: str) -> dict:
         """DCF 계산에 필요한 데이터 반환 (KIS API 기반)"""
+        # 0. 사용자 지정 값 우선 적용
+        override = StockMetaService.get_dcf_override(ticker)
+        if override:
+            result = {
+                "fcf_per_share": override.fcf_per_share,
+                "beta": override.beta,
+                "growth_rate": override.growth_rate,
+                "timestamp": override.updated_at.timestamp() if override.updated_at else time.time(),
+                "source": "override"
+            }
+            cls._dcf_cache[ticker] = result
+            return result
+
         if ticker in cls._dcf_cache:
             cached = cls._dcf_cache[ticker]
             if time.time() - cached.get('timestamp', 0) < 1800:
@@ -121,7 +133,8 @@ class FinancialService:
                 "fcf_per_share": metrics.get('fcf_per_share'),
                 "beta": metrics.get('beta', 1.0),
                 "growth_rate": metrics.get('growth_rate', 0.05),
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "source": "kis"
             }
             
             cls._dcf_cache[ticker] = result
@@ -132,18 +145,54 @@ class FinancialService:
 
     @classmethod
     def get_overrides(cls) -> dict:
-        if os.path.exists(cls._overrides_path):
-            try:
-                with open(cls._overrides_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except: return {}
-        return {}
+        # 호환용: DB에 저장된 사용자 설정을 dict로 반환
+        try:
+            session = StockMetaService.get_session()
+            from models.stock_meta import DcfOverride
+            rows = session.query(DcfOverride).all()
+            return {
+                row.ticker: {
+                    "fcf_per_share": row.fcf_per_share,
+                    "beta": row.beta,
+                    "growth_rate": row.growth_rate,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None
+                }
+                for row in rows
+            }
+        except Exception:
+            return {}
 
     @classmethod
     def save_override(cls, ticker: str, params: dict):
-        overrides = cls.get_overrides()
-        overrides[ticker] = params
-        os.makedirs(os.path.dirname(cls._overrides_path), exist_ok=True)
-        with open(cls._overrides_path, 'w', encoding='utf-8') as f:
-            json.dump(overrides, f, indent=2)
-        return overrides[ticker]
+        row = StockMetaService.upsert_dcf_override(
+            ticker=ticker,
+            fcf_per_share=params.get("fcf_per_share"),
+            beta=params.get("beta"),
+            growth_rate=params.get("growth_rate")
+        )
+        if not row:
+            return {}
+        result = {
+            "fcf_per_share": row.fcf_per_share,
+            "beta": row.beta,
+            "growth_rate": row.growth_rate,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None
+        }
+        cls._dcf_cache[ticker] = {
+            **result,
+            "timestamp": time.time(),
+            "source": "override"
+        }
+        return result
+
+    @classmethod
+    def update_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float) -> dict:
+        """사용자 지정 DCF 입력값을 간단히 저장"""
+        return cls.save_override(
+            ticker,
+            {
+                "fcf_per_share": fcf_per_share,
+                "beta": beta,
+                "growth_rate": growth_rate
+            }
+        )

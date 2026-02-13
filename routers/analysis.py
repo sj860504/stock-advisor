@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
 from services.analysis.analysis_service import AnalysisService
+from services.strategy.trading_strategy_service import TradingStrategyService
 from services.analysis.financial_service import FinancialService
 from services.market.ticker_service import TickerService
-from models.schemas import ValuationResult, ReturnAnalysis
+from models.schemas import ValuationResult, ReturnAnalysis, DcfOverrideRequest, StrategyWeightOverrideRequest
 
 router = APIRouter(
     prefix="/analysis",
@@ -19,8 +20,9 @@ def resolve_ticker_or_404(ticker_input: str) -> str:
 @router.get("/valuation/{ticker_input}", response_model=ValuationResult)
 def get_valuation(ticker_input: str):
     """
-    ?대떦 醫낅ぉ(?대쫫 ?먮뒗 ?곗빱)??湲곗닠??吏??RSI, ?대룞?됯퇏)瑜?湲곕컲?쇰줈 留ㅼ닔/留ㅻ룄 ?섍껄???쒖떆?⑸땲??
-    ?? '?쇱꽦?꾩옄', '?뚯뒳??, '005930', 'TSLA'
+    해당 종목(한글명 또는 티커)의 기술적 지표(RSI, 이동평균)를 기반으로
+    매수/매도 신호를 제시합니다.
+    예: '삼성전자', '테슬라', '005930', 'TSLA'
     """
     real_ticker = resolve_ticker_or_404(ticker_input)
     result = AnalysisService.evaluate_stock(real_ticker)
@@ -33,7 +35,7 @@ def get_valuation(ticker_input: str):
 @router.get("/returns/{ticker_input}", response_model=ReturnAnalysis)
 def get_returns(ticker_input: str):
     """
-    2024??1??1?쇰????꾩옱源뚯????섏씡瑜좉낵 MDD(理쒕? ?숉룺)瑜?遺꾩꽍?⑸땲??
+    2024-01-01부터 현재까지 수익률과 MDD(최대 낙폭)을 분석합니다.
     """
     real_ticker = resolve_ticker_or_404(ticker_input)
     result = AnalysisService.analyze_returns(real_ticker)
@@ -95,3 +97,27 @@ def get_custom_dcf(
         "fair_value": result.get('value'),
         "error": result.get('error')
     }
+
+@router.put("/dcf-override")
+def update_dcf_override(payload: DcfOverrideRequest):
+    """
+    종목별 DCF 입력값(FCF, Beta, 성장률)을 사용자 설정으로 저장합니다.
+    """
+    real_ticker = resolve_ticker_or_404(payload.ticker)
+    override = FinancialService.update_dcf_override(
+        real_ticker,
+        payload.fcf_per_share,
+        payload.beta,
+        payload.growth_rate
+    )
+    if not override:
+        raise HTTPException(status_code=500, detail="Failed to save DCF override")
+    return {"ticker": real_ticker, "override": override}
+
+@router.put("/strategy/weights")
+def update_strategy_weights(payload: StrategyWeightOverrideRequest):
+    """
+    종목별 점수 가중치 오버라이드를 설정합니다.
+    """
+    overrides = TradingStrategyService.set_top_weight_overrides(payload.weights)
+    return {"overrides": overrides}

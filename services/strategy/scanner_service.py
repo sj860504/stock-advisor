@@ -41,7 +41,7 @@ class ScannerService:
                 
                 indicators = IndicatorService.get_latest_indicators(hist['Close'])
                 rsi = indicators.get('rsi', 50)
-                ema200 = indicators.get('ema200', 0)
+                ema200 = indicators.get('ema200') or indicators.get('ema', {}).get(200, 0)
                 
                 prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else price
                 

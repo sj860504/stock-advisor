@@ -22,17 +22,17 @@ except Exception as e:
 # Manual Fixes / Fuzzy Map
 manual_map = {
     "samsung": "005930",
-    "ACE?ㅼ슦": "ACE 誘멸뎅諛곕떦?ㅼ슦議댁뒪", 
-    "ACE鍮낇뀒??: "ACE 誘멸뎅鍮낇뀒?촖OP7 Plus",
-    "ACE?뚯뒳??: "ACE ?뚯뒳?쇰갭瑜섏껜?몄븸?곕툕", 
-    "KODEX S&P": "KODEX 誘멸뎅S&P500", 
-    "TIGER DAWOO": "TIGER 誘멸뎅?ㅼ슦議댁뒪30",
-    "TIGER QQQ": "TIGER 誘멸뎅?섏뒪??00",
-    "TIGER S&P": "TIGER 誘멸뎅S&P500",
-    "TIGER 誘멸뎅S&P500": "TIGER 誘멸뎅S&P500",
-    "TIGER 誘멸뎅?섏뒪??00": "TIGER 誘멸뎅?섏뒪??00",
-    "TIGER 誘멸뎅諛곕떦?ㅼ슦議댁뒪": "TIGER 誘멸뎅諛곕떦?ㅼ슦議댁뒪",
-    "ACE 誘멸뎅諛곕떦?ㅼ슦議댁뒪": "ACE 誘멸뎅諛곕떦?ㅼ슦議댁뒪"
+    "ACE 다우": "ACE 미국배당다우존스",
+    "ACE 빅테크": "ACE 미국빅테크TOP7 Plus",
+    "ACE 테슬라": "ACE 테슬라밸류체인액티브",
+    "KODEX S&P": "KODEX 미국S&P500",
+    "TIGER DAWOO": "TIGER 미국다우존스30",
+    "TIGER QQQ": "TIGER 미국나스닥100",
+    "TIGER S&P": "TIGER 미국S&P500",
+    "TIGER 미국S&P500": "TIGER 미국S&P500",
+    "TIGER 미국나스닥100": "TIGER 미국나스닥100",
+    "TIGER 미국배당다우존스": "TIGER 미국배당다우존스",
+    "ACE 미국배당다우존스": "ACE 미국배당다우존스"
 }
 
 # Resolve Names to Codes

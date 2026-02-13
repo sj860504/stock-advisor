@@ -97,3 +97,51 @@ class ReportService:
             msg += f"{state_icon} **{g['name']} ({g['ticker']})**: +{g['change']:.2f}% (${g['price']:.2f})\n"
             
         return msg
+
+    @staticmethod
+    def format_portfolio_report(holdings: list, cash: float, states: dict = None, summary: dict = None) -> str:
+        """포트폴리오 현황 리포트 포맷팅"""
+        total_value = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in holdings)
+        total_eval = cash + total_value
+        total_profit = None
+        if summary:
+            try:
+                total_profit = float(summary.get("evlu_pfls_smtl_amt"))
+            except Exception:
+                total_profit = None
+        msg_lines = [
+            "📌 **포트폴리오 현황**",
+            f"- 전체 평가 금액: {total_eval:,.0f}원",
+            f"- 보유 현금: {cash:,.0f}원",
+            f"- 보유 종목 수: {len(holdings)}",
+            f"- 보유 평가액: {total_value:,.0f}원",
+        ]
+        if total_profit is not None:
+            total_color = "🔴" if total_profit > 0 else ("🔵" if total_profit < 0 else "⚪")
+            msg_lines.append(f"- 계좌 전체 손익: {total_color} {total_profit:,.0f}원")
+        for h in holdings:
+            ticker = h.get("ticker")
+            name = h.get("name") or ""
+            qty = h.get("quantity", 0)
+            buy_price = h.get("buy_price", 0)
+            current_price = h.get("current_price", 0)
+            change_rate = float(h.get("change_rate", 0) or 0)
+            if states and ticker in states:
+                state = states[ticker]
+                if state and state.change_rate is not None:
+                    change_rate = state.change_rate
+                if current_price <= 0 and getattr(state, "current_price", 0) > 0:
+                    current_price = state.current_price
+            profit_rate = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
+            profit_amt = (current_price - buy_price) * qty if buy_price > 0 else 0.0
+            profit_color = "🔴" if profit_amt > 0 else ("🔵" if profit_amt < 0 else "⚪")
+            msg_lines.append(
+                f"  • {ticker} {name} "
+                f"{current_price:,.0f}원 "
+                f"({change_rate:+.2f}%) "
+                f"{qty}주 "
+                f"평균단가 {buy_price:,.0f}원 "
+                f"수익률 {profit_rate:+.2f}% "
+                f"수익금 {profit_color} {profit_amt:,.0f}원"
+            )
+        return "\n".join(msg_lines)

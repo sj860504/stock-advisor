@@ -9,6 +9,7 @@ import os
 import asyncio
 from services.strategy.trading_strategy_service import TradingStrategyService # 추가
 from services.notification.alert_service import AlertService
+from services.trading.portfolio_service import PortfolioService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -17,6 +18,21 @@ async def lifespan(app: FastAPI):
     
     # 스케줄러 실행 (웹소켓 서비스 포함)
     SchedulerService.start()
+
+    # 포트폴리오 현황 알림
+    try:
+        user_id = "sean"
+        PortfolioService.sync_with_kis(user_id)
+        holdings = PortfolioService.load_portfolio(user_id)
+        summary = PortfolioService.get_last_balance_summary()
+        cash = float(summary.get("prvs_rcdl_excc_amt") or PortfolioService.load_cash(user_id) or 0)
+        from services.notification.report_service import ReportService
+        from services.market.market_data_service import MarketDataService
+        states = MarketDataService.get_all_states()
+        msg = ReportService.format_portfolio_report(holdings, cash, states, summary)
+        AlertService.send_slack_alert(msg)
+    except Exception as e:
+        AlertService.send_slack_alert(f"⚠️ 포트폴리오 알림 실패: {e}")
     
     yield
     

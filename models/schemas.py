@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 class StockRequest(BaseModel):
     ticker: str
@@ -33,6 +33,15 @@ class PriceAlert(BaseModel):
     target_price: float
     condition: str  # above, below
     is_active: bool = True
+
+class DcfOverrideRequest(BaseModel):
+    ticker: str
+    fcf_per_share: float
+    beta: float
+    growth_rate: float
+
+class StrategyWeightOverrideRequest(BaseModel):
+    weights: Dict[str, int]
 
 class NewsItem(BaseModel):
     title: str

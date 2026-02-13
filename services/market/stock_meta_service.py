@@ -2,7 +2,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from datetime import datetime
-from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta
+from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta, DcfOverride
 from models.portfolio import Portfolio, PortfolioHolding
 from models.trade_history import TradeHistory
 from models.settings import Settings
@@ -208,6 +208,33 @@ class StockMetaService:
             session.rollback()
             logger.error(f"Error upserting api tr meta for {api_name}: {e}")
             return None
+
+    @classmethod
+    def upsert_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float):
+        """사용자 지정 DCF 입력값 저장/업데이트"""
+        session = cls.get_session()
+        try:
+            row = session.query(DcfOverride).filter_by(ticker=ticker).first()
+            if not row:
+                row = DcfOverride(ticker=ticker)
+                session.add(row)
+            
+            row.fcf_per_share = fcf_per_share
+            row.beta = beta
+            row.growth_rate = growth_rate
+            row.updated_at = datetime.now()
+            session.commit()
+            return row
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error upserting DCF override for {ticker}: {e}")
+            return None
+
+    @classmethod
+    def get_dcf_override(cls, ticker: str):
+        """사용자 지정 DCF 입력값 조회"""
+        session = cls.get_session()
+        return session.query(DcfOverride).filter_by(ticker=ticker).first()
 
     @classmethod
     def init_api_tr_meta(cls):

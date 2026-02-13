@@ -14,6 +14,7 @@ class KisService:
     """
     _access_token = None
     _token_expiry = None
+    _last_balance_data = None
     
     @classmethod
     def get_access_token(cls):
@@ -102,22 +103,38 @@ class KisService:
             "CTX_AREA_NK100": ""
         }
         
-        try:
-            res = requests.get(url, headers=headers, params=params)
-            res.raise_for_status()
-            data = res.json()
-            
-            if data['rt_cd'] != '0':
-                logger.error(f"❌ Balance fetch failed: {data['msg1']}")
-                return None
+        last_err = None
+        for attempt in range(3):
+            try:
+                res = requests.get(url, headers=headers, params=params, timeout=8)
+                if res.status_code >= 500:
+                    logger.warning(
+                        f"⏳ Balance API {res.status_code} (attempt {attempt + 1}/3). retrying..."
+                    )
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                res.raise_for_status()
+                data = res.json()
                 
-            return {
-                "holdings": data['output1'],
-                "summary": data['output2']
-            }
-        except Exception as e:
-            logger.error(f"❌ Error fetching balance: {e}")
-            return None
+                if data.get('rt_cd') != '0':
+                    logger.error(f"❌ Balance fetch failed: {data.get('msg1')}")
+                    return None
+                
+                result = {
+                    "holdings": data.get('output1', []),
+                    "summary": data.get('output2', [])
+                }
+                cls._last_balance_data = result
+                return result
+            except Exception as e:
+                last_err = e
+                time.sleep(1.2 * (attempt + 1))
+        
+        logger.error(f"❌ Error fetching balance after retries: {last_err}")
+        if cls._last_balance_data:
+            logger.warning("⚠️ Using last successful balance response as fallback.")
+            return cls._last_balance_data
+        return None
 
     @classmethod
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy"):

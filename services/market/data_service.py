@@ -16,8 +16,8 @@ logger = get_logger("data_service")
 
 class DataService:
     """
-    KIS API 기반 데이터 수집 및 지표 계산 서비스
-    - FinanceDataReader 의존성을 완전히 제거했습니다.
+        KIS API 기반 데이터 수집 및 지표 계산 서비스
+        - 지수 데이터는 KIS 실패 시 FinanceDataReader로 보완합니다.
     """
 
     @classmethod
@@ -118,8 +118,8 @@ class DataService:
             logger.error(f"Error fetching top US tickers via KIS: {e}")
             return ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL"]
 
-    @staticmethod
-    def get_price_history(ticker: str, days: int = 300) -> pd.DataFrame:
+    @classmethod
+    def get_price_history(cls, ticker: str, days: int = 300) -> pd.DataFrame:
         """KIS API를 통해 과거 N일간의 가격 데이터를 가져옵니다."""
         # 기존에 fetch_daily_price, fetch_overseas_daily_price를 이미 구현/정리했음을 가정
         from services.kis.fetch.kis_fetcher import KisFetcher
@@ -140,31 +140,21 @@ class DataService:
                 df = pd.DataFrame(res['output2'])
                 df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
             elif ticker in ["SPX", "NAS", "VIX", "DJI"]: # 해외 지수
-                # 지수 전용 TR 사용 (FHKST03030100)
-                tr_id = "FHKST03030100"
-                path = "/uapi/overseas-stock/v1/quotations/inquire-daily-chartprice"
-                params = {
-                    "fid_cond_mrkt_div_code": "U",
-                    "fid_input_iscd": ticker,
-                    "fid_input_date_1": start_date,
-                    "fid_input_date_2": end_date,
-                    "fid_period_div_code": "D"
-                }
-                headers = KisService.get_headers(tr_id)
-                res = requests.get(f"{Config.KIS_BASE_URL}{path}", headers=headers, params=params, timeout=5)
-                if res.status_code != 200:
-                    logger.error(f"❌ Index Fetch Error {res.status_code}: {res.text}")
-                    return pd.DataFrame()
+                # 지수 전용 TR은 KisFetcher 내부에서 처리 (VTS/실전 경로 차이 흡수)
+                res = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
+                rows = res.get('output2') or res.get('output') or []
+                df = pd.DataFrame(rows) if rows else pd.DataFrame()
+                if not df.empty:
+                    if 'stck_clpr' in df.columns:
+                        df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
+                    elif 'clos' in df.columns:
+                        df = df.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                    else:
+                        df = df.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
                 
-                try:
-                    data = res.json()
-                except Exception as je:
-                    logger.error(f"❌ JSON Decode Error for {ticker}: {je} | Response: {res.text[:100]}")
-                    return pd.DataFrame()
-
-                if not data.get('output2'): return pd.DataFrame()
-                df = pd.DataFrame(data['output2'])
-                df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
+                # KIS 지수 데이터가 비어있는 경우 FDR로 보완
+                if df.empty or 'Close' not in df.columns:
+                    df = cls._fallback_index_history_fdr(ticker, days)
             else: # 해외 일반 종목
                 res = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
                 if not res.get('output'): return pd.DataFrame()
@@ -219,9 +209,40 @@ class DataService:
             return pd.DataFrame()
 
     @classmethod
+    def _fallback_index_history_fdr(cls, ticker: str, days: int = 300) -> pd.DataFrame:
+        """KIS 지수 데이터 실패 시 FinanceDataReader로 보완"""
+        try:
+            import FinanceDataReader as fdr
+        except Exception as e:
+            logger.warning(f"⚠️ FinanceDataReader not available: {e}")
+            return pd.DataFrame()
+        
+        symbol_map = {
+            "SPX": "US500",
+            "NAS": "IXIC",
+            "DJI": "DJI",
+            "VIX": "VIX",
+        }
+        symbol = symbol_map.get(ticker, ticker)
+        
+        try:
+            from datetime import timedelta
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            df = fdr.DataReader(symbol, start_date)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.reset_index()
+            if "Date" not in df.columns and len(df.columns) > 0:
+                df = df.rename(columns={df.columns[0]: "Date"})
+            return df.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close"})
+        except Exception as e:
+            logger.warning(f"⚠️ FDR index fetch failed for {ticker}: {e}")
+            return pd.DataFrame()
+
+    @classmethod
     def sync_daily_market_data(cls, limit: int = 100):
         """매일 1회 실행: 상위 종목 수집 -> 지표 계산 -> DB 저장"""
-        logger.info(f"� Starting daily market data sync (Top {limit})...")
+        logger.info(f"🚀 Starting daily market data sync (Top {limit})...")
         
         # 1. 티커 수집
         kr_tickers = cls.get_top_krx_tickers(limit=limit)

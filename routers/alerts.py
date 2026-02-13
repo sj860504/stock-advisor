@@ -11,10 +11,10 @@ router = APIRouter(
 @router.post("")
 def create_alert(alert: PriceAlert):
     """
-    媛寃??뚮┝???ㅼ젙?⑸땲?? (?낅젰???곗빱/?대쫫 ?먮룞 蹂??
+    가격 알림을 설정합니다. (입력한 티커/종목명을 자동 변환)
     """
     real_ticker = TickerService.resolve_ticker(alert.ticker)
-    alert.ticker = real_ticker # 蹂?섎맂 ?곗빱濡????
+    alert.ticker = real_ticker  # 변환된 티커로 교체
     
     AlertService.add_user_alert(alert)
     return {"message": f"Alert set for {alert.ticker} at {alert.target_price}"}
@@ -22,7 +22,7 @@ def create_alert(alert: PriceAlert):
 @router.get("/check")
 def check_alerts():
     """
-    ?ㅼ젙???뚮┝ 議곌굔???뺤씤?섍퀬 ?몃━嫄곕맂 ?뚮┝??諛섑솚?⑸땲??
+    설정된 알림 조건을 확인하고 트리거된 알림을 반환합니다.
     (二쇨린?곸쑝濡??몄텧?섏뿬 ?뺤씤?섎뒗 ?⑸룄)
     """
     triggered = AlertService.check_user_alerts()
@@ -30,6 +30,6 @@ def check_alerts():
 
 @router.get("/pending")
 def get_pending_alerts():
-    """?湲?以묒씤 ?뚮┝ 議고쉶 諛???젣 (Polling??"""
+    """대기 중인 알림 조회/삭제 (Polling용)"""
     alerts = AlertService.get_pending_alerts()
     return {"alerts": alerts}

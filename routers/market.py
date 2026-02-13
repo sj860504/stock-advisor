@@ -12,8 +12,8 @@ router = APIRouter(
 @router.get("/top20")
 def get_top20_realtime():
     """
-    ?ㅼ떆媛꾩쑝濡?紐⑤땲?곕쭅 以묒씤 誘멸뎅 ?쒖킑 ?곸쐞 20媛?湲곗뾽???꾩옱媛瑜?諛섑솚?⑸땲??
-    (?쒕쾭 諛깃렇?쇱슫?쒖뿉??1遺꾨쭏???낅뜲?댄듃??
+    실시간으로 모니터링 중인 미국 주식 상위 20개 기업의 현재가를 반환합니다.
+    (서버 백그라운드에서 1분마다 업데이트)
     """
     data = SchedulerService.get_all_cached_prices()
     if not data:
@@ -23,14 +23,14 @@ def get_top20_realtime():
 @router.get("/")
 def get_market_status():
     """
-    二쇱슂 吏??肄붿뒪?? 肄붿뒪?? ?섏뒪???? ?꾪솴??議고쉶?⑸땲??
+    주요 지수(코스피, 코스닥, 환율 등) 요약 정보를 반환합니다.
     """
     return NewsService.get_market_summary()
 
 @router.get("/news/{ticker_input}", response_model=List[NewsItem])
 def get_news(ticker_input: str):
     """
-    愿???댁뒪 留곹겕瑜??쒓났?⑸땲??
+    관련 뉴스 목록을 반환합니다.
     """
     # Note: ticker_input resolving is needed. It's better to import resolve_ticker_or_404 if shared, or reimplement.
     # For simplicity, using TickerService directly here as resolve logic is simple.
@@ -44,10 +44,10 @@ def get_news(ticker_input: str):
 @router.get("/signals")
 def get_trading_signals():
     """
-    ?꾩옱 Top 20 醫낅ぉ 以?留ㅻℓ ?좏샇媛 諛쒖깮??醫낅ぉ??諛섑솚?⑸땲??
-    - 怨쇰ℓ??(RSI < 30)
-    - 怨쇰ℓ??(RSI > 70)  
-    - DCF ??됯? (?꾩옱媛 < DCF * 0.8)
+    현재 Top 20 종목 중 매매 신호가 발생한 종목을 반환합니다.
+    - 과매도(RSI < 30)
+    - 과매수(RSI > 70)
+    - DCF 저평가(현재가 < DCF * 0.8)
     """
     data = SchedulerService.get_all_cached_prices()
     if not data:

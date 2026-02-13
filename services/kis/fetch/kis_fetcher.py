@@ -2,6 +2,7 @@ import requests
 import json
 import logging
 import time
+import threading
 from config import Config
 from utils.logger import get_logger
 
@@ -13,6 +14,9 @@ class KisFetcher:
     - 데이터베이스(api_tr_meta)에 저장된 TR ID와 경로 정보를 동적으로 사용합니다.
     - 모의투자(VTS) 및 실전투자 환경을 Config.KIS_IS_VTS 플래그로 구분하여 대응합니다.
     """
+    _req_lock = threading.Lock()
+    _last_req_ts = 0.0
+    _min_req_interval = 0.55  # VTS 기준 약 2TPS 제한 대응
     
     @staticmethod
     def _get_api_info(api_name: str) -> tuple:
@@ -31,6 +35,48 @@ class KisFetcher:
             "tr_id": tr_id,
             "custtype": "P"
         }
+
+    @classmethod
+    def _throttle_request(cls):
+        with cls._req_lock:
+            now = time.time()
+            elapsed = now - cls._last_req_ts
+            if elapsed < cls._min_req_interval:
+                time.sleep(cls._min_req_interval - elapsed)
+            cls._last_req_ts = time.time()
+
+    @classmethod
+    def _is_rate_limited_response(cls, response: requests.Response) -> bool:
+        if response.status_code in (429, 500):
+            return True
+        text = response.text or ""
+        if "초당 거래건수" in text:
+            return True
+        try:
+            data = response.json()
+            if data.get("msg_cd") == "EGW00201":
+                return True
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def _get_with_retry(cls, url: str, headers: dict, params: dict, timeout: int = 5, retries: int = 4):
+        last_res = None
+        for attempt in range(retries):
+            cls._throttle_request()
+            try:
+                res = requests.get(url, headers=headers, params=params, timeout=timeout)
+                last_res = res
+                if cls._is_rate_limited_response(res):
+                    wait_sec = 1.2 * (attempt + 1)
+                    logger.warning(f"⏳ TPS limit hit. retry {attempt + 1}/{retries} in {wait_sec:.1f}s...")
+                    time.sleep(wait_sec)
+                    continue
+                return res
+            except Exception:
+                time.sleep(0.7 * (attempt + 1))
+        return last_res
 
     @classmethod
     def fetch_domestic_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
@@ -106,7 +152,9 @@ class KisFetcher:
         
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = requests.get(url, headers=headers, params=params, timeout=5)
+            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=4)
+            if res is None:
+                return {}
             if res.status_code == 200:
                 data = res.json()
                 output_raw = data.get('output', {})
@@ -285,11 +333,10 @@ class KisFetcher:
         }
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            if res.status_code == 500 or "초당" in res.text:
-                logger.warning(f"⏳ TPS Limit hit [Domestic Daily {ticker}]. Waiting 1.5s...")
-                time.sleep(1.5)
-            return res.json()
+            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=4)
+            if res is None:
+                return {}
+            return res.json() if res.status_code == 200 else {}
         except Exception as e:
             logger.error(f"Error fetching daily price for {ticker}: {e}")
             return {}
@@ -344,11 +391,10 @@ class KisFetcher:
 
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            
-            if res.status_code == 500 or "초당" in res.text:
-                logger.warning(f"⏳ TPS Limit hit [Overseas Daily {ticker}]. Waiting 1.5s...")
-                time.sleep(1.5)
+            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=5)
+            if res is None:
+                return {}
+            if res.status_code != 200:
                 logger.error(f"❌ Overseas Price Error {res.status_code} [Daily]: {url} | TR: {tr_id} | Params: {params} | Body: {res.text}")
                 return {}
             

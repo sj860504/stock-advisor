@@ -11,6 +11,8 @@ from services.market.macro_service import MacroService
 from services.strategy.trading_strategy_service import TradingStrategyService
 from services.kis.kis_ws_service import kis_ws_service
 from services.market.market_data_service import MarketDataService
+from services.market.market_hour_service import MarketHourService
+from services.config.settings_service import SettingsService
 from utils.logger import get_logger
 
 logger = get_logger("scheduler")
@@ -43,6 +45,9 @@ class SchedulerService:
             # 10분 단위 포트폴리오 DB 동기화 (KIS 데이터 우선)
             cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
             
+            # 10분 단위 틱매매 현황 리포트
+            cls._scheduler.add_job(cls.report_tick_trade_status, 'interval', minutes=10)
+            
             # 2. KIS WebSocket 서비스 시작 (완전 분리된 전용 스레드)
             def start_ws_thread():
                 """웹소켓 전용 이벤트 루프를 생성하고 무한 연결 루프를 실행"""
@@ -70,6 +75,13 @@ class SchedulerService:
             
             # 3. 자동 매매 시작 여부 문의
             cls._send_start_inquiry()
+
+            # 4. 앱 기동 직후 KIS 잔고 동기화
+            try:
+                PortfolioService.sync_with_kis("sean")
+                logger.info("✅ Portfolio synced with KIS on startup.")
+            except Exception as e:
+                logger.error(f"❌ Failed to sync portfolio with KIS on startup: {e}")
 
     @classmethod
     def _send_start_inquiry(cls):
@@ -129,6 +141,11 @@ class SchedulerService:
     @classmethod
     def run_trading_strategy(cls):
         """매매 전략 분석 및 자동 매매 실행"""
+        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+        if not MarketHourService.is_strategy_window_open(allow_extended=allow_extended, pre_open_lead_minutes=60):
+            logger.info("⏸️ Market closed window. Skipping strategy run.")
+            return
+
         logger.info("📊 Running Trading Strategy analysis...")
         try:
             TradingStrategyService.run_strategy(user_id='sean')
@@ -140,6 +157,8 @@ class SchedulerService:
         """시간당 포트폴리오 현황 체크 및 알림"""
         logger.info("🕒 Generating hourly portfolio report...")
         try:
+            # 최신 잔고로 동기화 후 리포트 전송
+            PortfolioService.sync_with_kis('sean')
             macro = MacroService.get_macro_data()
             all_states = MarketDataService.get_all_states()
             portfolio = PortfolioService.load_portfolio('sean')
@@ -157,11 +176,18 @@ class SchedulerService:
                         'market': "Real-time"
                     })
             
+            from services.notification.report_service import ReportService
             if gainers:
-                from services.notification.report_service import ReportService
                 msg = ReportService.format_hourly_gainers(gainers, macro)
                 AlertService.send_slack_alert(msg)
-                logger.info("📤 Hourly report sent to Slack.")
+                logger.info("📤 Hourly gainers report sent to Slack.")
+
+            # 포트폴리오 현황 리포트
+            summary = PortfolioService.get_last_balance_summary()
+            cash = float(summary.get("prvs_rcdl_excc_amt") or PortfolioService.load_cash('sean') or 0)
+            portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
+            AlertService.send_slack_alert(portfolio_msg)
+            logger.info("📤 Hourly portfolio report sent to Slack.")
         except Exception as e:
             logger.error(f"❌ Error in check_portfolio_hourly: {e}")
 
@@ -182,6 +208,37 @@ class SchedulerService:
             PortfolioService.sync_with_kis("sean")
         except Exception as e:
             logger.error(f"❌ Error during portfolio sync: {e}")
+
+    @classmethod
+    def report_tick_trade_status(cls):
+        """10분 주기 틱매매 수익 현황 리포트"""
+        try:
+            if SettingsService.get_int("STRATEGY_TICK_ENABLED", 0) != 1:
+                return
+            ticker = (SettingsService.get_setting("STRATEGY_TICK_TICKER", "005930") or "").strip().upper()
+            if not ticker:
+                return
+
+            PortfolioService.sync_with_kis("sean")
+            holdings = PortfolioService.load_portfolio("sean")
+            holding = next((h for h in holdings if h.get("ticker") == ticker), None)
+            if not holding:
+                AlertService.send_slack_alert(f"⏱️ [틱매매 10분 리포트] {ticker} 보유 수량 없음")
+                return
+
+            qty = float(holding.get("quantity", 0) or 0)
+            buy_price = float(holding.get("buy_price", 0) or 0)
+            current_price = float(holding.get("current_price", 0) or 0)
+            if qty <= 0 or buy_price <= 0 or current_price <= 0:
+                return
+
+            profit_amt = (current_price - buy_price) * qty
+            profit_pct = ((current_price - buy_price) / buy_price) * 100
+            AlertService.send_slack_alert(
+                f"⏱️ [틱매매 10분 리포트] {ticker} 수익율 {profit_pct:+.2f}%, 수익금 {profit_amt:,.0f}원"
+            )
+        except Exception as e:
+            logger.error(f"❌ Error during tick trade report: {e}")
 
     @classmethod
     def get_all_cached_prices(cls) -> dict:
