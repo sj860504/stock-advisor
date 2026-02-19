@@ -214,29 +214,46 @@ class SchedulerService:
     def report_tick_trade_status(cls):
         """10분 주기 틱매매 수익 현황 리포트"""
         try:
+            logger.info("⏱️ Running 10-minute tick trade report...")
             if SettingsService.get_int("STRATEGY_TICK_ENABLED", 0) != 1:
+                logger.info("⏭️ Tick trade report skipped: STRATEGY_TICK_ENABLED=0")
                 return
             ticker = (SettingsService.get_setting("STRATEGY_TICK_TICKER", "005930") or "").strip().upper()
             if not ticker:
+                logger.info("⏭️ Tick trade report skipped: empty tick ticker")
                 return
 
             PortfolioService.sync_with_kis("sean")
             holdings = PortfolioService.load_portfolio("sean")
             holding = next((h for h in holdings if h.get("ticker") == ticker), None)
             if not holding:
+                logger.info(f"ℹ️ Tick trade report: no holding for {ticker}")
                 AlertService.send_slack_alert(f"⏱️ [틱매매 10분 리포트] {ticker} 보유 수량 없음")
                 return
 
             qty = float(holding.get("quantity", 0) or 0)
             buy_price = float(holding.get("buy_price", 0) or 0)
             current_price = float(holding.get("current_price", 0) or 0)
+            # DB 동기화 직후 current_price가 비어있는 경우 실시간 캐시에서 보정
+            if current_price <= 0:
+                st = MarketDataService.get_state(ticker)
+                if st and getattr(st, "current_price", 0) > 0:
+                    current_price = float(st.current_price)
+
             if qty <= 0 or buy_price <= 0 or current_price <= 0:
+                logger.info(
+                    f"⏭️ Tick trade report skipped: invalid values "
+                    f"(qty={qty}, buy={buy_price}, current={current_price})"
+                )
                 return
 
             profit_amt = (current_price - buy_price) * qty
             profit_pct = ((current_price - buy_price) / buy_price) * 100
             AlertService.send_slack_alert(
                 f"⏱️ [틱매매 10분 리포트] {ticker} 수익율 {profit_pct:+.2f}%, 수익금 {profit_amt:,.0f}원"
+            )
+            logger.info(
+                f"✅ Tick trade report sent: {ticker} profit={profit_pct:+.2f}% amount={profit_amt:,.0f}"
             )
         except Exception as e:
             logger.error(f"❌ Error during tick trade report: {e}")

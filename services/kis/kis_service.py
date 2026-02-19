@@ -16,6 +16,22 @@ class KisService:
     _access_token = None
     _token_expiry = None
     _last_balance_data = None
+
+    @classmethod
+    def _get_account_parts(cls):
+        """
+        계좌번호를 KIS 파라미터 형식으로 분리
+        - 입력 허용: 50162391-01 / 5016239101 / 50162391
+        - 반환: (CANO(8), ACNT_PRDT_CD(2))
+        """
+        raw = (Config.KIS_ACCOUNT_NO or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 10:
+            return digits[:8], digits[8:10]
+        if len(digits) == 8:
+            return digits, "01"
+        logger.error(f"❌ Invalid KIS_ACCOUNT_NO format: '{raw}'")
+        return "", "01"
     
     @classmethod
     def get_access_token(cls):
@@ -86,13 +102,17 @@ class KisService:
     @classmethod
     def get_balance(cls):
         """주식 잔고 조회 (국내 모의투자 기준)"""
+        cano, acnt_prdt_cd = cls._get_account_parts()
+        if not cano:
+            return None
+
         tr_id = "VTTC8434R" 
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
         headers = cls.get_headers(tr_id)
         
         params = {
-            "CANO": Config.KIS_ACCOUNT_NO,
-            "ACNT_PRDT_CD": "01",
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
             "AFHR_FLPR_YN": "N",
             "OFL_YN": "N",
             "INQR_DVSN": "02",
@@ -118,8 +138,16 @@ class KisService:
                 data = res.json()
                 
                 if data.get('rt_cd') != '0':
-                    logger.error(f"❌ Balance fetch failed: {data.get('msg1')}")
-                    return None
+                    msg = data.get('msg1') or data.get('msg_cd') or "unknown"
+                    # KIS가 간헐적으로 BUSINESS 에러를 반환하는 경우 재시도
+                    if attempt < 2:
+                        logger.warning(
+                            f"⏳ Balance business error (attempt {attempt + 1}/3): {msg}. retrying..."
+                        )
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    logger.error(f"❌ Balance fetch failed after retries: {msg}")
+                    break
                 
                 result = {
                     "holdings": data.get('output1', []),
@@ -140,12 +168,16 @@ class KisService:
     @classmethod
     def _send_domestic_order(cls, ticker: str, quantity: int, tr_id: str, ord_dvsn: str, ord_price: str, log_tag: str):
         """국내주식 주문 공통 실행"""
+        cano, acnt_prdt_cd = cls._get_account_parts()
+        if not cano:
+            return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
+
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         headers = cls.get_headers(tr_id)
 
         body = {
-            "CANO": Config.KIS_ACCOUNT_NO,
-            "ACNT_PRDT_CD": "01",
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
             "PDNO": ticker,
             "ORD_DVSN": ord_dvsn,
             "ORD_QTY": str(quantity),
@@ -227,6 +259,10 @@ class KisService:
     @classmethod
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD"):
         """해외 주식 주문 (미국 기준)"""
+        cano, acnt_prdt_cd = cls._get_account_parts()
+        if not cano:
+            return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
+
         tr_id = "VTTT1002U" if order_type == "buy" else "VTTT1001U"
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/order"
         headers = cls.get_headers(tr_id)
@@ -235,8 +271,8 @@ class KisService:
              return {"status": "error", "msg": "해외 주식 주문 시 지정가(price)를 입력해야 합니다."}
 
         body = {
-            "CANO": Config.KIS_ACCOUNT_NO,
-            "ACNT_PRDT_CD": "01",
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": market,
             "PDNO": ticker,
             "ORD_QTY": str(quantity),

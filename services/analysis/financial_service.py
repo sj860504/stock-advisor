@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 import pandas as pd
+import math
 from config import Config
 from utils.logger import get_logger
 from services.kis.kis_service import KisService
@@ -109,18 +110,41 @@ class FinancialService:
                 return cached
 
         try:
-            # 1. DB 캐시 확인
-            latest = StockMetaService.get_latest_financials(ticker)
-            if latest and latest.eps and latest.bps:
-                # DB에 유효한 재무 데이터가 있다면 사용
-                return {
-                    "fcf_per_share": latest.eps * 0.8, # FCF 추정 (EPS의 80%로 단순화)
+            # 1. 5개 연도 기준 입력값 구성
+            yearly = cls._build_yearly_cashflow_points(ticker, years=5)
+            if len(yearly) >= 5:
+                values = [p["cashflow"] for p in yearly]
+                growth_rate = cls._calc_cagr(values)
+                discount_rate = cls._calc_discount_rate(values)
+                result = {
+                    "fcf_per_share": values[-1],
                     "beta": 1.0,
-                    "growth_rate": 0.05,
-                    "timestamp": latest.base_date.timestamp()
+                    "growth_rate": growth_rate,
+                    "discount_rate": discount_rate,
+                    "timestamp": time.time(),
+                    "source": "five_year_cashflow",
+                    "years_used": [p["year"] for p in yearly],
                 }
+                cls._dcf_cache[ticker] = result
+                return result
 
-            # 2. API 호출 (DB에 없거나 부족할 경우)
+            # 2. 데이터 부족 시: EPS(1년) * PER fallback
+            latest = StockMetaService.get_latest_financials(ticker)
+            if latest and latest.eps and latest.per and latest.eps > 0 and latest.per > 0:
+                fair = float(latest.eps) * float(latest.per)
+                result = {
+                    "fcf_per_share": None,
+                    "beta": 1.0,
+                    "growth_rate": 0.0,
+                    "discount_rate": None,
+                    "fallback_fair_value": round(fair, 2),
+                    "timestamp": latest.base_date.timestamp() if latest.base_date else time.time(),
+                    "source": "eps_per_fallback",
+                }
+                cls._dcf_cache[ticker] = result
+                return result
+
+            # 3. API 호출 (DB에 없거나 부족할 경우)
             if ticker.isdigit():
                 raw_data = KisService.get_financials(ticker)
                 metrics = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=raw_data)
@@ -129,10 +153,31 @@ class FinancialService:
                 raw_data = KisService.get_overseas_financials(ticker)
                 metrics = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=raw_data)
             
+            eps_1y = float(metrics.get("fcf_per_share") or 0)
+            per_1y = 0.0
+            latest_metrics = cls.get_metrics(ticker)
+            if latest_metrics:
+                per_1y = float(latest_metrics.get("per") or 0)
+
+            if eps_1y > 0 and per_1y > 0:
+                fair = eps_1y * per_1y
+                result = {
+                    "fcf_per_share": None,
+                    "beta": metrics.get('beta', 1.0),
+                    "growth_rate": 0.0,
+                    "discount_rate": None,
+                    "fallback_fair_value": round(fair, 2),
+                    "timestamp": time.time(),
+                    "source": "eps_per_fallback_api",
+                }
+                cls._dcf_cache[ticker] = result
+                return result
+
             result = {
                 "fcf_per_share": metrics.get('fcf_per_share'),
                 "beta": metrics.get('beta', 1.0),
                 "growth_rate": metrics.get('growth_rate', 0.05),
+                "discount_rate": None,
                 "timestamp": time.time(),
                 "source": "kis"
             }
@@ -142,6 +187,57 @@ class FinancialService:
         except Exception as e:
             logger.error(f"Error getting DCF data for {ticker}: {e}")
             return {}
+
+    @classmethod
+    def _build_yearly_cashflow_points(cls, ticker: str, years: int = 5) -> list:
+        """재무 이력에서 연도별 최근 EPS를 현금흐름 대용치로 추출"""
+        history = StockMetaService.get_financials_history(ticker, limit=3000)
+        points = []
+        seen_years = set()
+        for row in history:
+            if not row or not row.base_date:
+                continue
+            y = row.base_date.year
+            if y in seen_years:
+                continue
+            eps = float(row.eps or 0)
+            if eps <= 0:
+                continue
+            points.append({"year": y, "cashflow": eps})
+            seen_years.add(y)
+            if len(points) >= years:
+                break
+        points = list(reversed(points))  # 과거 -> 최신
+        return points
+
+    @staticmethod
+    def _calc_cagr(values: list) -> float:
+        """연복리 성장률 계산"""
+        if not values or len(values) < 2 or values[0] <= 0:
+            return 0.05
+        n = len(values) - 1
+        cagr = (values[-1] / values[0]) ** (1 / n) - 1
+        return max(-0.15, min(0.25, cagr))
+
+    @staticmethod
+    def _calc_discount_rate(values: list) -> float:
+        """5년 현금흐름 변동성을 반영한 할인율 계산"""
+        if not values or len(values) < 2:
+            return 0.10
+        growths = []
+        for i in range(1, len(values)):
+            prev = values[i - 1]
+            curr = values[i]
+            if prev > 0:
+                growths.append((curr / prev) - 1)
+        if not growths:
+            return 0.10
+        avg = sum(growths) / len(growths)
+        var = sum((g - avg) ** 2 for g in growths) / len(growths)
+        vol = math.sqrt(max(0.0, var))
+        # 기본 9% + 변동성 반영
+        discount = 0.09 + min(0.06, vol)
+        return max(0.06, min(0.15, discount))
 
     @classmethod
     def get_overrides(cls) -> dict:

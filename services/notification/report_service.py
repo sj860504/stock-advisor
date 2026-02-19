@@ -101,14 +101,29 @@ class ReportService:
     @staticmethod
     def format_portfolio_report(holdings: list, cash: float, states: dict = None, summary: dict = None) -> str:
         """포트폴리오 현황 리포트 포맷팅"""
+        from services.config.settings_service import SettingsService
+
         total_value = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in holdings)
         total_eval = cash + total_value
-        total_profit = None
+        account_eval_profit = None
+        initial_principal = SettingsService.get_float("PORTFOLIO_INITIAL_PRINCIPAL", 10000000.0)
+
         if summary:
             try:
-                total_profit = float(summary.get("evlu_pfls_smtl_amt"))
+                # KIS 원본 요약값 우선 사용 (DB 캐시 가격과의 오차 최소화)
+                summary_total_eval = summary.get("tot_evlu_amt")
+                summary_total_value = summary.get("scts_evlu_amt")
+                if summary_total_eval is not None:
+                    total_eval = float(summary_total_eval)
+                if summary_total_value is not None:
+                    total_value = float(summary_total_value)
+                account_eval_profit = float(summary.get("evlu_pfls_smtl_amt"))
             except Exception:
-                total_profit = None
+                account_eval_profit = None
+
+        principal_profit = total_eval - initial_principal
+        principal_profit_pct = (principal_profit / initial_principal * 100) if initial_principal > 0 else 0.0
+
         msg_lines = [
             "📌 **포트폴리오 현황**",
             f"- 전체 평가 금액: {total_eval:,.0f}원",
@@ -116,9 +131,13 @@ class ReportService:
             f"- 보유 종목 수: {len(holdings)}",
             f"- 보유 평가액: {total_value:,.0f}원",
         ]
-        if total_profit is not None:
-            total_color = "🔴" if total_profit > 0 else ("🔵" if total_profit < 0 else "⚪")
-            msg_lines.append(f"- 계좌 전체 손익: {total_color} {total_profit:,.0f}원")
+        principal_color = "🔴" if principal_profit > 0 else ("🔵" if principal_profit < 0 else "⚪")
+        msg_lines.append(
+            f"- 초기원금 대비 손익: {principal_color} {principal_profit:,.0f}원 ({principal_profit_pct:+.2f}%)"
+        )
+        if account_eval_profit is not None:
+            total_color = "🔴" if account_eval_profit > 0 else ("🔵" if account_eval_profit < 0 else "⚪")
+            msg_lines.append(f"- 계좌 평가손익(KIS): {total_color} {account_eval_profit:,.0f}원")
         for h in holdings:
             ticker = h.get("ticker")
             name = h.get("name") or ""

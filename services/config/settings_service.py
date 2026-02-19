@@ -31,7 +31,8 @@ class SettingsService:
         "STRATEGY_TICK_ADD_PCT": ("-3.0", "틱매매 2차 추가매수 기준 등락률(%)"),
         "STRATEGY_TICK_TAKE_PROFIT_PCT": ("1.0", "틱매매 익절 기준 수익률(%)"),
         "STRATEGY_TICK_STOP_LOSS_PCT": ("-5.0", "틱매매 손절 기준 수익률(%)"),
-        "STRATEGY_TICK_CLOSE_MINUTES": ("5", "장마감 전 현금화 시도 분")
+        "STRATEGY_TICK_CLOSE_MINUTES": ("5", "장마감 전 현금화 시도 분"),
+        "PORTFOLIO_INITIAL_PRINCIPAL": ("10000000", "초기 원금(원). 원금 대비 손익 계산 기준값")
     }
 
     @classmethod

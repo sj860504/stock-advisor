@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, date
 import pytz
 from config import Config
 
@@ -54,6 +54,9 @@ class MarketHourService:
         # 주말 제외
         if now.weekday() >= 5:
             return False
+        # 미국 공휴일(뉴욕증시 휴장일) 제외
+        if MarketHourService._is_us_market_holiday(now.date()):
+            return False
             
         if allow_extended:
             start_time = time(4, 0)
@@ -63,6 +66,76 @@ class MarketHourService:
             end_time = time(16, 0)
         
         return start_time <= now.time() <= end_time
+
+    @staticmethod
+    def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+        """고정 공휴일의 관측일 계산(주말이면 금/월 대체)"""
+        d = date(year, month, day)
+        if d.weekday() == 5:  # Saturday
+            return d - timedelta(days=1)
+        if d.weekday() == 6:  # Sunday
+            return d + timedelta(days=1)
+        return d
+
+    @staticmethod
+    def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+        """해당 월 n번째 weekday(월=0 ... 일=6)"""
+        d = date(year, month, 1)
+        shift = (weekday - d.weekday() + 7) % 7
+        return d + timedelta(days=shift + (n - 1) * 7)
+
+    @staticmethod
+    def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+        """해당 월 마지막 weekday(월=0 ... 일=6)"""
+        if month == 12:
+            d = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            d = date(year, month + 1, 1) - timedelta(days=1)
+        shift = (d.weekday() - weekday + 7) % 7
+        return d - timedelta(days=shift)
+
+    @staticmethod
+    def _easter_sunday(year: int) -> date:
+        """서기력 기준 부활절 일요일"""
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
+
+    @classmethod
+    def _is_us_market_holiday(cls, d: date) -> bool:
+        """
+        미국 정규증시(NYSE) 주요 휴장일 판별
+        - New Year's Day, MLK Day, Presidents' Day, Good Friday,
+          Memorial Day, Juneteenth(2022+), Independence Day,
+          Labor Day, Thanksgiving Day, Christmas Day
+        """
+        year = d.year
+        holidays = {
+            cls._observed_fixed_holiday(year, 1, 1),     # New Year's Day
+            cls._nth_weekday_of_month(year, 1, 0, 3),    # MLK Day
+            cls._nth_weekday_of_month(year, 2, 0, 3),    # Presidents' Day
+            cls._easter_sunday(year) - timedelta(days=2),# Good Friday
+            cls._last_weekday_of_month(year, 5, 0),      # Memorial Day
+            cls._observed_fixed_holiday(year, 7, 4),     # Independence Day
+            cls._nth_weekday_of_month(year, 9, 0, 1),    # Labor Day
+            cls._nth_weekday_of_month(year, 11, 3, 4),   # Thanksgiving
+            cls._observed_fixed_holiday(year, 12, 25),   # Christmas Day
+        }
+        if year >= 2022:
+            holidays.add(cls._observed_fixed_holiday(year, 6, 19))  # Juneteenth
+        return d in holidays
 
     @classmethod
     def is_strategy_window_open(cls, allow_extended: bool = True, pre_open_lead_minutes: int = 60) -> bool:
@@ -98,7 +171,11 @@ class MarketHourService:
 
         us_start_dt = datetime.combine(now_us.date(), us_market_start) - timedelta(minutes=pre_open_lead_minutes)
         us_start = us_start_dt.time()
-        us_open = now_us.weekday() < 5 and cls._is_time_between(now_us.time(), us_start, us_market_end)
+        us_open = (
+            now_us.weekday() < 5
+            and (not cls._is_us_market_holiday(now_us.date()))
+            and cls._is_time_between(now_us.time(), us_start, us_market_end)
+        )
 
         return kr_open or us_open
 

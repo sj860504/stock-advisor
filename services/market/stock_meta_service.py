@@ -164,6 +164,21 @@ class StockMetaService:
                       .order_by(Financials.base_date.desc()).first()
 
     @classmethod
+    def get_financials_history(cls, ticker: str, limit: int = 2500):
+        """종목 재무 지표 이력 조회 (최신순)"""
+        session = cls.get_session()
+        stock = session.query(StockMeta).filter_by(ticker=ticker).first()
+        if not stock:
+            return []
+        return (
+            session.query(Financials)
+            .filter(Financials.stock_id == stock.id)
+            .order_by(Financials.base_date.desc())
+            .limit(limit)
+            .all()
+        )
+
+    @classmethod
     def get_batch_latest_financials(cls, tickers: list):
         """여러 종목의 최신 재무 지표를 일괄 조회"""
         if not tickers:

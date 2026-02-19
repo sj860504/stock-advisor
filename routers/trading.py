@@ -49,6 +49,8 @@ async def get_balance():
             return balance
         else:
             raise HTTPException(status_code=400, detail="Failed to fetch balance")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

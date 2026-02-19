@@ -406,6 +406,7 @@ class TradingStrategyService:
         # 3. [Phase 2] 준비된 시그널 일괄 처리 및 매매 집행
         buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 75)
         sell_threshold = SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 25)
+        take_profit_pct = SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT", 5.0)
         before_snapshot = {h["ticker"]: h.get("quantity", 0) for h in holdings}
         
         trade_executed = False
@@ -417,13 +418,44 @@ class TradingStrategyService:
             reasons = sig['reasons']
             
             reason_str = ", ".join(reasons)
-            logger.info(f"🔍 Evaluated {ticker}: Score={score}, RSI={ticker_state.rsi:.1f}, Reasons=[{reason_str}]")
+            stock_name = getattr(ticker_state, "name", "") or (holding.get("name") if holding else "")
+            if stock_name:
+                logger.info(
+                    f"🔍 Evaluated {ticker} ({stock_name}): "
+                    f"Score={score}, RSI={ticker_state.rsi:.1f}, Reasons=[{reason_str}]"
+                )
+            else:
+                logger.info(f"🔍 Evaluated {ticker}: Score={score}, RSI={ticker_state.rsi:.1f}, Reasons=[{reason_str}]")
             
             # 실제 매매 호출
             profit_pct = 0.0
             if holding:
                 buy_price = holding['buy_price']
-                profit_pct = (ticker_state.current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+                ref_price = float(holding.get("current_price") or 0) if isinstance(holding, dict) else 0.0
+                if ref_price <= 0:
+                    ref_price = ticker_state.current_price
+                profit_pct = (ref_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+
+            # 익절 기준 도달 시 점수와 무관하게 우선 매도 시도
+            if holding and profit_pct >= take_profit_pct:
+                executed = cls._execute_trade_v2(
+                    ticker,
+                    "sell",
+                    f"익절 기준 도달({profit_pct:.2f}% >= {take_profit_pct:.2f}%)",
+                    profit_pct,
+                    True,
+                    score,
+                    ticker_state.current_price,
+                    total_assets,
+                    cash_balance,
+                    exchange_rate,
+                    holdings=holdings,
+                    user_id=user_id,
+                    holding=holding,
+                    macro=macro_data
+                )
+                trade_executed = trade_executed or bool(executed)
+                continue
 
             if score >= buy_threshold:
                 executed = cls._execute_trade_v2(
@@ -607,7 +639,10 @@ class TradingStrategyService:
         profit_pct = 0.0
         if holding:
             buy_price = holding['buy_price']
-            profit_pct = (curr_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+            ref_price = float(holding.get("current_price") or 0) if isinstance(holding, dict) else 0.0
+            if ref_price <= 0:
+                ref_price = curr_price
+            profit_pct = (ref_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
 
         cash_ratio = cash_balance / total_assets if total_assets > 0 else 0
         panic_locks = user_state.get('panic_locks', {})
@@ -750,7 +785,10 @@ class TradingStrategyService:
         profit_pct = 0.0
         if holding:
             buy_price = holding['buy_price']
-            profit_pct = (state.current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+            ref_price = float(holding.get("current_price") or 0) if isinstance(holding, dict) else 0.0
+            if ref_price <= 0:
+                ref_price = state.current_price
+            profit_pct = (ref_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
 
         reason_str = ", ".join(reasons)
         
@@ -903,7 +941,16 @@ class TradingStrategyService:
                 logger.info(f"⚖️ {ticker} {split_denominator}분할 매수 중 1회차 집행 예정 ({quantity}주)")
                 
                 # 주문 실행
-                res = KisService.send_order(ticker, quantity, 0, "buy")
+                if is_us:
+                    us_price = round(float(current_price), 2)
+                    res = KisService.send_overseas_order(
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=us_price,
+                        order_type="buy"
+                    )
+                else:
+                    res = KisService.send_order(ticker, quantity, 0, "buy")
                 
                 if res['status'] == 'success':
                     # 매매 내역 저장
@@ -947,7 +994,17 @@ class TradingStrategyService:
             logger.info(f"⚖️ {ticker} {split_msg} 집행 예정 ({sell_qty}주)")
             
             # 주문 실행
-            res = KisService.send_order(ticker, sell_qty, 0, "sell")
+            is_us = not ticker.isdigit()
+            if is_us:
+                us_price = round(float(current_price), 2)
+                res = KisService.send_overseas_order(
+                    ticker=ticker,
+                    quantity=sell_qty,
+                    price=us_price,
+                    order_type="sell"
+                )
+            else:
+                res = KisService.send_order(ticker, sell_qty, 0, "sell")
             
             if res['status'] == 'success':
                 OrderService.record_trade(ticker, "sell", sell_qty, current_price, split_msg, "v3_strategy")
