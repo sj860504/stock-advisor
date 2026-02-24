@@ -47,6 +47,7 @@ class MarketHourService:
         미국 시장 운영 여부 (EST 기준)
         정규장: 09:30 ~ 16:00
         프리/애프터 포함 시: 04:00 ~ 20:00
+        모의투자(VTS): 미국 시간외 주문 미지원으로 정규장만 허용
         """
         tz = pytz.timezone('America/New_York')
         now = datetime.now(tz)
@@ -58,7 +59,8 @@ class MarketHourService:
         if MarketHourService._is_us_market_holiday(now.date()):
             return False
             
-        if allow_extended:
+        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        if us_allow_extended:
             start_time = time(4, 0)
             end_time = time(20, 0)
         else:
@@ -162,7 +164,9 @@ class MarketHourService:
         kr_open = now_kr.weekday() < 5 and cls._is_time_between(now_kr.time(), kr_start, kr_end)
 
         # US window
-        if allow_extended:
+        # 모의투자(VTS)는 미국 시간외 주문이 불가하여 정규장 기준으로 제한
+        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        if us_allow_extended:
             us_market_start = time(4, 0)   # 프리장 시작
             us_market_end = time(20, 0)    # 애프터 종료
         else:

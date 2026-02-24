@@ -21,16 +21,15 @@ class StockRankingService:
         
         for excd in exchanges:
             try:
-                res = KisService.get_overseas_ranking(excd=excd)
-                if not res or res.get('rt_cd') != '0':
-                    logger.error(f"❌ Failed to fetch ranking for {excd}: {res.get('msg1')}")
+                response = KisService.get_overseas_ranking(excd=excd)
+                if not response or response.get("rt_cd") != "0":
+                    logger.error(f"❌ Failed to fetch ranking for {excd}: {response.get('msg1')}")
                     continue
-                    
-                output = res.get('output', [])
+                output = response.get("output", [])
                 count = 0
-                for item in output:
-                    ticker = item.get('symb')
-                    name_en = item.get('name')
+                for row in output:
+                    ticker = row.get("symb")
+                    name_en = row.get("name")
                     
                     if not ticker: continue
                     

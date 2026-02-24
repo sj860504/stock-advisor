@@ -13,6 +13,7 @@ from services.kis.kis_ws_service import kis_ws_service
 from services.market.market_data_service import MarketDataService
 from services.market.market_hour_service import MarketHourService
 from services.config.settings_service import SettingsService
+from services.market.stock_meta_service import StockMetaService
 from utils.logger import get_logger
 
 logger = get_logger("scheduler")
@@ -110,32 +111,73 @@ class SchedulerService:
         """실제 비동기 구독 실행 로직"""
         logger.info(f"🔄 Refreshing Market Subscriptions (Top 100 + Portfolio, force={force_refresh})...")
         try:
+            def _norm_ticker(t):
+                t = str(t or "").strip().upper()
+                if not t:
+                    return ""
+                # 국내 종목코드는 6자리로 정규화
+                if t.isdigit() and len(t) < 6:
+                    t = t.zfill(6)
+                return t
+
             # 1. 대상 티커 모두 수집
-            kr_tickers = DataService.get_top_krx_tickers(limit=100)
-            us_tickers = DataService.get_top_us_tickers(limit=100)
+            kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
+            us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
             portfolio = PortfolioService.load_portfolio('sean')
-            holdings = [h['ticker'] for h in portfolio]
+            holdings = [_norm_ticker(getattr(h, "ticker", "") if not isinstance(h, dict) else h.get('ticker')) for h in portfolio]
             
-            all_kr = list(set(kr_tickers + holdings))
-            all_us = list(set(us_tickers))
+            kr_holdings = [t for t in holdings if t and t.isdigit() and len(t) == 6]
+            us_holdings = [t for t in holdings if t and t.isalpha()]
+
+            all_kr = list(set([t for t in kr_tickers if t and t.isdigit() and len(t) == 6] + kr_holdings))
+            all_us = list(set([t for t in us_tickers if t and t.isalpha()] + us_holdings))
+            target_universe = set(all_kr + all_us)
             
-            # 2. MarketDataService에 일괄 등록 (DB 일괄 조회 및 선별적 분석)
-            MarketDataService.register_batch(all_kr + all_us)
+            # 2. 기존 캐시에서 대상 유니버스 외 종목 제거 후 일괄 등록
+            MarketDataService.prune_states(target_universe)
+            
+            # 시장 개장 여부에 따라 WATCH 대상 필터링
+            from services.market.market_hour_service import MarketHourService
+            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+            is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
+            is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+            
+            # 한국 시장 개장 중이면 미국 종목 제외, 미국 시장 개장 중이면 한국 종목 제외
+            watch_kr = not is_us_open  # 미국 시장이 닫혔을 때만 한국 종목 WATCH
+            watch_us = not is_kr_open  # 한국 시장이 닫혔을 때만 미국 종목 WATCH
+            
+            logger.info(f"📺 WATCH 필터: KR개장={is_kr_open}, US개장={is_us_open} → KR WATCH={watch_kr}, US WATCH={watch_us}")
+            
+            tickers_to_register = []
+            if watch_kr:
+                tickers_to_register.extend(all_kr)
+            if watch_us:
+                tickers_to_register.extend(all_us)
+            MarketDataService.register_batch(tickers_to_register)
             
             # 3. 실시간 웹소켓 구독 (분석과 병렬로 수행)
             # 국내 주식 구독
-            for ticker in all_kr:
-                if len(ticker) == 6 and ticker.isdigit():
-                    await kis_ws_service.subscribe(ticker, market="KRX")
-                    await asyncio.sleep(0.05) 
+            if watch_kr:
+                for ticker in all_kr:
+                    if len(ticker) == 6 and ticker.isdigit():
+                        await kis_ws_service.subscribe(ticker, market="KRX")
+                        await asyncio.sleep(0.05)
             
             # 미국 주식 구독
-            for ticker in all_us:
-                if ticker.isalpha():
-                    await kis_ws_service.subscribe(ticker, market="NAS")
-                    await asyncio.sleep(0.05) 
+            if watch_us:
+                market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS", "NAS": "NAS", "NYS": "NYS", "AMS": "AMS"}
+                for ticker in all_us:
+                    if ticker.isalpha():
+                        meta = StockMetaService.get_stock_meta(ticker)
+                        raw_market = (meta.api_market_code if meta and meta.api_market_code else "NAS").upper()
+                        ws_market = market_map_4to3.get(raw_market, "NAS")
+                        await kis_ws_service.subscribe(ticker, market=ws_market)
+                        await asyncio.sleep(0.05) 
             
-            logger.info(f"✅ Subscriptions managed: KR={len(kr_tickers)}, US={len(us_tickers)}, Holdings={len(holdings)}")
+            logger.info(
+                f"✅ Subscriptions managed: KR={len(kr_tickers)}, US={len(us_tickers)}, "
+                f"Holdings={len([t for t in holdings if t])}, Universe={len(target_universe)}"
+            )
         except Exception as e:
             logger.error(f"❌ Error in manage_subscriptions_async: {e}")
 
@@ -165,16 +207,16 @@ class SchedulerService:
             portfolio = PortfolioService.load_portfolio('sean')
             
             gainers = []
-            for item in portfolio:
-                ticker = item['ticker']
+            for holding in portfolio:
+                ticker = holding["ticker"]
                 state = all_states.get(ticker)
                 if state and state.change_rate > 0:
                     gainers.append({
-                        'ticker': ticker,
-                        'name': item.get('name', ticker),
-                        'price': state.current_price,
-                        'change': state.change_rate,
-                        'market': "Real-time"
+                        "ticker": ticker,
+                        "name": getattr(holding, "name", ticker) if not isinstance(holding, dict) else holding.get("name", ticker),
+                        "price": state.current_price,
+                        "change": state.change_rate,
+                        "market": "Real-time"
                     })
             
             from services.notification.report_service import ReportService
@@ -185,7 +227,7 @@ class SchedulerService:
 
             # 포트폴리오 현황 리포트
             summary = PortfolioService.get_last_balance_summary()
-            cash = float(summary.get("prvs_rcdl_excc_amt") or PortfolioService.load_cash('sean') or 0)
+            cash = PortfolioService.load_cash('sean')
             portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
             AlertService.send_slack_alert(portfolio_msg)
             logger.info("📤 Hourly portfolio report sent to Slack.")
@@ -225,20 +267,20 @@ class SchedulerService:
 
             PortfolioService.sync_with_kis("sean")
             holdings = PortfolioService.load_portfolio("sean")
-            holding = next((h for h in holdings if h.get("ticker") == ticker), None)
+            holding = next((h for h in holdings if (getattr(h, "ticker") if not isinstance(h, dict) else h.get("ticker")) == ticker), None)
             if not holding:
                 logger.info(f"ℹ️ Tick trade report: no holding for {ticker}")
                 AlertService.send_slack_alert(f"⏱️ [틱매매 10분 리포트] {ticker} 보유 수량 없음")
                 return
 
-            qty = float(holding.get("quantity", 0) or 0)
-            buy_price = float(holding.get("buy_price", 0) or 0)
-            current_price = float(holding.get("current_price", 0) or 0)
+            qty = float(getattr(holding, "quantity", 0) or 0) if not isinstance(holding, dict) else float(holding.get("quantity", 0) or 0)
+            buy_price = float(getattr(holding, "buy_price", 0) or 0) if not isinstance(holding, dict) else float(holding.get("buy_price", 0) or 0)
+            current_price = float(getattr(holding, "current_price", 0) or 0) if not isinstance(holding, dict) else float(holding.get("current_price", 0) or 0)
             # DB 동기화 직후 current_price가 비어있는 경우 실시간 캐시에서 보정
             if current_price <= 0:
-                st = MarketDataService.get_state(ticker)
-                if st and getattr(st, "current_price", 0) > 0:
-                    current_price = float(st.current_price)
+                ticker_state = MarketDataService.get_state(ticker)
+                if ticker_state and getattr(ticker_state, "current_price", 0) > 0:
+                    current_price = float(ticker_state.current_price)
 
             if qty <= 0 or buy_price <= 0 or current_price <= 0:
                 logger.info(
@@ -263,22 +305,22 @@ class SchedulerService:
         """라우터에서 요구하는 포맷으로 모든 실시간 캐시 데이터를 반환합니다."""
         all_states = MarketDataService.get_all_states()
         result = {}
-        for ticker, state in all_states.items():
+        for ticker, ticker_state in all_states.items():
             result[ticker] = {
                 "ticker": ticker,
-                "name": state.name, # 종목명 추가
-                "price": state.current_price,
-                "rsi": state.rsi,
-                "change": state.current_price - state.prev_close if state.prev_close > 0 else 0,
-                "change_pct": state.change_rate,
-                "fair_value_dcf": state.dcf_value,
-                "target_buy_price": state.target_buy_price,   # 추가
-                "target_sell_price": state.target_sell_price, # 추가
-                "ema5": state.ema.get(5),
-                "ema10": state.ema.get(10),
-                "ema20": state.ema.get(20),
-                "ema60": state.ema.get(60),
-                "ema120": state.ema.get(120),
-                "ema200": state.ema.get(200),
+                "name": ticker_state.name,
+                "price": ticker_state.current_price,
+                "rsi": ticker_state.rsi,
+                "change": ticker_state.current_price - ticker_state.prev_close if ticker_state.prev_close > 0 else 0,
+                "change_pct": ticker_state.change_rate,
+                "fair_value_dcf": ticker_state.dcf_value,
+                "target_buy_price": ticker_state.target_buy_price,
+                "target_sell_price": ticker_state.target_sell_price,
+                "ema5": ticker_state.ema.get(5),
+                "ema10": ticker_state.ema.get(10),
+                "ema20": ticker_state.ema.get(20),
+                "ema60": ticker_state.ema.get(60),
+                "ema120": ticker_state.ema.get(120),
+                "ema200": ticker_state.ema.get(200),
             }
         return result

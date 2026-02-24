@@ -92,25 +92,20 @@ class AlertService:
             
         summary = "📊 **실시간 시장 분석 요약**\n\n"
         
-        # RSI 과매도 종목 (기회)
-        oversold = [t for t, info in data.items() if info.get('rsi', 50) < 35]
-        if oversold:
+        oversold_tickers = [ticker for ticker, info in data.items() if info.get("rsi", 50) < 35]
+        if oversold_tickers:
             summary += "🔵 **RSI 과매도 (매수 기회)**:\n"
-            for t in oversold[:5]:
-                summary += f"- {t}: RSI {data[t]['rsi']:.1f}\n"
-        
-        # RSI 과매수 종목 (위험/익절)
-        overbought = [t for t, info in data.items() if info.get('rsi', 50) > 65]
-        if overbought:
+            for ticker in oversold_tickers[:5]:
+                summary += f"- {ticker}: RSI {data[ticker]['rsi']:.1f}\n"
+        overbought_tickers = [ticker for ticker, info in data.items() if info.get("rsi", 50) > 65]
+        if overbought_tickers:
             summary += "\n🔴 **RSI 과매수 (단기 과열)**:\n"
-            for t in overbought[:5]:
-                summary += f"- {t}: RSI {data[t]['rsi']:.1f}\n"
-                
-        # 급등 종목
-        gainers = sorted(data.items(), key=lambda x: x[1].get('change_pct', 0), reverse=True)[:5]
+            for ticker in overbought_tickers[:5]:
+                summary += f"- {ticker}: RSI {data[ticker]['rsi']:.1f}\n"
+        gainers = sorted(data.items(), key=lambda item: item[1].get("change_pct", 0), reverse=True)[:5]
         summary += "\n📈 **실시간 급등 Top 5**:\n"
-        for t, info in gainers:
-            summary += f"- {t}: {info['change_pct']:+.2f}% (${info['price']})\n"
+        for ticker, info in gainers:
+            summary += f"- {ticker}: {info['change_pct']:+.2f}% (${info['price']})\n"
             
         return summary
 

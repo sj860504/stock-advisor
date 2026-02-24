@@ -1,154 +1,294 @@
+"""포트폴리오 관리 서비스 (DB + KIS 동기화)."""
 import json
 import os
-from typing import List, Dict
 from datetime import datetime
-from services.base.file_service import FileService
-from services.market.data_service import DataService
-from services.market.ticker_service import TickerService
-from services.kis.kis_service import KisService
-from services.notification.alert_service import AlertService
+from typing import Dict, List, Optional
 
 from models.portfolio import Portfolio, PortfolioHolding
+from models.schemas import PortfolioHoldingDto, HoldingSchema, PortfolioSchema
+from services.base.file_service import FileService
+from services.config.settings_service import SettingsService
+from services.kis.kis_service import KisService
+from services.market.data_service import DataService
 from services.market.stock_meta_service import StockMetaService
+from services.market.ticker_service import TickerService
+from services.notification.alert_service import AlertService
 from utils.logger import get_logger
 
 logger = get_logger("portfolio_service")
 
+DEFAULT_SECTOR = "Others"
+DEFAULT_EXCHANGE_RATE = 1350.0
+
+
 class PortfolioService:
-    """
-    포트폴리오 관리 서비스 (DB Version)
-    """
-    _last_balance_summary = {}
+    """포트폴리오 및 보유 종목 관리 (DB 저장, KIS 잔고 동기화)."""
     _last_balance_summary: dict = {}
 
+    @staticmethod
+    def _extract_float(data: dict, *keys) -> float:
+        """딕셔너리에서 첫 번째 유효한 float 값을 반환합니다. 음수 허용, "0" 문자열 truthy 버그 방지."""
+        for key in keys:
+            val = data.get(key)
+            if val is not None and val != "":
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0
+
     @classmethod
-    def save_portfolio(cls, user_id: str, holdings: List[dict], cash_balance: float = None):
-        """포트폴리오 및 보유 종목 정보를 DB에 저장"""
+    def _extract_holding_fields(cls, h) -> tuple:
+        """HoldingSchema 또는 dict에서 공통 필드를 추출합니다."""
+        if isinstance(h, dict):
+            return (
+                h.get("ticker", ""),
+                h.get("name"),
+                h.get("quantity", 0),
+                h.get("buy_price", 0.0),
+                h.get("current_price") or 0.0,
+                h.get("sector") or DEFAULT_SECTOR,
+            )
+        return (
+            h.ticker,
+            h.name,
+            h.quantity,
+            h.buy_price,
+            h.current_price or 0.0,
+            h.sector or DEFAULT_SECTOR,
+        )
+
+    @classmethod
+    def save_portfolio(
+        cls,
+        user_id: str,
+        holdings,
+        cash_balance: Optional[float] = None,
+    ) -> bool:
+        """포트폴리오 및 보유 종목 정보를 DB에 저장합니다. HoldingSchema 또는 dict 모두 허용합니다."""
         session = StockMetaService.get_session()
         try:
-            # 1. 포트폴리오 헤더 처리
             portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
             if not portfolio:
                 portfolio = Portfolio(user_id=user_id)
                 session.add(portfolio)
-            
             if cash_balance is not None:
                 portfolio.cash_balance = cash_balance
 
-            # 2. 기존 보유 종목 삭제 (Overwrite 방식 또는 개별 Update 방식 중 선택 가능, 여기서는 간단하게 Overwrite)
             session.query(PortfolioHolding).filter_by(portfolio_id=portfolio.id).delete()
-
-            # 3. 새로운 보유 종목 추가
-            for h in holdings:
-                holding = PortfolioHolding(
+            for holding_input in holdings:
+                ticker, name, quantity, buy_price, current_price, sector = cls._extract_holding_fields(holding_input)
+                holding_entity = PortfolioHolding(
                     portfolio_id=portfolio.id,
-                    ticker=h['ticker'],
-                    name=h.get('name'),
-                    quantity=h['quantity'],
-                    buy_price=h['buy_price'],
-                    current_price=h.get('current_price', 0.0),
-                    sector=h.get('sector', 'Others')
+                    ticker=ticker,
+                    name=name,
+                    quantity=quantity,
+                    buy_price=buy_price,
+                    current_price=current_price,
+                    sector=sector,
                 )
-                session.add(holding)
-            
+                session.add(holding_entity)
             session.commit()
             return True
         except Exception as e:
             session.rollback()
             logger.error(f"Error saving portfolio for {user_id}: {e}")
             return False
+        finally:
+            session.close()
 
     @classmethod
     def load_portfolio(cls, user_id: str) -> List[dict]:
-        """DB에서 포트폴리오 보유 종목 조회"""
+        """DB에서 포트폴리오 보유 종목을 조회해 dict 리스트로 반환합니다."""
         session = StockMetaService.get_session()
-        portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
-        if not portfolio:
-            return []
-            
-        return [
-            {
-                "ticker": h.ticker,
-                "name": h.name,
-                "quantity": h.quantity,
-                "buy_price": h.buy_price,
-                "current_price": h.current_price,
-                "sector": h.sector
-            } for h in portfolio.holdings
-        ]
+        try:
+            portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
+            if not portfolio:
+                return []
+            return [
+                {
+                    "ticker": h.ticker,
+                    "name": h.name,
+                    "quantity": h.quantity,
+                    "buy_price": h.buy_price,
+                    "current_price": h.current_price,
+                    "sector": h.sector,
+                }
+                for h in portfolio.holdings
+            ]
+        finally:
+            session.close()
+
+    @classmethod
+    def load_portfolio_dtos(cls, user_id: str) -> List[PortfolioHoldingDto]:
+        """DB에서 포트폴리오 보유 종목을 조회해 DTO 리스트로 반환합니다."""
+        return [PortfolioHoldingDto(**h) for h in cls.load_portfolio(user_id)]
 
     @classmethod
     def load_cash(cls, user_id: str) -> float:
         """DB에서 현금 잔고 조회"""
         session = StockMetaService.get_session()
-        portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
-        return portfolio.cash_balance if portfolio else 0.0
+        try:
+            portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
+            return portfolio.cash_balance if portfolio else 0.0
+        finally:
+            session.close()
 
     @classmethod
-    def sync_with_kis(cls, user_id: str = "sean") -> List[dict]:
+    def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
         """KIS 실제 잔고와 동기화 (DB 업데이트 포함)"""
         logger.info(f"🔄 Syncing portfolio with KIS for user: {user_id}")
         balance_data = KisService.get_balance()
         if not balance_data:
             return cls.load_portfolio(user_id) # 실패 시 로컬(DB) 데이터 반환
-            
-        holdings = []
-        for item in balance_data.get('holdings', []):
-            ticker = item.get('pdno')
-            if not ticker or not ticker.isdigit():
+        overseas_balance = KisService.get_overseas_balance()
+
+        existing_holdings = cls.load_portfolio(user_id)  # List[dict]
+        existing_us_map = {
+            h["ticker"]: HoldingSchema(**h)
+            for h in existing_holdings
+            if str(h.get("ticker", "")).isalpha()
+        }
+
+        holdings: List[HoldingSchema] = []
+        us_holdings_by_ticker: Dict[str, HoldingSchema] = {}
+        for item in balance_data.get("holdings", []):
+            ticker = str(item.get('pdno') or item.get('symb') or "").strip().upper()
+            if not ticker:
                 continue
-                
-            holdings.append({
-                "ticker": ticker,
-                "name": item.get('prdt_name', 'Unknown'),
-                "quantity": int(item.get('hldg_qty', 0)),
-                # KIS 잔고 응답 기준 평균단가: pchs_avg_pric
-                "buy_price": float(item.get('pchs_avg_pric') or item.get('pavg_unit_amt') or 0),
-                "current_price": float(item.get('prpr', 0)),
-                "change_rate": float(item.get('fltt_rt', 0) or 0),
-                "sector": "Others"
-            })
-            
-        summary_list = balance_data.get('summary', [])
-        summary = summary_list[0] if summary_list else {}
+
+            qty = int(float(item.get('hldg_qty') or item.get('ovrs_cblc_qty') or item.get('ord_psbl_qty') or 0))
+            if qty <= 0:
+                continue
+
+            is_kr = ticker.isdigit()
+            parsed = HoldingSchema(
+                ticker=ticker,
+                name=item.get('prdt_name') or item.get('ovrs_item_name') or item.get('hldg_pdno_name') or ticker,
+                quantity=qty,
+                buy_price=float(item.get('pchs_avg_pric') or item.get('pavg_unit_amt') or 0),
+                current_price=float(item.get('prpr') or item.get('ovrs_now_pric') or item.get('now_pric') or 0),
+                sector=DEFAULT_SECTOR,
+            )
+            if is_kr:
+                holdings.append(parsed)
+            else:
+                us_holdings_by_ticker[ticker] = parsed
+
+        # 해외 잔고 조회가 가능하면 미국 보유를 최신값으로 덮어씀
+        if overseas_balance and overseas_balance.get("holdings"):
+            for item in overseas_balance.get("holdings", []):
+                ticker = str(
+                    item.get("ovrs_pdno") or item.get("pdno") or item.get("symb") or item.get("ovrs_item_cd") or ""
+                ).strip().upper()
+                if not ticker or ticker.isdigit():
+                    continue
+                qty = int(float(item.get("ovrs_cblc_qty") or item.get("hldg_qty") or item.get("ord_psbl_qty") or 0))
+                if qty <= 0:
+                    continue
+                current_price = float(
+                    item.get("now_pric2") or 
+                    item.get("ovrs_now_pric") or 
+                    item.get("prpr") or 
+                    item.get("now_pric") or 0
+                )
+                us_holdings_by_ticker[ticker] = HoldingSchema(
+                    ticker=ticker,
+                    name=item.get("ovrs_item_name") or item.get("prdt_name") or ticker,
+                    quantity=qty,
+                    buy_price=float(item.get("pchs_avg_pric") or item.get("avg_unpr") or item.get("pavg_unit_amt") or 0),
+                    current_price=current_price,
+                    sector=DEFAULT_SECTOR,
+                )
+
+        if us_holdings_by_ticker:
+            holdings.extend(us_holdings_by_ticker.values())
+        else:
+            holdings.extend(existing_us_map.values())
+
+        summary_items = balance_data.get("summary", [])
+        if len(summary_items) > 1:
+            def _summary_sort_key(row):
+                try:
+                    return float(row.get("tot_evlu_amt") or row.get("dnca_tot_amt") or 0)
+                except (TypeError, ValueError):
+                    return 0
+            summary = max(summary_items, key=_summary_sort_key)
+        else:
+            summary = summary_items[0] if summary_items else {}
+        usd_cash = cls.get_usd_cash_balance()
+        summary["_usd_cash_balance"] = usd_cash
         cls._last_balance_summary = summary
-        # 사용자가 지정한 기준: prvs_rcdl_excc_amt를 가용 현금으로 간주
-        cash = float(summary.get('prvs_rcdl_excc_amt') or summary.get('dnca_tot_amt') or 0)
-        
-        # DB에 영구 저장
+        # dnca_tot_amt=예수금, prvs_rcdl_excc_amt=주문가능금액. 마진 사용 시 음수가 올 수 있으나 0으로 클램핑.
+        cash = max(0.0, cls._extract_float(summary, "dnca_tot_amt", "prvs_rcdl_excc_amt"))
+
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
-        return holdings
+        return [h.model_dump() for h in holdings]
 
     @classmethod
     def get_last_balance_summary(cls) -> dict:
         return cls._last_balance_summary or {}
 
-    # ... 기존 분석 및 리밸런싱 로직 (DB 기반으로 필드 연동 유지)
+    @classmethod
+    def get_usd_cash_balance(cls) -> float:
+        """미국 외화 현금(USD) 조회: KIS 매수가능금액 API 또는 설정값"""
+        available_usd = KisService.get_overseas_available_cash()
+        if available_usd is not None and available_usd > 0:
+            return available_usd
+        
+        return SettingsService.get_float("PORTFOLIO_USD_CASH_BALANCE", 0.0)
+
     @classmethod
     def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
-        """포트폴리오 수익률 분석 (DB 데이터 활용)"""
-        holdings = cls.load_portfolio(user_id)
-        # ... (이하 로직은 기존과 유사하게 유지되나 데이터 소스만 DB로 변경됨)
-        # (생략: 기존 analyze_portfolio와 calculate_balances 로직 복구 및 보완)
-        results = []
-        total_invested = 0
-        total_current = 0
+        """포트폴리오 수익률 분석 (한국/미국 분리)"""
+        from services.market.macro_service import MacroService
         
+        holdings = cls.load_portfolio(user_id)  # List[dict]
         cash = cls.load_cash(user_id)
-        
-        for h in holdings:
-            val = h['quantity'] * h['current_price']
-            inv = h['quantity'] * h['buy_price']
-            total_invested += inv
-            total_current += val
-            
+        usd_cash = cls.get_usd_cash_balance()
+        exchange_rate = MacroService.get_exchange_rate()
+
+        kr_holdings = [h for h in holdings if str(h.get("ticker", "")).isdigit()]
+        us_holdings = [h for h in holdings if not str(h.get("ticker", "")).isdigit()]
+
+        results = []
+        kr_invested = 0
+        kr_current = 0
+        us_invested_usd = 0
+        us_current_usd = 0
+
+        for h in kr_holdings:
+            val = h.get("quantity", 0) * (h.get("current_price") or 0.0)
+            inv = h.get("quantity", 0) * h.get("buy_price", 0)
+            kr_invested += inv
+            kr_current += val
+
             results.append({
                 **h,
                 'profit': round(val - inv, 2),
                 'profit_pct': round(((val - inv)/inv)*100, 2) if inv > 0 else 0,
-                'market': 'KR' if h['ticker'].isdigit() else 'US'
+                'market': 'KR'
             })
-            
+
+        for h in us_holdings:
+            val_usd = h.get("quantity", 0) * (h.get("current_price") or 0.0)
+            inv_usd = h.get("quantity", 0) * h.get("buy_price", 0)
+            us_invested_usd += inv_usd
+            us_current_usd += val_usd
+
+            results.append({
+                **h,
+                'profit_usd': round(val_usd - inv_usd, 2),
+                'profit_krw': round((val_usd - inv_usd) * exchange_rate, 2),
+                'profit_pct': round(((val_usd - inv_usd)/inv_usd)*100, 2) if inv_usd > 0 else 0,
+                'market': 'US'
+            })
+        
+        us_invested_krw = us_invested_usd * exchange_rate
+        us_current_krw = us_current_usd * exchange_rate
+        total_invested = kr_invested + us_invested_krw
+        total_current = kr_current + us_current_krw
+        
         return {
             'holdings': results,
             'summary': {
@@ -157,18 +297,79 @@ class PortfolioService:
                 'profit': round(total_current - total_invested, 2),
                 'profit_pct': round(((total_current-total_invested)/total_invested)*100, 2) if total_invested > 0 else 0
             },
-            'balances': cls.calculate_balances(results, cash)
+            'kr': {
+                'invested': round(kr_invested, 2),
+                'current': round(kr_current, 2),
+                'profit': round(kr_current - kr_invested, 2),
+                'profit_pct': round(((kr_current-kr_invested)/kr_invested)*100, 2) if kr_invested > 0 else 0,
+                'cash': round(cash, 2),
+                'total': round(kr_current + cash, 2)
+            },
+            'us': {
+                'invested_usd': round(us_invested_usd, 2),
+                'invested_krw': round(us_invested_krw, 2),
+                'current_usd': round(us_current_usd, 2),
+                'current_krw': round(us_current_krw, 2),
+                'profit_usd': round(us_current_usd - us_invested_usd, 2),
+                'profit_krw': round(us_current_krw - us_invested_krw, 2),
+                'profit_pct': round(((us_current_usd-us_invested_usd)/us_invested_usd)*100, 2) if us_invested_usd > 0 else 0,
+                'cash_usd': round(usd_cash, 2),
+                'cash_krw': round(usd_cash * exchange_rate, 2),
+                'total_krw': round(us_current_krw + usd_cash * exchange_rate, 2)
+            },
+            'balances': cls.calculate_balances(results, cash, usd_cash, exchange_rate)
         }
 
     @classmethod
-    def calculate_balances(cls, holdings: List[dict], cash: float) -> dict:
-        total_value = sum(h['current_price'] * h['quantity'] for h in holdings) + cash
-        if total_value == 0: return {}
-        market_vals = {'KR': 0, 'US': 0, 'Cash': cash}
-        for h in holdings: market_vals[h.get('market', 'KR')] += h['current_price'] * h['quantity']
+    def calculate_balances(cls, holdings: List[dict], cash: float, usd_cash: float = 0.0, exchange_rate: float = 1350.0) -> dict:
+        """한국/미국 자산을 분리해서 계산"""
+        from services.market.macro_service import MacroService
+        
+        if exchange_rate <= 0:
+            exchange_rate = MacroService.get_exchange_rate()
+        
+        kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit()]
+        us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit()]
+        
+        kr_value = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in kr_holdings)
+        us_value_usd = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in us_holdings)
+        us_value_krw = us_value_usd * exchange_rate
+        
+        kr_cash = cash
+        us_cash_krw = usd_cash * exchange_rate
+        
+        total_value = kr_value + us_value_krw + kr_cash + us_cash_krw
+        
+        if total_value == 0:
+            return {
+                'market': {'KR': 0, 'US': 0, 'Cash_KR': 0, 'Cash_US': 0},
+                'kr': {'holdings': 0, 'cash': 0, 'total': 0},
+                'us': {'holdings_usd': 0, 'holdings_krw': 0, 'cash_usd': 0, 'cash_krw': 0, 'total_krw': 0},
+                'sector': {}
+            }
+        
         return {
-            'market': {k: round((v / total_value) * 100, 2) for k, v in market_vals.items()},
-            'sector': {} # 단순화 (필요시 확장)
+            'market': {
+                'KR': round((kr_value / total_value) * 100, 2),
+                'US': round((us_value_krw / total_value) * 100, 2),
+                'Cash_KR': round((kr_cash / total_value) * 100, 2),
+                'Cash_US': round((us_cash_krw / total_value) * 100, 2)
+            },
+            'kr': {
+                'holdings': round(kr_value, 2),
+                'cash': round(kr_cash, 2),
+                'total': round(kr_value + kr_cash, 2),
+                'ratio': round(((kr_value + kr_cash) / total_value) * 100, 2)
+            },
+            'us': {
+                'holdings_usd': round(us_value_usd, 2),
+                'holdings_krw': round(us_value_krw, 2),
+                'cash_usd': round(usd_cash, 2),
+                'cash_krw': round(us_cash_krw, 2),
+                'total_krw': round(us_value_krw + us_cash_krw, 2),
+                'ratio': round(((us_value_krw + us_cash_krw) / total_value) * 100, 2)
+            },
+            'sector': {}
         }
 
     @classmethod

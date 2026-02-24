@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
         PortfolioService.sync_with_kis(user_id)
         holdings = PortfolioService.load_portfolio(user_id)
         summary = PortfolioService.get_last_balance_summary()
-        cash = float(summary.get("prvs_rcdl_excc_amt") or PortfolioService.load_cash(user_id) or 0)
+        cash = PortfolioService.load_cash(user_id)
         from services.notification.report_service import ReportService
         from services.market.market_data_service import MarketDataService
         states = MarketDataService.get_all_states()

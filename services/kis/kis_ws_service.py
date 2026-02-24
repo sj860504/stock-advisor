@@ -10,6 +10,12 @@ from utils.logger import get_logger
 
 logger = get_logger("kis_ws_service")
 
+# WebSocket 상수
+WS_RETRY_DELAY_INITIAL = 5
+WS_RETRY_DELAY_MAX = 60
+WS_APPROVAL_REQUEST_TIMEOUT = 5
+
+
 class KisWsService:
     """
     한국투자증권 WebSocket 서비스
@@ -22,6 +28,7 @@ class KisWsService:
         self.approval_key = None
         self.connected = False
         self.subscribed_tickers = set()
+        self.subscribed_markets = {}
         
     def get_approval_key(self):
         """웹소켓 접속키 발급"""
@@ -34,14 +41,13 @@ class KisWsService:
         }
         
         try:
-            res = requests.post(url, headers=headers, json=body, timeout=5)
-            if res.status_code == 200:
-                self.approval_key = res.json().get('approval_key')
-                logger.info(f"🔑 WebSocket Approval Key acquired.")
+            response = requests.post(url, headers=headers, json=body, timeout=WS_APPROVAL_REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                self.approval_key = response.json().get("approval_key")
+                logger.info("🔑 WebSocket Approval Key acquired.")
                 return True
-            else:
-                logger.error(f"❌ Failed to get approval key: {res.text}")
-                return False
+            logger.error(f"❌ Failed to get approval key: {response.text}")
+            return False
         except Exception as e:
             logger.error(f"❌ Error getting approval key: {e}")
             return False
@@ -79,10 +85,12 @@ class KisWsService:
                     # 기존 구독 티커 재요구
                     if self.subscribed_tickers:
                         logger.info(f"🔄 Re-subscribing to {len(self.subscribed_tickers)} tickers...")
-                        saved_tickers = list(self.subscribed_tickers)
+                        saved_items = [(t, self.subscribed_markets.get(t)) for t in self.subscribed_tickers]
                         self.subscribed_tickers.clear()
-                        for ticker in saved_tickers:
-                            await self.subscribe(ticker, market="KRX" if ticker.isdigit() else "NAS")
+                        for ticker, market in saved_items:
+                            if not market:
+                                market = "KRX" if ticker.isdigit() else "NAS"
+                            await self.subscribe(ticker, market=market)
                             await asyncio.sleep(1.0) # 재구독 속도 조절 (TPS 준수)
 
                     while True:
@@ -108,9 +116,11 @@ class KisWsService:
     async def subscribe(self, ticker: str, market: str = "KRX"):
         """종목 실시간 체결가 구독"""
         MarketDataService.register_ticker(ticker)
+        market = (market or "KRX").upper()
         
         if not self.connected or not self.websocket:
             self.subscribed_tickers.add(ticker)
+            self.subscribed_markets[ticker] = market
             logger.info(f"🕒 {ticker} added to subscription queue (Waiting for connection...)")
             return
 
@@ -140,6 +150,7 @@ class KisWsService:
         }
         await self.websocket.send(json.dumps(body))
         self.subscribed_tickers.add(ticker)
+        self.subscribed_markets[ticker] = market
         logger.info(f"➕ Subscribed to {ticker} ({market})")
 
     async def handle_message(self, msg):
@@ -156,7 +167,9 @@ class KisWsService:
             
             if tr_id == "H0STCNT0":
                 ticker = parts[2]
-                self.parse_realtime_price(ticker, data_str)
+                # KIS 일부 메시지는 parts[2]가 종목코드가 아니라 순번('001','002') 등으로 옴 → 6자리 한국 종목만 처리
+                if ticker.isdigit() and len(ticker) == 6:
+                    self.parse_realtime_price(ticker, data_str)
             elif tr_id == "HDFSUSP0":
                 values = data_str.split('^')
                 ticker = values[0]

@@ -57,10 +57,9 @@ def run_verification():
         
     # 조회
     history = OrderService.get_trade_history(limit=5)
-    last_trade = next((t for t in history if t['ticker'] == ticker), None)
-    
+    last_trade = next((t for t in history if t.ticker == ticker), None)
     if last_trade:
-        print(f"✅ Trade history retrieval success: {last_trade['ticker']} {last_trade['quantity']}qty")
+        print(f"✅ Trade history retrieval success: {last_trade.ticker} {last_trade.quantity}qty")
     else:
         print("❌ Trade history retrieval failed")
 

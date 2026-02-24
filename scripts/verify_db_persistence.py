@@ -54,7 +54,7 @@ def verify_db_integration():
     print(f"      Metrics1 (API): {metrics1}")
     print(f"      Metrics2 (DB): {metrics2}")
     
-    if metrics1 and metrics2 and metrics1.get('eps') == metrics2.get('eps'):
+    if metrics1 and metrics2 and metrics1.eps == metrics2.eps:
         print(f"✅ DB 캐시 데이터 반환 확인")
     else:
         print("❌ DB 캐시 데이터 불일치 또는 반환 실패")

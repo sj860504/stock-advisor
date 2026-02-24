@@ -23,8 +23,10 @@ class SimulationService:
         "TQQQ",   # 나스닥 3배 레버리지
     ]
 
+    SIMULATION_WAIT_DEFAULT = 10
+
     @classmethod
-    def run_live_simulation(cls, tickers: List[str] = None, user_id: str = "sean", wait_seconds: int = 10):
+    def run_live_simulation(cls, tickers: List[str] = None, user_id: str = "sean", wait_seconds: int = None):
         """
         현재 시장 데이터를 기반으로 전략 시뮬레이션 실행
         """
@@ -33,7 +35,8 @@ class SimulationService:
         # 1. 전략 엔진 강제 활성화
         TradingStrategyService.set_enabled(True)
         
-        # 2. 종목 등록 (Warm-up)
+        if wait_seconds is None:
+            wait_seconds = cls.SIMULATION_WAIT_DEFAULT
         targets = tickers or cls.DEFAULT_TARGETS
         logger.info(f"📊 Registering {len(targets)} targets for simulation...")
         for ticker in targets:

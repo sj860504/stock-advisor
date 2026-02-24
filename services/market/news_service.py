@@ -33,9 +33,9 @@ class NewsService:
             return f"{ticker}에 대한 최신 뉴스가 없습니다."
             
         summary = f"📰 **{ticker} 최신 뉴스 요약**\n"
-        for i, news in enumerate(news_list, 1):
-            summary += f"{i}. {news['title']} ({news['publisher']})\n"
-            summary += f"   🔗 {news['link']}\n"
+        for idx, item in enumerate(news_list, 1):
+            summary += f"{idx}. {item.get('title', '')} ({item.get('publisher', '')})\n"
+            summary += f"   🔗 {item.get('link', '')}\n"
         
         return summary
 

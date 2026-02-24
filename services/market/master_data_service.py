@@ -1,38 +1,54 @@
-import urllib.request
-import ssl
-import zipfile
+"""KOSPI/KOSDAQ 마스터 파일 다운로드 및 시가총액 상위 종목 리스트 생성."""
 import os
+import ssl
+import urllib.request
+import zipfile
+from typing import List
+
 import pandas as pd
+
 from utils.logger import get_logger
 
 logger = get_logger("master_data_service")
 
+# 다운로드 URL 및 로컬 파일명
+MASTER_DOWNLOAD_TARGETS = {
+    "KOSPI": (
+        "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
+        "kospi_code.zip",
+    ),
+    "KOSDAQ": (
+        "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
+        "kosdaq_code.zip",
+    ),
+}
+DEFAULT_TOP_COUNT = 100
+
+
 class MasterDataService:
-    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "master")
+    """KOSPI/KOSDAQ 마스터 파일 다운로드·파싱 및 시총 상위 종목 조회."""
+
+    BASE_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data",
+        "master",
+    )
 
     @classmethod
-    def _ensure_dir(cls):
+    def _ensure_dir(cls) -> None:
         os.makedirs(cls.BASE_DIR, exist_ok=True)
 
     @classmethod
-    def download_master_files(cls):
-        """KOSPI, KOSDAQ 마스터 파일을 다운로드하고 압축을 풉니다."""
+    def download_master_files(cls) -> None:
+        """KOSPI, KOSDAQ 마스터 ZIP을 다운로드하고 압축 해제합니다."""
         cls._ensure_dir()
         ssl._create_default_https_context = ssl._create_unverified_context
-
-        targets = {
-            "KOSPI": ("https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip", "kospi_code.zip"),
-            "KOSDAQ": ("https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip", "kosdaq_code.zip")
-        }
-
-        for market, (url, zip_name) in targets.items():
+        for market, (url, zip_name) in MASTER_DOWNLOAD_TARGETS.items():
             zip_path = os.path.join(cls.BASE_DIR, zip_name)
             logger.info(f"📥 Downloading {market} master zip from {url}...")
             urllib.request.urlretrieve(url, zip_path)
-
-            with zipfile.ZipFile(zip_path) as z:
-                z.extractall(cls.BASE_DIR)
-            
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(cls.BASE_DIR)
             os.remove(zip_path)
             logger.info(f"✅ {market} master file extracted.")
 
@@ -91,31 +107,27 @@ class MasterDataService:
         return df
 
     @classmethod
-    def get_top_market_cap_tickers(cls, count: int = 100) -> list:
-        """코스피/코스닥 합산 시가총액 상위 종목 리스트를 반환합니다."""
+    def get_top_market_cap_tickers(cls, count: int = DEFAULT_TOP_COUNT) -> List[dict]:
+        """코스피/코스닥 합산 시가총액 상위 count개 종목 리스트를 반환합니다. (랭킹 API 규격 호환)"""
         try:
             kospi = cls.get_kospi_master()
             kosdaq = cls.get_kosdaq_master()
-            
-            # 시가총액 기준 정렬 및 상위 count개 추출
-            # KOSPI: '시가총액' (단위: 억)
-            # KOSDAQ: '시가총액' (단위: 억)
-            kospi_df = kospi[['단축코드', '한글명', '시가총액']].rename(columns={'시가총액': 'market_cap_raw'})
-            kosdaq_df = kosdaq[['단축코드', '한글명', '전일기준 시가총액 (억)']].rename(columns={'전일기준 시가총액 (억)': 'market_cap_raw'})
-            
+            kospi_df = kospi[["단축코드", "한글명", "시가총액"]].rename(columns={"시가총액": "market_cap_raw"})
+            kosdaq_df = kosdaq[["단축코드", "한글명", "전일기준 시가총액 (억)"]].rename(
+                columns={"전일기준 시가총액 (억)": "market_cap_raw"}
+            )
             merged = pd.concat([kospi_df, kosdaq_df])
-            merged['market_cap_raw'] = pd.to_numeric(merged['market_cap_raw'], errors='coerce').fillna(0)
-            top_stocks = merged.sort_values(by='market_cap_raw', ascending=False).head(count)
-            
-            result = []
-            for _, row in top_stocks.iterrows():
-                result.append({
-                    "mksc_shrn_iscd": row['단축코드'],
-                    "hts_kor_isnm": row['한글명'],
-                    "stck_prpr": "0", # 마스터에는 현재가 없음 (랭킹 API 규격 맞춤용)
-                    "data_rank": "0" 
-                })
-            
+            merged["market_cap_raw"] = pd.to_numeric(merged["market_cap_raw"], errors="coerce").fillna(0)
+            top_stocks = merged.sort_values(by="market_cap_raw", ascending=False).head(count)
+            result = [
+                {
+                    "mksc_shrn_iscd": row["단축코드"],
+                    "hts_kor_isnm": row["한글명"],
+                    "stck_prpr": "0",
+                    "data_rank": "0",
+                }
+                for _, row in top_stocks.iterrows()
+            ]
             logger.info(f"🏆 Local Ranking created: {len(result)} stocks selected.")
             return result
         except Exception as e:

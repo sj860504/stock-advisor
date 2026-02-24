@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime
+from typing import Optional
 import pandas as pd
 import math
 from config import Config
@@ -8,6 +9,12 @@ from utils.logger import get_logger
 from services.kis.kis_service import KisService
 from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 from services.market.stock_meta_service import StockMetaService
+from models.schemas import (
+    KisFinancialsMeta,
+    KisFinancialsResponse,
+    AnalyzedFinancialMetrics,
+    DcfInputData,
+)
 
 logger = get_logger("financial_service")
 
@@ -16,279 +23,307 @@ class FinancialService:
     종목별 재무 지표 및 DCF 데이터 제공 서비스
     - KisService를 통해 원시 데이터를 가져오고 FinancialAnalyzer를 통해 가공합니다.
     """
-    _metrics_cache = {}
-    _dcf_cache = {}
-    _overrides_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'dcf_settings.json')
+    _recent_metrics_by_ticker = {}
+    _dcf_input_by_ticker = {}
+    _dcf_overrides_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "dcf_settings.json")
 
     @classmethod
-    def get_metrics(cls, ticker: str) -> dict:
-        """종목별 핵심 재무 지표 반환 (KIS API 기반)"""
-        if ticker in cls._metrics_cache:
-            cached = cls._metrics_cache[ticker]
-            if time.time() - cached.get('_timestamp', 0) < 600:
-                return cached
-        
+    def get_metrics(cls, ticker: str) -> Optional[AnalyzedFinancialMetrics]:
+        """종목별 핵심 재무 지표 반환 (KIS API 기반). DB·메모리 캐시 우선, 없으면 KIS 조회 후 분석·저장."""
+        if ticker in cls._recent_metrics_by_ticker:
+            cached = cls._recent_metrics_by_ticker[ticker]
+            if time.time() - cached.get("_timestamp", 0) < 600:
+                return cls._dict_to_metrics(cached)
+
         try:
-            # 1. DB 캐시 먼저 확인
-            latest = StockMetaService.get_latest_financials(ticker)
-            if latest and (datetime.now() - latest.base_date).total_seconds() < 86400: # 1일간 유효
-                return {
-                    "per": latest.per,
-                    "pbr": latest.pbr,
-                    "roe": latest.roe,
-                    "eps": latest.eps,
-                    "bps": latest.bps,
-                    "dividend_yield": latest.dividend_yield,
-                    "current_price": latest.current_price,
-                    "market_cap": latest.market_cap,
-                    "_timestamp": latest.base_date.timestamp()
-                }
+            # 1. DB에 저장된 최신 재무 지표 확인 (1일 이내 유효)
+            latest_financials = StockMetaService.get_latest_financials(ticker)
+            if latest_financials and (datetime.now() - latest_financials.base_date).total_seconds() < 86400:
+                return cls._financials_row_to_metrics(latest_financials)
 
-            # 2. 메타데이터 조회
-            meta_obj = StockMetaService.get_stock_meta(ticker)
-            if not meta_obj:
-                meta_obj = StockMetaService.initialize_default_meta(ticker)
-            
-            meta_dict = {
-                "api_path": meta_obj.api_path,
-                "api_tr_id": meta_obj.api_tr_id,
-                "api_market_code": meta_obj.api_market_code
-            }
+            # 2. 종목 메타 조회 후 KIS 요청용 메타 DTO 생성
+            stock_meta = StockMetaService.get_stock_meta(ticker)
+            if not stock_meta:
+                stock_meta = StockMetaService.initialize_default_meta(ticker)
 
-            # 3. 원시 데이터 수집 (KisService 활용)
+            kis_request_meta = KisFinancialsMeta(
+                api_path=stock_meta.api_path or "",
+                api_tr_id=stock_meta.api_tr_id or "",
+                api_market_code=stock_meta.api_market_code or "",
+            )
+
+            # 3. KIS 원시 데이터 수집 → 응답 DTO로 수신 후 분석
             if ticker.isdigit():
-                raw_data = KisService.get_financials(ticker, meta=meta_dict)
-                metrics = FinancialAnalyzer.analyze_domestic_metrics(raw_data)
+                kis_payload = KisService.get_financials(ticker, meta=kis_request_meta)
+                kis_financials_response = KisFinancialsResponse(
+                    output=kis_payload.get("raw") or kis_payload.get("output") or {}
+                )
+                analyzed_metrics = FinancialAnalyzer.analyze_domestic_metrics(kis_financials_response)
             else:
-                raw_data = KisService.get_overseas_financials(ticker, meta=meta_dict)
-                metrics = FinancialAnalyzer.analyze_overseas_metrics(raw_data)
-            
-            if not metrics:
-                # API 호출 실패 시 (404 등 발생) 메타 정보 수정 시도 로직 등을 넣을 수 있음
-                if latest:
-                    return {
-                        "per": latest.per, "pbr": latest.pbr, "roe": latest.roe,
-                        "eps": latest.eps, "bps": latest.bps,
-                        "dividend_yield": latest.dividend_yield,
-                        "current_price": latest.current_price,
-                        "market_cap": latest.market_cap,
-                        "_timestamp": latest.base_date.timestamp(),
-                        "_stale": True
-                    }
-                return {}
-                
-            # 4. DB에 저장
-            StockMetaService.save_financials(ticker, metrics)
-            
-            metrics['_timestamp'] = time.time()
-            cls._metrics_cache[ticker] = metrics
-            return metrics
-            
+                kis_payload = KisService.get_overseas_financials(ticker, meta=kis_request_meta)
+                kis_financials_response = KisFinancialsResponse(
+                    output=kis_payload.get("raw") or kis_payload.get("output") or {}
+                )
+                analyzed_metrics = FinancialAnalyzer.analyze_overseas_metrics(kis_financials_response)
+
+            if not analyzed_metrics:
+                if latest_financials:
+                    return cls._financials_row_to_metrics(latest_financials)
+                return None
+
+            # 4. DB 저장 및 캐시( dict ) 후 모델 반환
+            metrics_snapshot = analyzed_metrics.model_dump()
+            StockMetaService.save_financials(ticker, metrics_snapshot)
+            metrics_snapshot["_timestamp"] = time.time()
+            cls._recent_metrics_by_ticker[ticker] = metrics_snapshot
+            return analyzed_metrics
+
         except Exception as e:
             logger.error(f"Error getting metrics for {ticker}: {e}")
-            return {}
-
-    @classmethod
-    def get_dcf_data(cls, ticker: str) -> dict:
-        """DCF 계산에 필요한 데이터 반환 (KIS API 기반)"""
-        # 0. 사용자 지정 값 우선 적용
-        override = StockMetaService.get_dcf_override(ticker)
-        if override:
-            result = {
-                "fcf_per_share": override.fcf_per_share,
-                "beta": override.beta,
-                "growth_rate": override.growth_rate,
-                "timestamp": override.updated_at.timestamp() if override.updated_at else time.time(),
-                "source": "override"
-            }
-            cls._dcf_cache[ticker] = result
-            return result
-
-        if ticker in cls._dcf_cache:
-            cached = cls._dcf_cache[ticker]
-            if time.time() - cached.get('timestamp', 0) < 1800:
-                return cached
-
-        try:
-            # 1. 5개 연도 기준 입력값 구성
-            yearly = cls._build_yearly_cashflow_points(ticker, years=5)
-            if len(yearly) >= 5:
-                values = [p["cashflow"] for p in yearly]
-                growth_rate = cls._calc_cagr(values)
-                discount_rate = cls._calc_discount_rate(values)
-                result = {
-                    "fcf_per_share": values[-1],
-                    "beta": 1.0,
-                    "growth_rate": growth_rate,
-                    "discount_rate": discount_rate,
-                    "timestamp": time.time(),
-                    "source": "five_year_cashflow",
-                    "years_used": [p["year"] for p in yearly],
-                }
-                cls._dcf_cache[ticker] = result
-                return result
-
-            # 2. 데이터 부족 시: EPS(1년) * PER fallback
-            latest = StockMetaService.get_latest_financials(ticker)
-            if latest and latest.eps and latest.per and latest.eps > 0 and latest.per > 0:
-                fair = float(latest.eps) * float(latest.per)
-                result = {
-                    "fcf_per_share": None,
-                    "beta": 1.0,
-                    "growth_rate": 0.0,
-                    "discount_rate": None,
-                    "fallback_fair_value": round(fair, 2),
-                    "timestamp": latest.base_date.timestamp() if latest.base_date else time.time(),
-                    "source": "eps_per_fallback",
-                }
-                cls._dcf_cache[ticker] = result
-                return result
-
-            # 3. API 호출 (DB에 없거나 부족할 경우)
-            if ticker.isdigit():
-                raw_data = KisService.get_financials(ticker)
-                metrics = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=raw_data)
-            else:
-                # 상세 시세를 위해 fetch_overseas_detail을 사용하는 메서드로 호출 권장 (나중에 KisService 보완 필요)
-                raw_data = KisService.get_overseas_financials(ticker)
-                metrics = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=raw_data)
-            
-            eps_1y = float(metrics.get("fcf_per_share") or 0)
-            per_1y = 0.0
-            latest_metrics = cls.get_metrics(ticker)
-            if latest_metrics:
-                per_1y = float(latest_metrics.get("per") or 0)
-
-            if eps_1y > 0 and per_1y > 0:
-                fair = eps_1y * per_1y
-                result = {
-                    "fcf_per_share": None,
-                    "beta": metrics.get('beta', 1.0),
-                    "growth_rate": 0.0,
-                    "discount_rate": None,
-                    "fallback_fair_value": round(fair, 2),
-                    "timestamp": time.time(),
-                    "source": "eps_per_fallback_api",
-                }
-                cls._dcf_cache[ticker] = result
-                return result
-
-            result = {
-                "fcf_per_share": metrics.get('fcf_per_share'),
-                "beta": metrics.get('beta', 1.0),
-                "growth_rate": metrics.get('growth_rate', 0.05),
-                "discount_rate": None,
-                "timestamp": time.time(),
-                "source": "kis"
-            }
-            
-            cls._dcf_cache[ticker] = result
-            return result
-        except Exception as e:
-            logger.error(f"Error getting DCF data for {ticker}: {e}")
-            return {}
-
-    @classmethod
-    def _build_yearly_cashflow_points(cls, ticker: str, years: int = 5) -> list:
-        """재무 이력에서 연도별 최근 EPS를 현금흐름 대용치로 추출"""
-        history = StockMetaService.get_financials_history(ticker, limit=3000)
-        points = []
-        seen_years = set()
-        for row in history:
-            if not row or not row.base_date:
-                continue
-            y = row.base_date.year
-            if y in seen_years:
-                continue
-            eps = float(row.eps or 0)
-            if eps <= 0:
-                continue
-            points.append({"year": y, "cashflow": eps})
-            seen_years.add(y)
-            if len(points) >= years:
-                break
-        points = list(reversed(points))  # 과거 -> 최신
-        return points
+            return None
 
     @staticmethod
-    def _calc_cagr(values: list) -> float:
-        """연복리 성장률 계산"""
-        if not values or len(values) < 2 or values[0] <= 0:
+    def _dict_to_metrics(data: dict) -> AnalyzedFinancialMetrics:
+        """캐시/저장용 dict를 AnalyzedFinancialMetrics로 변환."""
+        return AnalyzedFinancialMetrics(
+            per=float(data.get("per") or 0),
+            pbr=float(data.get("pbr") or 0),
+            roe=float(data.get("roe") or 0),
+            eps=float(data.get("eps") or 0),
+            bps=float(data.get("bps") or 0),
+            dividend_yield=float(data.get("dividend_yield") or 0),
+            current_price=float(data.get("current_price") or 0),
+            market_cap=float(data.get("market_cap") or 0),
+        )
+
+    @staticmethod
+    def _financials_row_to_metrics(row) -> AnalyzedFinancialMetrics:
+        """DB Financials 행을 AnalyzedFinancialMetrics로 변환."""
+        return AnalyzedFinancialMetrics(
+            per=float(row.per or 0),
+            pbr=float(row.pbr or 0),
+            roe=float(row.roe or 0),
+            eps=float(row.eps or 0),
+            bps=float(row.bps or 0),
+            dividend_yield=float(row.dividend_yield or 0),
+            current_price=float(row.current_price or 0),
+            market_cap=float(row.market_cap or 0),
+        )
+
+    @classmethod
+    def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
+        """DCF 계산에 필요한 입력 데이터 반환. 사용자 오버라이드 → 5년 EPS → DB 재무 → KIS API 순으로 조회."""
+        user_override = StockMetaService.get_dcf_override(ticker)
+        if user_override:
+            dcf_input = DcfInputData(
+                fcf_per_share=user_override.fcf_per_share,
+                beta=user_override.beta,
+                growth_rate=user_override.growth_rate,
+                timestamp=user_override.updated_at.timestamp() if user_override.updated_at else time.time(),
+                source="override",
+            )
+            cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+            return dcf_input
+
+        if ticker in cls._dcf_input_by_ticker:
+            cached = cls._dcf_input_by_ticker[ticker]
+            if time.time() - cached.get("timestamp", 0) < 1800:
+                return cls._dict_to_dcf_input(cached)
+
+        try:
+            # 1. 재무 이력에서 연도별 EPS로 5년 시계열 구성 후 CAGR·할인율 계산
+            yearly_eps_points = cls._build_yearly_eps_as_cashflow(ticker, years=5)
+            if len(yearly_eps_points) >= 5:
+                cashflow_series = [p["cashflow"] for p in yearly_eps_points]
+                growth_rate = cls._calc_cagr(cashflow_series)
+                discount_rate = cls._calc_discount_rate_from_volatility(cashflow_series)
+                dcf_input = DcfInputData(
+                    fcf_per_share=cashflow_series[-1],
+                    beta=1.0,
+                    growth_rate=growth_rate,
+                    discount_rate=discount_rate,
+                    timestamp=time.time(),
+                    source="five_year_cashflow",
+                    years_used=[p["year"] for p in yearly_eps_points],
+                )
+                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+                return dcf_input
+
+            # 2. 5년 데이터 부족 시: DB 최신 EPS·PER로 적정가 추정
+            latest_financials = StockMetaService.get_latest_financials(ticker)
+            if (
+                latest_financials
+                and latest_financials.eps
+                and latest_financials.per
+                and latest_financials.eps > 0
+                and latest_financials.per > 0
+            ):
+                fair_value_eps_per = float(latest_financials.eps) * float(latest_financials.per)
+                dcf_input = DcfInputData(
+                    fcf_per_share=None,
+                    beta=1.0,
+                    growth_rate=0.0,
+                    discount_rate=None,
+                    fallback_fair_value=round(fair_value_eps_per, 2),
+                    timestamp=latest_financials.base_date.timestamp() if latest_financials.base_date else time.time(),
+                    source="eps_per_fallback",
+                )
+                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+                return dcf_input
+
+            # 3. KIS API로 원시 데이터 조회 후 DCF 입력 추출
+            if ticker.isdigit():
+                kis_payload = KisService.get_financials(ticker)
+                dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
+            else:
+                kis_payload = KisService.get_overseas_financials(ticker)
+                dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=kis_payload)
+
+            eps_ttm = float(dcf_inputs_from_analyzer.get("fcf_per_share") or 0)
+            per_ttm = 0.0
+            current_metrics = cls.get_metrics(ticker)
+            if current_metrics:
+                per_ttm = current_metrics.per
+
+            if eps_ttm > 0 and per_ttm > 0:
+                fair_value_eps_per = eps_ttm * per_ttm
+                dcf_input = DcfInputData(
+                    fcf_per_share=None,
+                    beta=dcf_inputs_from_analyzer.get("beta", 1.0),
+                    growth_rate=0.0,
+                    discount_rate=None,
+                    fallback_fair_value=round(fair_value_eps_per, 2),
+                    timestamp=time.time(),
+                    source="eps_per_fallback_api",
+                )
+                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+                return dcf_input
+
+            dcf_input = DcfInputData(
+                fcf_per_share=dcf_inputs_from_analyzer.get("fcf_per_share"),
+                beta=dcf_inputs_from_analyzer.get("beta", 1.0),
+                growth_rate=dcf_inputs_from_analyzer.get("growth_rate", 0.05),
+                discount_rate=None,
+                timestamp=time.time(),
+                source="kis",
+            )
+            cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+            return dcf_input
+        except Exception as e:
+            logger.error(f"Error getting DCF data for {ticker}: {e}")
+            return None
+
+    @staticmethod
+    def _dict_to_dcf_input(data: dict) -> DcfInputData:
+        """캐시/저장용 dict를 DcfInputData로 변환."""
+        return DcfInputData(
+            fcf_per_share=data.get("fcf_per_share"),
+            beta=float(data.get("beta", 1.0)),
+            growth_rate=float(data.get("growth_rate", 0.0)),
+            discount_rate=data.get("discount_rate"),
+            timestamp=float(data.get("timestamp", 0)),
+            source=str(data.get("source", "")),
+            years_used=data.get("years_used"),
+            fallback_fair_value=data.get("fallback_fair_value"),
+        )
+
+    @classmethod
+    def _build_yearly_eps_as_cashflow(cls, ticker: str, years: int = 5) -> list:
+        """재무 이력에서 연도별 최근 EPS를 현금흐름 대용치로 추출. 과거→최신 순 리스트 반환."""
+        financials_history = StockMetaService.get_financials_history(ticker, limit=3000)
+        yearly_eps_points = []
+        years_added = set()
+        for history_row in financials_history:
+            if not history_row or not history_row.base_date:
+                continue
+            base_year = history_row.base_date.year
+            if base_year in years_added:
+                continue
+            eps_value = float(history_row.eps or 0)
+            if eps_value <= 0:
+                continue
+            yearly_eps_points.append({"year": base_year, "cashflow": eps_value})
+            years_added.add(base_year)
+            if len(yearly_eps_points) >= years:
+                break
+        yearly_eps_points = list(reversed(yearly_eps_points))
+        return yearly_eps_points
+
+    @staticmethod
+    def _calc_cagr(cashflow_series: list) -> float:
+        """연복리 성장률(CAGR) 계산. 시계열 첫 값·끝 값 기준."""
+        if not cashflow_series or len(cashflow_series) < 2 or cashflow_series[0] <= 0:
             return 0.05
-        n = len(values) - 1
-        cagr = (values[-1] / values[0]) ** (1 / n) - 1
+        period_count = len(cashflow_series) - 1
+        cagr = (cashflow_series[-1] / cashflow_series[0]) ** (1 / period_count) - 1
         return max(-0.15, min(0.25, cagr))
 
     @staticmethod
-    def _calc_discount_rate(values: list) -> float:
-        """5년 현금흐름 변동성을 반영한 할인율 계산"""
-        if not values or len(values) < 2:
+    def _calc_discount_rate_from_volatility(cashflow_series: list) -> float:
+        """현금흐름 시계열의 변동성을 반영한 할인율 계산 (기본 9% + 변동성)."""
+        if not cashflow_series or len(cashflow_series) < 2:
             return 0.10
-        growths = []
-        for i in range(1, len(values)):
-            prev = values[i - 1]
-            curr = values[i]
-            if prev > 0:
-                growths.append((curr / prev) - 1)
-        if not growths:
+        period_growth_rates = []
+        for i in range(1, len(cashflow_series)):
+            prev_value = cashflow_series[i - 1]
+            curr_value = cashflow_series[i]
+            if prev_value > 0:
+                period_growth_rates.append((curr_value / prev_value) - 1)
+        if not period_growth_rates:
             return 0.10
-        avg = sum(growths) / len(growths)
-        var = sum((g - avg) ** 2 for g in growths) / len(growths)
-        vol = math.sqrt(max(0.0, var))
-        # 기본 9% + 변동성 반영
-        discount = 0.09 + min(0.06, vol)
-        return max(0.06, min(0.15, discount))
+        avg_growth = sum(period_growth_rates) / len(period_growth_rates)
+        variance = sum((g - avg_growth) ** 2 for g in period_growth_rates) / len(period_growth_rates)
+        volatility = math.sqrt(max(0.0, variance))
+        discount_rate = 0.09 + min(0.06, volatility)
+        return max(0.06, min(0.15, discount_rate))
 
     @classmethod
     def get_overrides(cls) -> dict:
-        # 호환용: DB에 저장된 사용자 설정을 dict로 반환
+        """DB에 저장된 종목별 DCF 사용자 오버라이드 설정을 ticker → 설정 dict 로 반환."""
         try:
             session = StockMetaService.get_session()
             from models.stock_meta import DcfOverride
-            rows = session.query(DcfOverride).all()
+            override_records = session.query(DcfOverride).all()
             return {
-                row.ticker: {
-                    "fcf_per_share": row.fcf_per_share,
-                    "beta": row.beta,
-                    "growth_rate": row.growth_rate,
-                    "updated_at": row.updated_at.isoformat() if row.updated_at else None
+                record.ticker: {
+                    "fcf_per_share": record.fcf_per_share,
+                    "beta": record.beta,
+                    "growth_rate": record.growth_rate,
+                    "updated_at": record.updated_at.isoformat() if record.updated_at else None,
                 }
-                for row in rows
+                for record in override_records
             }
         except Exception:
             return {}
 
     @classmethod
-    def save_override(cls, ticker: str, params: dict):
-        row = StockMetaService.upsert_dcf_override(
+    def save_override(cls, ticker: str, override_params: dict) -> dict:
+        """종목별 DCF 사용자 오버라이드 저장. 저장 결과 dict 반환."""
+        saved_override = StockMetaService.upsert_dcf_override(
             ticker=ticker,
-            fcf_per_share=params.get("fcf_per_share"),
-            beta=params.get("beta"),
-            growth_rate=params.get("growth_rate")
+            fcf_per_share=override_params.get("fcf_per_share"),
+            beta=override_params.get("beta"),
+            growth_rate=override_params.get("growth_rate"),
         )
-        if not row:
+        if not saved_override:
             return {}
-        result = {
-            "fcf_per_share": row.fcf_per_share,
-            "beta": row.beta,
-            "growth_rate": row.growth_rate,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None
+        override_snapshot = {
+            "fcf_per_share": saved_override.fcf_per_share,
+            "beta": saved_override.beta,
+            "growth_rate": saved_override.growth_rate,
+            "updated_at": saved_override.updated_at.isoformat() if saved_override.updated_at else None,
         }
-        cls._dcf_cache[ticker] = {
-            **result,
+        cls._dcf_input_by_ticker[ticker] = {
+            **override_snapshot,
             "timestamp": time.time(),
-            "source": "override"
+            "source": "override",
         }
-        return result
+        return override_snapshot
 
     @classmethod
     def update_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float) -> dict:
-        """사용자 지정 DCF 입력값을 간단히 저장"""
+        """사용자 지정 DCF 입력값 저장 (fcf_per_share, beta, growth_rate)."""
         return cls.save_override(
             ticker,
-            {
-                "fcf_per_share": fcf_per_share,
-                "beta": beta,
-                "growth_rate": growth_rate
-            }
+            {"fcf_per_share": fcf_per_share, "beta": beta, "growth_rate": growth_rate},
         )

@@ -1,131 +1,152 @@
+"""종합 분석 서비스. 티커별 시세·기술·기본·매크로·뉴스를 통합해 리포트를 생성합니다."""
+from typing import Optional, Union
+
 import pandas as pd
-from datetime import datetime
-from services.market.data_service import DataService
+
+from models.schemas import (
+    ComprehensiveReport,
+    FundamentalSummaryInReport,
+    MacroContextInReport,
+    PortfolioSummaryInReport,
+    PriceInfoSummary,
+    TechnicalSummaryInReport,
+)
 from services.analysis.financial_service import FinancialService
-from services.market.macro_service import MacroService
-from services.trading.portfolio_service import PortfolioService
-from services.market.news_service import NewsService
 from services.analysis.indicator_service import IndicatorService
-from services.notification.report_service import ReportService
-from services.kis.kis_service import KisService
 from services.kis.fetch.kis_fetcher import KisFetcher
+from services.kis.kis_service import KisService
+from services.market.data_service import DataService
+from services.market.macro_service import MacroService
+from services.market.news_service import NewsService
+from services.notification.report_service import ReportService
+from services.trading.portfolio_service import PortfolioService
+
+# DCF 단순 계산 상수 (Macro 금리 반영)
+DCF_EQUITY_RISK_PREMIUM = 0.055
+DCF_RATE_FLOOR = 0.06
+DCF_TERMINAL_GROWTH = 0.03
+DCF_STAGE1_YEARS = 10
+REPORT_HISTORY_DAYS = 365 * 2
+REPORT_NEWS_LIMIT = 2
+
 
 class AnalysisService:
+    """티커 종합 분석 및 리포트 생성."""
+
     @classmethod
-    def get_comprehensive_report(cls, ticker: str, user_id: str = "sean") -> dict:
+    def get_comprehensive_report(cls, ticker: str, user_id: str = "sean") -> Optional[ComprehensiveReport]:
         """
-        하나의 티커에 대한 모든 분석 기능을 통합하여 리포트를 생성합니다.
-        (데이터 수집 및 계산 로직 집중)
+        하나의 티커에 대한 시세·보유·기술·기본·매크로·뉴스를 통합해 리포트 모델을 반환합니다.
         """
-        print(f"📊 Generating comprehensive report for {ticker}...")
-        
         try:
-            # 1. 시세 및 기본 정보 (KIS API 사용)
             token = KisService.get_access_token()
             if ticker.isdigit():
                 price_data = KisFetcher.fetch_domestic_price(token, ticker)
             else:
                 price_data = KisFetcher.fetch_overseas_price(token, ticker)
-            
             if not price_data:
-                return {"error": f"Failed to fetch price data for {ticker}"}
+                return None
 
-            curr_price = price_data.get('price', 0)
-            change_pct = price_data.get('change_rate', 0)
-            
-            # 2. 나의 포트폴리오 현황
-            holdings = PortfolioService.load_portfolio(user_id)
-            my_stock = next((h for h in holdings if h['ticker'] == ticker), None)
-            
-            # 3. 기술적 지표 (DataService + IndicatorService 사용)
-            hist = DataService.get_price_history(ticker, days=365*2) # 2년치
-            
+            current_price = round(float(price_data.get("price", 0) or 0), 2)
+            change_rate_pct = round(float(price_data.get("change_rate", 0) or 0), 2)
+            raw_payload = price_data.get("raw") or {}
+            market_state = raw_payload.get("market_state", "OPEN")
+
+            holdings = PortfolioService.load_portfolio_dtos(user_id)
+            holding_for_ticker = next((h for h in holdings if h.ticker == ticker), None)
+            avg_cost = holding_for_ticker.buy_price if holding_for_ticker else 0
+            return_pct = (
+                round((current_price - avg_cost) / avg_cost * 100, 2)
+                if holding_for_ticker and avg_cost
+                else 0
+            )
+
+            hist = DataService.get_price_history(ticker, days=REPORT_HISTORY_DAYS)
+            indicators_snapshot = (
+                IndicatorService.compute_latest_indicators_snapshot(hist["Close"])
+                if not hist.empty else None
+            )
+            rsi = indicators_snapshot.rsi if indicators_snapshot else 50
+            emas = indicators_snapshot.ema if indicators_snapshot else {}
             if not hist.empty:
-                indicators = IndicatorService.get_latest_indicators(hist['Close'])
-                rsi = indicators.get('rsi')
-                emas = indicators.get('ema', {})
-                
-                # Bollinger Bands
-                bb = IndicatorService.calculate_bollinger_bands(hist['Close'])
-                bb_latest = {k: round(v.iloc[-1], 2) for k, v in bb.items()}
+                bb_result = IndicatorService.compute_bollinger_bands(hist["Close"])
+                bb_latest = bb_result.to_latest()
+                bollinger_dict = {
+                    "middle": bb_latest.middle,
+                    "upper": bb_latest.upper,
+                    "lower": bb_latest.lower,
+                }
             else:
-                rsi = 50
-                emas = {}
-                bb_latest = {}
+                bollinger_dict = {}
 
-            # 4. 가치 평가 (Macro 금리 반영 DCF)
-            macro = MacroService.get_macro_data()
-            risk_free = macro['us_10y_yield'] / 100
-            
+            macro_snapshot = MacroService.get_macro_data()
+            risk_free_rate = float(macro_snapshot.get("us_10y_yield", 0) or 0) / 100
             dcf_data = FinancialService.get_dcf_data(ticker)
-            fcf = dcf_data.get('fcf_per_share')
-            dcf_fair = "N/A"
-            if fcf and fcf > 0:
-                growth = dcf_data.get('growth_rate', 0.05)
-                beta = dcf_data.get('beta', 1.0)
-                disc = max(0.06, risk_free + beta * 0.055)
-                
-                val = 0
-                temp_fcf = fcf
-                for i in range(1, 11):
-                    temp_fcf *= (1+growth)
-                    val += temp_fcf / ((1+disc)**i)
-                term = (temp_fcf * 1.03) / (disc - 0.03)
-                val += term / ((1+disc)**10)
-                dcf_fair = round(val, 2)
+            fcf = dcf_data.fcf_per_share if dcf_data else None
+            dcf_fair: Union[float, str] = "N/A"
+            if dcf_data and fcf and fcf > 0:
+                growth_rate = dcf_data.growth_rate
+                beta = dcf_data.beta
+                discount_rate = max(DCF_RATE_FLOOR, risk_free_rate + beta * DCF_EQUITY_RISK_PREMIUM)
+                dcf_sum = 0.0
+                projected_fcf = fcf
+                for i in range(1, DCF_STAGE1_YEARS + 1):
+                    projected_fcf *= 1 + growth_rate
+                    dcf_sum += projected_fcf / ((1 + discount_rate) ** i)
+                terminal_value = (projected_fcf * (1 + DCF_TERMINAL_GROWTH)) / (
+                    discount_rate - DCF_TERMINAL_GROWTH
+                )
+                dcf_sum += terminal_value / ((1 + discount_rate) ** DCF_STAGE1_YEARS)
+                dcf_fair = round(dcf_sum, 2)
 
-            # 5. 기관 목표가 (KIS API에서 가져온 상세 데이터 활용)
-            # KIS API에서 analyst target을 제공하지 않는 경우 N/A 처리
-            analyst_target = price_data.get('raw', {}).get('target_mean_price') # API마다 다를 수 있음
-            
-            # 6. 최신 뉴스 요약
-            news = NewsService.get_latest_news(ticker, limit=2)
-            news_summary = NewsService.summarize_news(ticker, news)
+            analyst_target = raw_payload.get("target_mean_price")
+            upside_dcf = (
+                round((dcf_fair - current_price) / current_price * 100, 1)
+                if dcf_fair != "N/A" and current_price else 0
+            )
+            upside_analyst = (
+                round((analyst_target - current_price) / current_price * 100, 1)
+                if analyst_target and current_price else 0
+            )
 
-            # 7. 종합 데이터 구성
-            report = {
-                "ticker": ticker,
-                "name": price_data.get('name', ticker),
-                "price_info": {
-                    "current": round(curr_price, 2),
-                    "change_pct": round(change_pct, 2),
-                    "state": price_data.get('raw', {}).get('market_state', 'OPEN')
-                },
-                "portfolio": {
-                    "owned": True if my_stock else False,
-                    "avg_cost": my_stock['buy_price'] if my_stock else 0,
-                    "return_pct": round(((curr_price - my_stock['buy_price'])/my_stock['buy_price']*100), 2) if my_stock else 0
-                },
-                "technical": {
-                    "rsi": rsi,
-                    "emas": emas,
-                    "bollinger": bb_latest
-                },
-                "fundamental": {
-                    "dcf_fair": dcf_fair,
-                    "upside_dcf": round((dcf_fair - curr_price)/curr_price*100, 1) if dcf_fair != "N/A" else 0,
-                    "analyst_target": analyst_target,
-                    "upside_analyst": round((analyst_target - curr_price)/curr_price*100, 1) if analyst_target else 0
-                },
-                "macro_context": {
-                    "regime": macro['market_regime']['status'],
-                    "vix": macro['vix']
-                },
-                "news_summary": news_summary
-            }
-            
-            return report
-            
+            news_items = NewsService.get_latest_news(ticker, limit=REPORT_NEWS_LIMIT)
+            news_summary = NewsService.summarize_news(ticker, news_items)
+            regime_status = (macro_snapshot.get("market_regime") or {}).get("status", "")
+            vix = macro_snapshot.get("vix")
+
+            return ComprehensiveReport(
+                ticker=ticker,
+                name=price_data.get("name", ticker),
+                price_info=PriceInfoSummary(
+                    current=current_price,
+                    change_pct=change_rate_pct,
+                    state=market_state,
+                ),
+                portfolio=PortfolioSummaryInReport(
+                    owned=bool(holding_for_ticker),
+                    avg_cost=avg_cost,
+                    return_pct=return_pct,
+                ),
+                technical=TechnicalSummaryInReport(rsi=rsi, emas=emas, bollinger=bollinger_dict),
+                fundamental=FundamentalSummaryInReport(
+                    dcf_fair=dcf_fair,
+                    upside_dcf=upside_dcf,
+                    analyst_target=analyst_target,
+                    upside_analyst=upside_analyst,
+                ),
+                macro_context=MacroContextInReport(regime=regime_status, vix=vix),
+                news_summary=news_summary,
+            )
         except Exception as e:
             print(f"Error generating comprehensive report for {ticker}: {e}")
             import traceback
             traceback.print_exc()
-            return {"error": str(e)}
+            return None
 
     @classmethod
     def get_formatted_report(cls, ticker: str) -> str:
-        """데이터를 생성하고 포맷팅까지 완료한 문자열을 반환합니다."""
-        data = cls.get_comprehensive_report(ticker)
-        if "error" in data:
-            return f"Error: {data['error']}"
-        return ReportService.format_comprehensive_report(data)
+        """종합 리포트 데이터를 생성한 뒤 포맷된 문자열로 반환합니다."""
+        report = cls.get_comprehensive_report(ticker)
+        if report is None:
+            return "Error: Failed to generate report"
+        return ReportService.format_comprehensive_report(report)

@@ -22,30 +22,25 @@ class FileService:
             # 필수 컬럼 확인 (유연하게 처리)
             # 예상 컬럼: 종목명(name), 종목코드(ticker), 수량(quantity), 매수단가(buy_price), 섹터(sector)
             
-            # 컬럼명 정규화 (소문자, 공백제거)
-            df.columns = [str(c).lower().strip().replace(' ', '_') for c in df.columns]
+            df.columns = [str(col).lower().strip().replace(" ", "_") for col in df.columns]
             
             holdings = []
             for _, row in df.iterrows():
-                # ticker가 없으면 종목명으로라도 처리
-                ticker = str(row.get('ticker', '')).strip()
-                name = str(row.get('name', '')).strip()
-                
-                # 수량과 가격은 숫자로 변환
+                ticker = str(row.get("ticker", "") or "").strip()
+                name = str(row.get("name", "") or "").strip()
                 try:
-                    qty = float(row.get('quantity', 0))
-                    price = float(row.get('buy_price', 0))
-                except:
+                    qty = float(row.get("quantity", 0))
+                    price = float(row.get("buy_price", 0))
+                except (TypeError, ValueError):
                     qty = 0
                     price = 0
-                    
                 if qty > 0:
                     holdings.append({
-                        "ticker": ticker if ticker != 'nan' else None,
-                        "name": name if name != 'nan' else "Unknown",
+                        "ticker": ticker if ticker != "nan" else None,
+                        "name": name if name != "nan" else "Unknown",
                         "quantity": qty,
                         "buy_price": price,
-                        "sector": str(row.get('sector', 'Others'))
+                        "sector": str(row.get("sector", "Others"))
                     })
                     
             return holdings

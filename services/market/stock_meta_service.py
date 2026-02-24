@@ -1,6 +1,7 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.exc import OperationalError
 from datetime import datetime
 from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta, DcfOverride
 from models.portfolio import Portfolio, PortfolioHolding
@@ -22,21 +23,48 @@ class StockMetaService:
     Session = None
 
     @classmethod
+    def _create_engine_and_session(cls):
+        cls.engine = create_engine(
+            f"sqlite:///{cls.DB_PATH}",
+            echo=False,
+            pool_size=50,  # 연결 풀 크기 증가
+            max_overflow=50,  # 오버플로우 증가
+            pool_pre_ping=True,  # 연결 유효성 사전 확인
+            pool_recycle=3600  # 1시간마다 연결 재활용
+        )
+        cls.Session = scoped_session(sessionmaker(bind=cls.engine))
+
+    @classmethod
     def init_db(cls):
         """데이터베이스 및 테이블 초기화"""
         if cls.engine:
             return
             
         os.makedirs(os.path.dirname(cls.DB_PATH), exist_ok=True)
-        cls.engine = create_engine(
-            f"sqlite:///{cls.DB_PATH}", 
-            echo=False,
-            pool_size=20,
-            max_overflow=20
-        )
-        Base.metadata.create_all(cls.engine)
-        cls.Session = scoped_session(sessionmaker(bind=cls.engine))
-        logger.info(f"📁 Database initialized at: {cls.DB_PATH}")
+        cls._create_engine_and_session()
+        try:
+            Base.metadata.create_all(cls.engine)
+            logger.info(f"📁 Database initialized at: {cls.DB_PATH}")
+        except OperationalError as e:
+            # sqlite 파일이 깨졌거나 포맷이 맞지 않으면 자동 백업 후 재생성
+            if "unsupported file format" in str(e).lower():
+                backup_path = f"{cls.DB_PATH}.corrupt.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                logger.error(f"❌ Corrupted sqlite detected: {e}. Backing up to {backup_path}")
+                try:
+                    if os.path.exists(cls.DB_PATH):
+                        os.replace(cls.DB_PATH, backup_path)
+                    cls.engine = None
+                    if cls.Session:
+                        cls.Session.remove()
+                    cls.Session = None
+                    cls._create_engine_and_session()
+                    Base.metadata.create_all(cls.engine)
+                    logger.warning(f"⚠️ Recreated sqlite DB after corruption recovery: {cls.DB_PATH}")
+                except Exception as recover_err:
+                    logger.error(f"❌ DB recovery failed: {recover_err}")
+                    raise
+            else:
+                raise
 
     @classmethod
     def get_session(cls):
@@ -59,17 +87,28 @@ class StockMetaService:
                     setattr(stock, key, value)
             
             session.commit()
+            if stock:
+                session.expunge(stock)
             return stock
         except Exception as e:
             session.rollback()
             logger.error(f"Error upserting stock meta for {ticker}: {e}")
             return None
+        finally:
+            session.close()
 
     @classmethod
     def get_stock_meta(cls, ticker: str):
         """종목 메타 정보 조회"""
         session = cls.get_session()
-        return session.query(StockMeta).filter_by(ticker=ticker).first()
+        try:
+            result = session.query(StockMeta).filter_by(ticker=ticker).first()
+            # scoped_session은 자동으로 관리되지만, 명시적으로 detach
+            if result:
+                session.expunge(result)
+            return result
+        finally:
+            session.close()
 
     @classmethod
     def save_financials(cls, ticker: str, metrics: dict, base_date: datetime = None):
@@ -95,23 +134,18 @@ class StockMetaService:
                 financial = Financials(stock_id=stock.id, base_date=base_date)
                 session.add(financial)
 
-            # 지표 매핑
-            mapping = {
-                "name": "name", # 종목명 매핑 추가
-                "per": "per", "pbr": "pbr", "roe": "roe", 
-                "eps": "eps", "bps": "bps", 
+            metric_to_db_field = {
+                "name": "name",
+                "per": "per", "pbr": "pbr", "roe": "roe",
+                "eps": "eps", "bps": "bps",
                 "dividend_yield": "dividend_yield",
                 "current_price": "current_price",
                 "market_cap": "market_cap",
-                "high52": "high52",
-                "low52": "low52",
-                "volume": "volume",
-                "amount": "amount",
-                "rsi": "rsi",
-                "dcf_value": "dcf_value"
+                "high52": "high52", "low52": "low52",
+                "volume": "volume", "amount": "amount",
+                "rsi": "rsi", "dcf_value": "dcf_value",
             }
-            
-            for metric_key, db_field in mapping.items():
+            for metric_key, db_field in metric_to_db_field.items():
                 if metric_key in metrics:
                     setattr(financial, db_field, metrics[metric_key])
 
@@ -126,11 +160,15 @@ class StockMetaService:
 
             financial.updated_at = datetime.now()
             session.commit()
+            if financial:
+                session.expunge(financial)
             return financial
         except Exception as e:
             session.rollback()
             logger.error(f"Error saving financials for {ticker}: {e}")
             return None
+        finally:
+            session.close()
 
     @classmethod
     def initialize_default_meta(cls, ticker: str):
@@ -156,27 +194,40 @@ class StockMetaService:
     def get_latest_financials(cls, ticker: str):
         """가장 최근 재무 지표 조회"""
         session = cls.get_session()
-        stock = session.query(StockMeta).filter_by(ticker=ticker).first()
-        if not stock:
-            return None
-            
-        return session.query(Financials).filter(Financials.stock_id == stock.id)\
-                      .order_by(Financials.base_date.desc()).first()
+        try:
+            stock = session.query(StockMeta).filter_by(ticker=ticker).first()
+            if not stock:
+                return None
+                
+            result = session.query(Financials).filter(Financials.stock_id == stock.id)\
+                          .order_by(Financials.base_date.desc()).first()
+            if result:
+                session.expunge(result)
+            return result
+        finally:
+            session.close()
 
     @classmethod
     def get_financials_history(cls, ticker: str, limit: int = 2500):
         """종목 재무 지표 이력 조회 (최신순)"""
         session = cls.get_session()
-        stock = session.query(StockMeta).filter_by(ticker=ticker).first()
-        if not stock:
-            return []
-        return (
-            session.query(Financials)
-            .filter(Financials.stock_id == stock.id)
-            .order_by(Financials.base_date.desc())
-            .limit(limit)
-            .all()
-        )
+        try:
+            stock = session.query(StockMeta).filter_by(ticker=ticker).first()
+            if not stock:
+                return []
+            results = (
+                session.query(Financials)
+                .filter(Financials.stock_id == stock.id)
+                .order_by(Financials.base_date.desc())
+                .limit(limit)
+                .all()
+            )
+            # 결과를 detach하여 session 종료 후에도 사용 가능하도록
+            for record in results:
+                session.expunge(record)
+            return results
+        finally:
+            session.close()
 
     @classmethod
     def get_batch_latest_financials(cls, tickers: list):
@@ -185,23 +236,31 @@ class StockMetaService:
             return {}
             
         session = cls.get_session()
-        # SQLite에서 각 stock_id별 가장 최근의 base_date 행을 가져오는 쿼리 (서브쿼리 활용)
-        from sqlalchemy import func
-        
-        # 1. 각 stock_id별 최신 base_date 찾기
-        subquery = session.query(
-            Financials.stock_id,
-            func.max(Financials.base_date).label('max_date')
-        ).group_by(Financials.stock_id).subquery()
-        
-        # 2. StockMeta와 조인하여 데이터 가져오기
-        results = session.query(StockMeta.ticker, Financials)\
-            .join(Financials, StockMeta.id == Financials.stock_id)\
-            .join(subquery, (Financials.stock_id == subquery.c.stock_id) & (Financials.base_date == subquery.c.max_date))\
-            .filter(StockMeta.ticker.in_(tickers))\
-            .all()
+        try:
+            # SQLite에서 각 stock_id별 가장 최근의 base_date 행을 가져오는 쿼리 (서브쿼리 활용)
+            from sqlalchemy import func
             
-        return {ticker: fin for ticker, fin in results}
+            # 1. 각 stock_id별 최신 base_date 찾기
+            subquery = session.query(
+                Financials.stock_id,
+                func.max(Financials.base_date).label('max_date')
+            ).group_by(Financials.stock_id).subquery()
+            
+            # 2. StockMeta와 조인하여 데이터 가져오기
+            results = session.query(StockMeta.ticker, Financials)\
+                .join(Financials, StockMeta.id == Financials.stock_id)\
+                .join(subquery, (Financials.stock_id == subquery.c.stock_id) & (Financials.base_date == subquery.c.max_date))\
+                .filter(StockMeta.ticker.in_(tickers))\
+                .all()
+            
+            # 결과를 detach하여 session 종료 후에도 사용 가능하도록
+            result_dict = {}
+            for ticker, financial in results:
+                session.expunge(financial)
+                result_dict[ticker] = financial
+            return result_dict
+        finally:
+            session.close()
 
     @classmethod
     def upsert_api_tr_meta(cls, api_name: str, **kwargs):
@@ -218,11 +277,15 @@ class StockMetaService:
                     setattr(meta, key, value)
             
             session.commit()
+            if meta:
+                session.expunge(meta)
             return meta
         except Exception as e:
             session.rollback()
             logger.error(f"Error upserting api tr meta for {api_name}: {e}")
             return None
+        finally:
+            session.close()
 
     @classmethod
     def upsert_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float):
@@ -239,17 +302,27 @@ class StockMetaService:
             row.growth_rate = growth_rate
             row.updated_at = datetime.now()
             session.commit()
+            if row:
+                session.expunge(row)
             return row
         except Exception as e:
             session.rollback()
             logger.error(f"Error upserting DCF override for {ticker}: {e}")
             return None
+        finally:
+            session.close()
 
     @classmethod
     def get_dcf_override(cls, ticker: str):
         """사용자 지정 DCF 입력값 조회"""
         session = cls.get_session()
-        return session.query(DcfOverride).filter_by(ticker=ticker).first()
+        try:
+            result = session.query(DcfOverride).filter_by(ticker=ticker).first()
+            if result:
+                session.expunge(result)
+            return result
+        finally:
+            session.close()
 
     @classmethod
     def init_api_tr_meta(cls):
@@ -288,7 +361,13 @@ class StockMetaService:
     def get_api_meta(cls, api_name: str):
         """API명으로 메타 정보 전체 조회"""
         session = cls.get_session()
-        return session.query(ApiTrMeta).filter_by(api_name=api_name).first()
+        try:
+            result = session.query(ApiTrMeta).filter_by(api_name=api_name).first()
+            if result:
+                session.expunge(result)
+            return result
+        finally:
+            session.close()
 
     @classmethod
     def get_api_info(cls, api_name: str, is_vts: bool = None):
@@ -298,6 +377,13 @@ class StockMetaService:
             is_vts = Config.KIS_IS_VTS
             
         meta = cls.get_api_meta(api_name)
+        # DB 복구 직후 api_tr_meta가 비어있을 수 있어 1회 자동 초기화
+        if not meta:
+            try:
+                cls.init_api_tr_meta()
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize api_tr_meta automatically: {e}")
+            meta = cls.get_api_meta(api_name)
         if not meta:
             return None, None
             

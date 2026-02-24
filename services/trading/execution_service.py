@@ -29,8 +29,9 @@ class ExecutionService:
         }
         
         try:
-            res = requests.post(url, json=payload)
-            cls._access_token = res.json().get("access_token")
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            cls._access_token = response.json().get("access_token")
             print("KIS API 토큰 발급 성공")
             return cls._access_token
         except Exception as e:

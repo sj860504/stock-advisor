@@ -6,12 +6,14 @@ from config import Config
 from services.kis.kis_service import KisService
 from services.kis.fetch.kis_fetcher import KisFetcher
 
+MACRO_CACHE_EXPIRY_SEC = 3600
+
+
 class MacroService:
-    """
-    거시경제 지표 및 시장 국면 분석 서비스 (yfinance 제거 버전)
-    """
-    _cache = {}
-    _cache_expiry = 3600
+    """거시경제 지표 및 시장 국면 분석 (KIS/FRED 기반)."""
+    _cache: dict = {}
+    _cache_expiry = MACRO_CACHE_EXPIRY_SEC
+    _fred_base_url = "https://api.stlouisfed.org/fred/series/observations"
 
     FRED_SERIES = {
         "avg_hourly_earnings": "CES0500000003",
@@ -56,16 +58,25 @@ class MacroService:
                 return data
 
         print("🌐 Fetching Comprehensive Macro Data via KIS/FRED...")
+        vix = cls._get_vix()
+        fear_greed = cls._get_fear_greed_index()
+        economic_indicators = cls._get_economic_indicators()
+        market_regime = cls._get_market_regime(
+            vix=vix,
+            fear_greed=fear_greed,
+            economic_indicators=economic_indicators,
+        )
+
         data = {
             "indices": cls._get_major_indices(),
             "us_10y_yield": cls._get_us_10y_yield(),
-            "market_regime": cls._get_market_regime(),
-            "vix": cls._get_vix(),
-            "fear_greed": cls._get_fear_greed_index(),
+            "market_regime": market_regime,
+            "vix": vix,
+            "fear_greed": fear_greed,
             "sector_performance": cls._get_sector_performance(),
             "crypto": cls._get_crypto_data(),
             "commodities": cls._get_commodity_data(),
-            "economic_indicators": cls._get_economic_indicators(),
+            "economic_indicators": economic_indicators,
             "timestamp": now
         }
         
@@ -132,27 +143,141 @@ class MacroService:
             return 20.0
 
     @classmethod
-    def _get_market_regime(cls) -> dict:
-        """시장 국면 판단 (Bull/Bear)"""
-        # S&P 500 (SPX)의 이평선 기준
+    def _get_market_regime(
+        cls,
+        vix: float | None = None,
+        fear_greed: int | None = None,
+        economic_indicators: dict | None = None
+    ) -> dict:
+        """시장 국면 판단 (Bull/Bear/Neutral) 및 점수 계산"""
+        # S&P 500 (SPX)의 다중 EMA 기반 합성 점수
         from services.market.data_service import DataService
         hist = DataService.get_price_history("SPX", days=400) # 지수는 별도 처리가 필요할 수 있음
         if hist.empty:
-            return {"status": "Bull", "current": 0, "ma200": 0, "diff_pct": 0}
-            
-        current_price = hist['Close'].iloc[-1]
-        ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-        status = "Bull" if current_price > ma200 else "Bear"
+            return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 0}
+
+        if "Close" not in hist.columns:
+            return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 0}
+
+        close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+        if close.empty:
+            return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 0}
+
+        current_price = float(close.iloc[-1])
+        ema_periods = [5, 20, 60, 120, 200]
+        ema_map = {
+            p: float(close.ewm(span=p, adjust=False).mean().iloc[-1])
+            for p in ema_periods
+        }
+
+        # 호재(+) / 악재(-) 원칙으로 점수화
+        # 단기<중기<장기 순 하락 정렬이면 악재, 반대면 호재
+        raw_score = 0
+        price_weights = {5: 8, 20: 12, 60: 16, 120: 22, 200: 30}
+        for p, w in price_weights.items():
+            raw_score += w if current_price >= ema_map[p] else -w
+
+        ema5 = ema_map[5]
+        ema20 = ema_map[20]
+        ema60 = ema_map[60]
+        ema120 = ema_map[120]
+        ema200 = ema_map[200]
+
+        if ema5 > ema20 > ema60 > ema120 > ema200:
+            raw_score += 12
+        elif ema5 < ema20 < ema60 < ema120 < ema200:
+            raw_score -= 12
+
+        for p in [20, 60, 120]:
+            ema_series = close.ewm(span=p, adjust=False).mean()
+            slope_up = len(ema_series) >= 2 and float(ema_series.iloc[-1]) > float(ema_series.iloc[-2])
+            raw_score += 4 if slope_up else -4
+
+        max_abs_raw = sum(price_weights.values()) + 12 + (4 * 3)  # 100
+        technical_score = int(round((raw_score / max_abs_raw) * 30))
+        technical_score = max(-30, min(30, technical_score))
+
+        # 변동성(VIX) 점수
+        if vix is None:
+            vix = cls._get_vix()
+        vix_score = 0
+        if vix >= 30:
+            vix_score = -8
+        elif vix >= 25:
+            vix_score = -5
+        elif vix <= 15:
+            vix_score = +6
+        elif vix <= 20:
+            vix_score = +3
+
+        # 공포탐욕(Fear&Greed) 점수
+        if fear_greed is None:
+            fear_greed = cls._get_fear_greed_index()
+        fng_score = 0
+        if fear_greed <= 25:
+            fng_score = -6
+        elif fear_greed <= 40:
+            fng_score = -3
+        elif fear_greed >= 75:
+            fng_score = +6
+        elif fear_greed >= 60:
+            fng_score = +3
+
+        # 주요 경제지표(최소 3개 이상) 점수
+        if economic_indicators is None:
+            economic_indicators = cls._get_economic_indicators()
+        econ_summary = (economic_indicators or {}).get("summary", {})
+        econ_total = int(econ_summary.get("total_score", 0) or 0)
+        econ_max = int(econ_summary.get("max_score", 0) or 0)
+        econ_score = int(round((econ_total / econ_max) * 10)) if econ_max > 0 else 0
+        econ_score = max(-10, min(10, econ_score))
+
+        regime_score = technical_score + vix_score + fng_score + econ_score
+        regime_score = max(-30, min(30, regime_score))
+
+        if regime_score >= 10:
+            status = "Bull"
+        elif regime_score <= -10:
+            status = "Bear"
+        else:
+            status = "Neutral"
+
+        ma200 = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
+        diff_pct = (current_price - ma200) / ma200 * 100 if ma200 else 0
+
         return {
             "status": status,
-            "current": round(float(current_price), 2),
+            "current": round(current_price, 2),
             "ma200": round(float(ma200 or 0), 2),
-            "diff_pct": round(float((current_price - ma200)/ma200*100 if ma200 else 0), 2)
+            "diff_pct": round(float(diff_pct), 2),
+            "regime_score": regime_score,
+            "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
+            "components": {
+                "technical_score": technical_score,
+                "vix_score": vix_score,
+                "fear_greed_score": fng_score,
+                "economic_score": econ_score
+            }
         }
 
     @classmethod
     def _get_fear_greed_index(cls) -> int:
-        return 50 # Placeholder
+        # CNN Fear & Greed 공개 엔드포인트 사용
+        try:
+            url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+            res = requests.get(url, timeout=5)
+            res.raise_for_status()
+            data = res.json() or {}
+            block = data.get("fear_and_greed", {})
+            val = block.get("score")
+            if val is None and isinstance(block, dict):
+                val = block.get("value")
+            if val is None:
+                val = data.get("fear_and_greed_score")
+            score = int(round(float(val)))
+            return max(0, min(100, score))
+        except Exception:
+            return 50
 
     @classmethod
     def _get_sector_performance(cls) -> dict:
@@ -161,5 +286,97 @@ class MacroService:
 
     @classmethod
     def _get_economic_indicators(cls) -> dict:
-        # 기존 FRED 로직 유지 (yfinance 무관)
-        return {"summary": {"total_score": 0, "max_score": 0, "sentiment_ratio": 0}}
+        # 주요 지표 4개(요청: 최소 3개 이상) 기반 점수
+        selected = [
+            "unemployment_rate",   # UNRATE (낮을수록 호재)
+            "consumer_confidence", # UMCSENT (높을수록 호재)
+            "cpi",                 # CPIAUCSL (낮을수록 호재)
+            "initial_jobless_claims"  # ICSA (낮을수록 호재)
+        ]
+
+        indicators = {}
+        total_score = 0
+        max_score = 0
+
+        for key in selected:
+            series_id = cls.FRED_SERIES.get(key)
+            rule = cls.MACRO_RULES.get(key, {})
+            higher_is_good = bool(rule.get("higher_is_good", True))
+            name = rule.get("name", key)
+
+            latest, prev = cls._get_fred_latest_pair(series_id)
+            if latest is None or prev is None:
+                indicators[key] = {
+                    "name": name,
+                    "series_id": series_id,
+                    "latest": None,
+                    "previous": None,
+                    "delta": None,
+                    "score": 0,
+                    "status": "no_data"
+                }
+                continue
+
+            delta = latest - prev
+            score = 0
+            if delta > 0:
+                score = 1 if higher_is_good else -1
+            elif delta < 0:
+                score = -1 if higher_is_good else 1
+
+            status = "positive" if score > 0 else "negative" if score < 0 else "neutral"
+            indicators[key] = {
+                "name": name,
+                "series_id": series_id,
+                "latest": round(float(latest), 4),
+                "previous": round(float(prev), 4),
+                "delta": round(float(delta), 4),
+                "score": score,
+                "status": status
+            }
+            total_score += score
+            max_score += 1
+
+        sentiment_ratio = round((total_score / max_score), 4) if max_score > 0 else 0
+        return {
+            "indicators": indicators,
+            "summary": {
+                "total_score": total_score,
+                "max_score": max_score,
+                "sentiment_ratio": sentiment_ratio
+            }
+        }
+
+    @classmethod
+    def _get_fred_latest_pair(cls, series_id: str | None) -> tuple[float | None, float | None]:
+        """FRED 시계열의 최신값과 직전값 반환"""
+        if not series_id:
+            return None, None
+        api_key = (Config.FRED_API_KEY or "").strip()
+        if not api_key:
+            return None, None
+
+        try:
+            params = {
+                "series_id": series_id,
+                "api_key": api_key,
+                "file_type": "json",
+                "sort_order": "desc",
+                "limit": 12
+            }
+            res = requests.get(cls._fred_base_url, params=params, timeout=8)
+            res.raise_for_status()
+            observations = (res.json() or {}).get("observations", [])
+            values = []
+            for obs in observations:
+                raw = str(obs.get("value", ".")).strip()
+                if raw in ("", "."):
+                    continue
+                values.append(float(raw))
+                if len(values) >= 2:
+                    break
+            if len(values) < 2:
+                return None, None
+            return values[0], values[1]
+        except Exception:
+            return None, None

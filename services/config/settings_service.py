@@ -15,8 +15,12 @@ class SettingsService:
         "STRATEGY_TARGET_CASH_RATIO": (str(Config.STRATEGY_TARGET_CASH_RATIO), "목표 현금 비중 (0.0 ~ 1.0)"),
         "STRATEGY_PER_TRADE_RATIO": (str(Config.STRATEGY_PER_TRADE_RATIO), "1회 매매 비중 (자산 대비)"),
         "STRATEGY_BASE_SCORE": (str(Config.STRATEGY_BASE_SCORE), "기본 점수"),
+        "STRATEGY_BUY_THRESHOLD_MIN": (str(Config.STRATEGY_BUY_THRESHOLD_MIN), "매수 점수 하한 (기본 30)"),
         "STRATEGY_BUY_THRESHOLD": (str(Config.STRATEGY_BUY_THRESHOLD), "매수 점수 임계값"),
         "STRATEGY_SELL_THRESHOLD": (str(Config.STRATEGY_SELL_THRESHOLD), "매도 점수 임계값"),
+        "STRATEGY_SELL_THRESHOLD_MAX": (str(Config.STRATEGY_SELL_THRESHOLD_MAX), "매도 점수 상한 (기본 100)"),
+        "STRATEGY_REQUIRE_FULL_ANALYSIS": (str(Config.STRATEGY_REQUIRE_FULL_ANALYSIS), "전체 분석 준비 전 매매 금지(1=금지)"),
+        "STRATEGY_MIN_READY_RATIO": (str(Config.STRATEGY_MIN_READY_RATIO), "매매 허용 최소 준비율(0.0~1.0)"),
         "STRATEGY_SPLIT_COUNT": (str(Config.STRATEGY_SPLIT_COUNT), "분할 매매 횟수"),
         "STRATEGY_STOP_LOSS_PCT": (str(Config.STRATEGY_STOP_LOSS_PCT), "손절 기준 수익률 (%)"),
         "STRATEGY_TAKE_PROFIT_PCT": (str(Config.STRATEGY_TAKE_PROFIT_PCT), "익절 기준 수익률 (%)"),
@@ -32,7 +36,19 @@ class SettingsService:
         "STRATEGY_TICK_TAKE_PROFIT_PCT": ("1.0", "틱매매 익절 기준 수익률(%)"),
         "STRATEGY_TICK_STOP_LOSS_PCT": ("-5.0", "틱매매 손절 기준 수익률(%)"),
         "STRATEGY_TICK_CLOSE_MINUTES": ("5", "장마감 전 현금화 시도 분"),
-        "PORTFOLIO_INITIAL_PRINCIPAL": ("10000000", "초기 원금(원). 원금 대비 손익 계산 기준값")
+        "PORTFOLIO_INITIAL_PRINCIPAL": ("10000000", "초기 원금(원). 원금 대비 손익 계산 기준값"),
+        "PORTFOLIO_USD_CASH_BALANCE": ("0", "미국 외화 현금 잔고(USD). 비중 계산 및 보고 보정용"),
+        "STRATEGY_TARGET_CASH_RATIO_KR_BEAR": ("0.20", "한국 시장 BEAR 국면 목표 현금 비중"),
+        "STRATEGY_TARGET_CASH_RATIO_KR_NEUTRAL": ("0.40", "한국 시장 NEUTRAL 국면 목표 현금 비중"),
+        "STRATEGY_TARGET_CASH_RATIO_KR_BULL": ("0.50", "한국 시장 BULL 국면 목표 현금 비중"),
+        "STRATEGY_TARGET_CASH_RATIO_US_BEAR": ("0.20", "미국 시장 BEAR 국면 목표 현금 비중"),
+        "STRATEGY_TARGET_CASH_RATIO_US_NEUTRAL": ("0.40", "미국 시장 NEUTRAL 국면 목표 현금 비중"),
+        "STRATEGY_TARGET_CASH_RATIO_US_BULL": ("0.50", "미국 시장 BULL 국면 목표 현금 비중"),
+        "DCF_EQUITY_RISK_PREMIUM": (str(Config.DCF_EQUITY_RISK_PREMIUM), "DCF 주식 위험 프리미엄(예: 5.5%=0.055)"),
+        "DCF_DISCOUNT_RATE_FLOOR": (str(Config.DCF_DISCOUNT_RATE_FLOOR), "DCF 할인율 하한(예: 6%=0.06)"),
+        "DCF_DISCOUNT_RATE_CEIL": (str(Config.DCF_DISCOUNT_RATE_CEIL), "DCF 할인율 상한(예: 15%=0.15)"),
+        "DCF_DEFAULT_DISCOUNT_RATE": (str(Config.DCF_DEFAULT_DISCOUNT_RATE), "DCF beta 미제공 시 기본 할인율(예: 10%=0.10)"),
+        "DCF_STAGE1_YEARS": (str(Config.DCF_STAGE1_YEARS), "DCF 1단계 고성장 기간(년)")
     }
 
     @classmethod
@@ -45,6 +61,12 @@ class SettingsService:
                 if not setting:
                     setting = Settings(key=key, value=default_val, description=desc)
                     session.add(setting)
+                else:
+                    # 기본값이 변경된 경우(예: 익절 5%→3%, 손절 -10%→-8%)이고 사용자가 직접 수정하지 않았다면 함께 갱신
+                    if key == "STRATEGY_TAKE_PROFIT_PCT" and setting.value in ("5.0", "5", ""):
+                        setting.value = default_val
+                    if key == "STRATEGY_STOP_LOSS_PCT" and setting.value in ("-10.0", "-10", ""):
+                        setting.value = default_val
             session.commit()
         except Exception as e:
             session.rollback()
@@ -108,4 +130,4 @@ class SettingsService:
         
         session = StockMetaService.get_session()
         settings = session.query(Settings).all()
-        return {s.key: {"value": s.value, "description": s.description} for s in settings}
+        return {setting.key: {"value": setting.value, "description": setting.description} for setting in settings}

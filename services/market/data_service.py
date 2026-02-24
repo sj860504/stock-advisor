@@ -14,6 +14,23 @@ from services.market.market_hour_service import MarketHourService
 
 logger = get_logger("data_service")
 
+# 상수: 컬럼명
+COL_CLOSE = "Close"
+COL_HIGH = "High"
+COL_LOW = "Low"
+COL_OPEN = "Open"
+COL_DATE = "Date"
+# KIS API 제한
+KIS_RATE_LIMIT_SLEEP_SEC = 0.5
+KIS_HISTORY_BATCH_LIMIT = 100
+HISTORY_DAYS_DEFAULT = 365
+# 국내 랭킹 실패 시 기본 종목
+KR_FALLBACK_TICKERS = ["005930", "000660", "373220", "207940", "005380", "005490", "035420", "000270", "051910", "105560"]
+KR_FALLBACK_MINIMAL = ["005930", "000660", "373220", "207940", "005380"]
+# FDR 지수 심볼 매핑
+FDR_INDEX_SYMBOL_MAP = {"SPX": "US500", "NAS": "IXIC", "DJI": "DJI", "VIX": "VIX"}
+
+
 class DataService:
     """
         KIS API 기반 데이터 수집 및 지표 계산 서비스
@@ -21,18 +38,93 @@ class DataService:
     """
 
     @classmethod
+    def _is_fund_like_security(cls, ticker: str, name: str, market: str) -> bool:
+        """ETF/ETN/펀드성 상품 여부 판별"""
+        t = str(ticker or "").strip().upper()
+        n = str(name or "").strip().upper()
+        m = str(market or "").strip().upper()
+
+        if m == "KR":
+            kr_keywords = [
+                "ETF", "ETN", "인버스", "레버리지", "TRF", "TDF",
+                "KODEX", "TIGER", "KINDEX", "KBSTAR", "ARIRANG",
+                "KOSEF", "HANARO", "SOL", "ACE", "RISE"
+            ]
+            return any(k.upper() in n for k in kr_keywords)
+
+        # US
+        us_name_keywords = [
+            " ETF", " ETN", " FUND", " TRUST", " INDEX FUND",
+            " ULTRASHORT", " ULTRA ", " BULL ", " BEAR "
+        ]
+        if any(k in n for k in us_name_keywords):
+            return True
+
+        # 이름이 비어있거나 불확실할 때를 대비해 대표 ETF 티커 블록리스트
+        us_etf_tickers = {
+            "SPY", "IVV", "VOO", "VTI", "QQQ", "QQQM", "DIA", "IWM", "EFA", "EEM",
+            "TLT", "IEF", "BND", "BNDX", "VCIT", "SMH", "VXUS", "IXUS", "IBIT"
+        }
+        return t in us_etf_tickers
+
+    @classmethod
+    def _build_us_fallback_data(cls, limit: int = 100) -> list:
+        """미국 랭킹 조회 실패 시 사용할 대체 티커 목록(최대 limit)"""
+        core = [
+            "AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST", "NFLX",
+            "JPM", "V", "LLY", "XOM", "UNH"
+        ]
+        extended = [
+            "GOOG", "BRK", "WMT", "MA", "ORCL", "HD", "BAC", "PG", "JNJ", "ABBV",
+            "KO", "PEP", "MRK", "CVX", "AMD", "ADBE", "CRM", "CSCO", "INTC", "T",
+            "VZ", "PFE", "ABT", "CMCSA", "QCOM", "MCD", "NKE", "TXN", "DHR", "WFC",
+            "DIS", "AMGN", "UNP", "LOW", "NEE", "IBM", "PM", "RTX", "SPGI", "CAT",
+            "GS", "HON", "INTU", "BKNG", "BLK", "AXP", "PLD", "LMT", "TMO", "MDT",
+            "SYK", "DE", "TJX", "GILD", "ADP", "ISRG", "C", "SCHW", "MMC", "CB",
+            "ETN", "SO", "CI", "DUK", "PGR", "ELV", "ZTS", "BDX", "MU", "KLAC",
+            "SNPS", "PANW", "AMAT", "LRCX", "MELI", "SBUX", "REGN", "VRTX", "NOW", "UBER",
+            "SHOP", "CRWD", "DASH", "PYPL", "SQ", "TTD", "ROKU", "BIDU", "PDD", "NTES",
+            "ASML", "TMUS", "NDAQ", "EA", "ADSK", "ORLY", "MAR", "CEG", "FANG", "CSX",
+            "AEP", "MNST", "MRVL", "NXPI", "IDXX", "FTNT", "ABNB", "WBD", "CME", "PCAR",
+            "XEL", "MCHP", "CTAS", "FAST", "ARGX", "ALNY", "STX", "HOOD", "SNY", "ARM"
+        ]
+        nyse_symbols = {
+            "JPM", "V", "LLY", "XOM", "UNH", "BRK", "WMT", "MA", "HD", "BAC", "PG", "JNJ",
+            "ABBV", "KO", "PEP", "MRK", "CVX", "T", "VZ", "PFE", "ABT", "MCD", "NKE", "DHR",
+            "WFC", "DIS", "AMGN", "UNP", "LOW", "NEE", "IBM", "PM", "RTX", "SPGI", "CAT",
+            "GS", "HON", "BLK", "AXP", "PLD", "LMT", "TMO", "MDT", "SYK", "DE", "TJX",
+            "GILD", "C", "SCHW", "MMC", "CB", "ETN", "SO", "CI", "DUK", "PGR", "ELV",
+            "ZTS", "BDX", "UBER", "TMUS", "NDAQ", "CME", "PCAR", "XEL", "CEG", "FANG", "CSX", "AEP"
+        }
+
+        ordered = []
+        seen = set()
+        for sym_candidate in core + extended:
+            sym = str(sym_candidate).strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            excd = "NYS" if sym in nyse_symbols else "NAS"
+            ex_name = "NYSE" if excd == "NYS" else "NASD"
+            if cls._is_fund_like_security(sym, sym, "US"):
+                continue
+            ordered.append((sym, excd, ex_name))
+            if len(ordered) >= limit:
+                break
+        return ordered
+
+    @classmethod
     def get_top_krx_tickers(cls, limit: int = 100) -> list:
         """KIS API를 통해 국내 주식 시가총액 상위 종목을 수집합니다."""
         try:
             token = KisService.get_access_token()
-            res = KisFetcher.fetch_domestic_ranking(token)
-            
+            response = KisFetcher.fetch_domestic_ranking(token)
             tickers = []
-            if res.get('output'):
-                for item in res['output'][:limit]:
-                    ticker = item.get('mksc_shrn_iscd')
-                    name = item.get('hts_kor_isnm')
-                    if ticker:
+            if response.get("output"):
+                for item in response["output"]:
+                    ticker = item.get("mksc_shrn_iscd")
+                    name = item.get("hts_kor_isnm")
+                    if ticker and (not cls._is_fund_like_security(ticker, name, "KR")):
                         tickers.append(ticker)
                         tr_id, path = StockMetaService.get_api_info("주식현재가_시세")
                         StockMetaService.upsert_stock_meta(
@@ -44,30 +136,61 @@ class DataService:
                             api_tr_id=tr_id,
                             api_market_code="J"
                         )
+                        if len(tickers) >= limit:
+                            break
             if not tickers:
-                tickers = ["005930", "000660", "373220", "207940", "005380", "005490", "035420", "000270", "051910", "105560"]
+                tickers = list(KR_FALLBACK_TICKERS)
                 logger.info(f"⚠️ KRX ranking empty. Using fallback list: {len(tickers)} tickers.")
+
+            # ETF/ETN 제외 후 부족분은 DB의 KR 단일종목 메타에서 보충
+            if len(tickers) < limit:
+                try:
+                    from models.stock_meta import StockMeta
+                    session = StockMetaService.get_session()
+                    existing = set(tickers)
+                    query = (
+                        session.query(StockMeta)
+                        .filter(StockMeta.market_type == "KR")
+                        .all()
+                    )
+                    for row in query:
+                        meta_ticker = str(getattr(row, "ticker", "") or "").strip()
+                        name_ko = str(getattr(row, "name_ko", "") or "").strip()
+                        if not (meta_ticker.isdigit() and len(meta_ticker) == 6):
+                            continue
+                        if meta_ticker in existing:
+                            continue
+                        if cls._is_fund_like_security(meta_ticker, name_ko, "KR"):
+                            continue
+                        existing.add(meta_ticker)
+                        tickers.append(meta_ticker)
+                        if len(tickers) >= limit:
+                            break
+                except Exception as ex:
+                    logger.warning(f"⚠️ KR fallback supplement from DB failed: {ex}")
             return tickers
         except Exception as e:
             logger.error(f"Error fetching top KRX tickers via KIS: {e}")
-            return ["005930", "000660", "373220", "207940", "005380"]
+            return list(KR_FALLBACK_MINIMAL)
 
     @classmethod
     def get_top_us_tickers(cls, limit: int = 100) -> list:
         """KIS API를 통해 미국 주식 시가총액 상위 종목을 수집합니다."""
         try:
             token = KisService.get_access_token()
-            # 나스닥(NAS)과 뉴욕(NYS) 합산하여 수집 시도
-            res_nas = KisFetcher.fetch_overseas_ranking(token, excd="NAS")
-            res_nys = KisFetcher.fetch_overseas_ranking(token, excd="NYS")
-            
+            response_nas = KisFetcher.fetch_overseas_ranking(token, excd="NAS")
+            response_nys = KisFetcher.fetch_overseas_ranking(token, excd="NYS")
             combined = []
-            for res, excd in [(res_nas, "NAS"), (res_nys, "NYS")]:
-                if res.get('output'):
-                    for item in res['output']:
+            for response, excd in [(response_nas, "NAS"), (response_nys, "NYS")]:
+                if response.get("output"):
+                    for item in response["output"]:
+                        ticker = item.get('symb')
+                        name = item.get('hname')
+                        if cls._is_fund_like_security(ticker, name, "US"):
+                            continue
                         combined.append({
-                            "ticker": item.get('symb'),
-                            "name": item.get('hname'),
+                            "ticker": ticker,
+                            "name": name,
                             "excd": excd,
                             "mcap": float(item.get('mcap', 0))
                         })
@@ -90,22 +213,35 @@ class DataService:
                         api_tr_id=tr_id,
                         api_market_code=item['excd']
                     )
+            if len(tickers) < limit:
+                existing = set(tickers)
+                tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
+                for fallback_ticker, excd, ex_name in cls._build_us_fallback_data(limit=limit * 2):
+                    if len(tickers) >= limit:
+                        break
+                    if fallback_ticker in existing:
+                        continue
+                    existing.add(fallback_ticker)
+                    tickers.append(fallback_ticker)
+                    StockMetaService.upsert_stock_meta(
+                        ticker=fallback_ticker,
+                        name_ko=fallback_ticker,
+                        market_type="US",
+                        exchange_code=ex_name,
+                        api_path=path,
+                        api_tr_id=tr_id,
+                        api_market_code=excd
+                    )
+
             if not tickers:
-                # 폴백 리스트 (종목코드, 마켓)
-                fallback_data = [
-                    ("AAPL", "NAS", "NASD"), ("NVDA", "NAS", "NASD"), ("MSFT", "NAS", "NASD"), 
-                    ("AMZN", "NAS", "NASD"), ("GOOGL", "NAS", "NASD"), ("META", "NAS", "NASD"), 
-                    ("TSLA", "NAS", "NASD"), ("AVGO", "NAS", "NASD"), ("COST", "NAS", "NASD"), 
-                    ("NFLX", "NAS", "NASD"), ("JPM", "NYS", "NYSE"), ("V", "NYS", "NYSE"),
-                    ("LLY", "NYS", "NYSE"), ("XOM", "NYS", "NYSE"), ("UNH", "NYS", "NYSE")
-                ]
+                fallback_data = cls._build_us_fallback_data(limit=limit)
                 tickers = []
                 tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
-                for t, excd, ex_name in fallback_data:
-                    tickers.append(t)
+                for fallback_ticker, excd, ex_name in fallback_data:
+                    tickers.append(fallback_ticker)
                     StockMetaService.upsert_stock_meta(
-                        ticker=t,
-                        name_ko=t, # 폴백은 이름도 티커로
+                        ticker=fallback_ticker,
+                        name_ko=fallback_ticker,
                         market_type="US",
                         exchange_code=ex_name,
                         api_path=path,
@@ -116,7 +252,7 @@ class DataService:
             return tickers
         except Exception as e:
             logger.error(f"Error fetching top US tickers via KIS: {e}")
-            return ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL"]
+            return [ft for ft, _, _ in cls._build_us_fallback_data(limit=limit)]
 
     @classmethod
     def get_price_history(cls, ticker: str, days: int = 300) -> pd.DataFrame:
@@ -134,72 +270,69 @@ class DataService:
             end_date = datetime.now().strftime("%Y%m%d")
             start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
             
-            if ticker.isdigit(): # 국내
-                res = KisFetcher.fetch_daily_price(token, ticker, start_date, end_date)
-                if not res or not res.get('output2'): return pd.DataFrame()
-                df = pd.DataFrame(res['output2'])
-                df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
-            elif ticker in ["SPX", "NAS", "VIX", "DJI"]: # 해외 지수
-                # 지수 전용 TR은 KisFetcher 내부에서 처리 (VTS/실전 경로 차이 흡수)
-                res = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
-                rows = res.get('output2') or res.get('output') or []
+            if ticker.isdigit():
+                response = KisFetcher.fetch_daily_price(token, ticker, start_date, end_date)
+                if not response or not response.get("output2"):
+                    return pd.DataFrame()
+                df = pd.DataFrame(response["output2"])
+                df = df.rename(columns={"stck_clpr": COL_CLOSE, "stck_hgpr": COL_HIGH, "stck_lwpr": COL_LOW, "stck_oprc": COL_OPEN, "stck_bsop_date": COL_DATE})
+            elif ticker in ["SPX", "NAS", "VIX", "DJI"]:
+                response = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
+                rows = response.get("output2") or response.get("output") or []
                 df = pd.DataFrame(rows) if rows else pd.DataFrame()
                 if not df.empty:
-                    if 'stck_clpr' in df.columns:
-                        df = df.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
-                    elif 'clos' in df.columns:
-                        df = df.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                    if "stck_clpr" in df.columns:
+                        df = df.rename(columns={"stck_clpr": COL_CLOSE, "stck_hgpr": COL_HIGH, "stck_lwpr": COL_LOW, "stck_oprc": COL_OPEN, "stck_bsop_date": COL_DATE})
+                    elif "clos" in df.columns:
+                        df = df.rename(columns={"clos": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
                     else:
-                        df = df.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
-                
-                # KIS 지수 데이터가 비어있는 경우 FDR로 보완
-                if df.empty or 'Close' not in df.columns:
+                        df = df.rename(columns={"last": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
+                if df.empty or COL_CLOSE not in df.columns:
                     df = cls._fallback_index_history_fdr(ticker, days)
-            else: # 해외 일반 종목
-                res = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
-                if not res.get('output'): return pd.DataFrame()
-                df = pd.DataFrame(res['output'])
-                # HHDFS76240000 는 clos, high, low, open, xymd 사용
-                if 'clos' in df.columns:
-                    df = df.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+            else:
+                response = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
+                if not response.get("output"):
+                    return pd.DataFrame()
+                df = pd.DataFrame(response["output"])
+                if "clos" in df.columns:
+                    df = df.rename(columns={"clos": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
                 else:
-                    df = df.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                    df = df.rename(columns={"last": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
 
-            if 'Close' not in df.columns:
+            if COL_CLOSE not in df.columns:
                 logger.error(f"❌ 'Close' column missing for {ticker}. Columns: {df.columns.tolist()}")
                 return pd.DataFrame()
 
-            # [OPTIMIZATION] 100건 이상 데이터가 필요한 경우 추가 호출 (KIS 100건 제한 대응)
-            if len(df) >= 100 and days > 150:
+            if len(df) >= KIS_HISTORY_BATCH_LIMIT and days > 150:
                 try:
                     # 가장 오래된 날짜를 기준으로 이전 100건 추가 요청
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    earliest_date = df['Date'].min()
+                    df[COL_DATE] = pd.to_datetime(df[COL_DATE])
+                    earliest_date = df[COL_DATE].min()
                     new_end_date = (earliest_date - timedelta(days=1)).strftime("%Y%m%d")
                     
                     logger.info(f"➕ Fetching additional 100 rows for {ticker} (End Date: {new_end_date})")
                     if ticker.isdigit():
-                        res2 = KisFetcher.fetch_daily_price(token, ticker, start_date, new_end_date)
-                        if res2 and res2.get('output2'):
-                            df2 = pd.DataFrame(res2['output2'])
-                            df2 = df2.rename(columns={'stck_clpr': 'Close', 'stck_hgpr': 'High', 'stck_lwpr': 'Low', 'stck_oprc': 'Open', 'stck_bsop_date': 'Date'})
+                        response2 = KisFetcher.fetch_daily_price(token, ticker, start_date, new_end_date)
+                        if response2 and response2.get("output2"):
+                            df2 = pd.DataFrame(response2["output2"])
+                            df2 = df2.rename(columns={"stck_clpr": COL_CLOSE, "stck_hgpr": COL_HIGH, "stck_lwpr": COL_LOW, "stck_oprc": COL_OPEN, "stck_bsop_date": COL_DATE})
                             df = pd.concat([df, df2], ignore_index=True)
                     else:
-                        res2 = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, new_end_date)
-                        output2 = res2.get('output') or res2.get('output2')
+                        response2 = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, new_end_date)
+                        output2 = response2.get("output") or response2.get("output2")
                         if output2:
                             df2 = pd.DataFrame(output2)
-                            if 'clos' in df2.columns:
-                                df2 = df2.rename(columns={'clos': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                            if "clos" in df2.columns:
+                                df2 = df2.rename(columns={"clos": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
                             else:
-                                df2 = df2.rename(columns={'last': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'xymd': 'Date'})
+                                df2 = df2.rename(columns={"last": COL_CLOSE, "high": COL_HIGH, "low": COL_LOW, "open": COL_OPEN, "xymd": COL_DATE})
                             df = pd.concat([df, df2], ignore_index=True)
                 except Exception as ex:
                     logger.warning(f"⚠️ Failed to fetch additional rows for {ticker}: {ex}")
 
-            df['Date'] = pd.to_datetime(df['Date'])
-            df.set_index('Date', inplace=True)
-            for col in ['Close', 'High', 'Low', 'Open']:
+            df[COL_DATE] = pd.to_datetime(df[COL_DATE])
+            df.set_index(COL_DATE, inplace=True)
+            for col in [COL_CLOSE, COL_HIGH, COL_LOW, COL_OPEN]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
@@ -217,13 +350,7 @@ class DataService:
             logger.warning(f"⚠️ FinanceDataReader not available: {e}")
             return pd.DataFrame()
         
-        symbol_map = {
-            "SPX": "US500",
-            "NAS": "IXIC",
-            "DJI": "DJI",
-            "VIX": "VIX",
-        }
-        symbol = symbol_map.get(ticker, ticker)
+        symbol = FDR_INDEX_SYMBOL_MAP.get(ticker, ticker)
         
         try:
             from datetime import timedelta
@@ -259,42 +386,32 @@ class DataService:
 
                 logger.info(f"🔄 Processing {ticker} ({market})...")
                 
-                # A. 시세 및 기본 지표 (PER, PBR, Cap 등)
                 token = KisService.get_access_token()
                 if market == "KR":
-                    basic_info = KisFetcher.fetch_domestic_price(token, ticker)
+                    price_info = KisFetcher.fetch_domestic_price(token, ticker)
                 else:
-                    basic_info = KisFetcher.fetch_overseas_price(token, ticker)
-                
-                if not basic_info: continue
+                    price_info = KisFetcher.fetch_overseas_price(token, ticker)
+                if not price_info:
+                    continue
 
-                # B. 기술적 지표 (RSI, EMA)
-                hist = cls.get_price_history(ticker, days=365)
+                hist = cls.get_price_history(ticker, days=HISTORY_DAYS_DEFAULT)
                 indicators = {}
                 if not hist.empty:
-                    indicators = IndicatorService.get_latest_indicators(hist['Close'])
-                
-                # C. DCF 가치
+                    indicators = IndicatorService.get_latest_indicators(hist[COL_CLOSE])
                 dcf_data = FinancialService.get_dcf_data(ticker)
-                
-                # D. 통합 데이터 구성
                 metrics = {
-                    "current_price": basic_info.get("price"),
-                    "market_cap": basic_info.get("market_cap"),
-                    "per": basic_info.get("per"),
-                    "pbr": basic_info.get("pbr"),
-                    "eps": basic_info.get("eps"),
-                    "bps": basic_info.get("bps"),
+                    "current_price": price_info.get("price"),
+                    "market_cap": price_info.get("market_cap"),
+                    "per": price_info.get("per"),
+                    "pbr": price_info.get("pbr"),
+                    "eps": price_info.get("eps"),
+                    "bps": price_info.get("bps"),
                     "rsi": indicators.get("rsi"),
-                    "ema": indicators.get("ema"), # dict: {5: val, 10: val, ...}
-                    "dcf_value": None # 구현 필요 시 dcf_data 활용 가공
+                    "ema": indicators.get("ema"),
+                    "dcf_value": None,
                 }
-                
-                # DB 저장
                 StockMetaService.save_financials(ticker, metrics)
-                
-                # KIS API 속도 제한 준수 (VTS 초당 2건)
-                time.sleep(0.5)
+                time.sleep(KIS_RATE_LIMIT_SLEEP_SEC)
                 
             except Exception as e:
                 logger.error(f"Error syncing {ticker}: {e}")

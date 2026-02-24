@@ -8,6 +8,11 @@ from utils.logger import get_logger
 
 logger = get_logger("kis_fetcher")
 
+# KIS API 상수
+KIS_RATE_LIMIT_MSG_CD = "EGW00201"
+REQUEST_TIMEOUT_DEFAULT = 5
+
+
 class KisFetcher:
     """
     한국투자증권(KIS) REST API를 통해 원시 데이터를 수집하는 헬퍼 클래스
@@ -53,30 +58,32 @@ class KisFetcher:
         if "초당 거래건수" in text:
             return True
         try:
-            data = response.json()
-            if data.get("msg_cd") == "EGW00201":
+            body = response.json()
+            if body.get("msg_cd") == KIS_RATE_LIMIT_MSG_CD:
                 return True
         except Exception:
             pass
         return False
 
     @classmethod
-    def _get_with_retry(cls, url: str, headers: dict, params: dict, timeout: int = 5, retries: int = 4):
-        last_res = None
+    def _get_with_retry(cls, url: str, headers: dict, params: dict, timeout: int = None, retries: int = 4):
+        if timeout is None:
+            timeout = REQUEST_TIMEOUT_DEFAULT
+        last_response = None
         for attempt in range(retries):
             cls._throttle_request()
             try:
-                res = requests.get(url, headers=headers, params=params, timeout=timeout)
-                last_res = res
-                if cls._is_rate_limited_response(res):
+                response = requests.get(url, headers=headers, params=params, timeout=timeout)
+                last_response = response
+                if cls._is_rate_limited_response(response):
                     wait_sec = 1.2 * (attempt + 1)
                     logger.warning(f"⏳ TPS limit hit. retry {attempt + 1}/{retries} in {wait_sec:.1f}s...")
                     time.sleep(wait_sec)
                     continue
-                return res
+                return response
             except Exception:
                 time.sleep(0.7 * (attempt + 1))
-        return last_res
+        return last_response
 
     @classmethod
     def fetch_domestic_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
@@ -89,15 +96,13 @@ class KisFetcher:
         
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            
-            if res.status_code == 200:
-                data = res.json()
-                output = data.get('output', {})
+            response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+            if response.status_code == 200:
+                response_data = response.json()
+                output = response_data.get("output", {})
                 if not output:
-                    logger.warning(f"⚠️ Domestic price output empty for {ticker}: {data.get('msg1')}")
+                    logger.warning(f"⚠️ Domestic price output empty for {ticker}: {response_data.get('msg1')}")
                     return {}
-                
                 def safe_float(val, default=0.0):
                     try:
                         if val is None or str(val).strip() == "": return default
@@ -121,12 +126,12 @@ class KisFetcher:
                     "name": output.get('hts_kor_isnm', ticker),
                     "raw": output
                 }
-            elif res.status_code == 500 or "초당" in res.text:
+            elif response.status_code == 500 or "초당" in response.text:
                 logger.warning(f"⏳ TPS Limit reached for {ticker}. Waiting 1.5s...")
                 time.sleep(1.5)
                 return {}
             else:
-                logger.error(f"❌ KIS Domestic Price Error {res.status_code}: {res.text}")
+                logger.error(f"❌ KIS Domestic Price Error {response.status_code}: {response.text}")
                 return {}
         except Exception as e:
             logger.error(f"Error fetching domestic price for {ticker}: {e}")
@@ -152,12 +157,12 @@ class KisFetcher:
         
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=4)
-            if res is None:
+            response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
+            if response is None:
                 return {}
-            if res.status_code == 200:
-                data = res.json()
-                output_raw = data.get('output', {})
+            if response.status_code == 200:
+                response_data = response.json()
+                output_raw = response_data.get("output", {})
                 if output_raw:
                     # 스키마를 통한 검증 및 파싱
                     output = OverseasDetailPriceResponse(**output_raw)
@@ -207,18 +212,19 @@ class KisFetcher:
         
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                output = data.get('output', {})
+            response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+            if response.status_code == 200:
+                response_data = response.json()
+                output = response_data.get("output", {})
                 if output:
                     def safe_float(val, default=0.0):
                         try:
-                            if val is None or str(val).strip() == "": return default
+                            if val is None or str(val).strip() == "":
+                                return default
                             return float(val)
-                        except: return default
-
-                    price = safe_float(output.get('last')) or safe_float(output.get('clos'))
+                        except Exception:
+                            return default
+                    price = safe_float(output.get("last")) or safe_float(output.get("clos"))
                     return {
                         "price": price,
                         "prev_close": safe_float(output.get('base')),
@@ -248,18 +254,18 @@ class KisFetcher:
         for attempt in range(2):
             try:
                 headers = cls._get_headers(token, tr_id=tr_id)
-                res = requests.get(url, headers=headers, params=params, timeout=7)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data.get('output2'):
-                        data['output'] = data['output2'] # 필드 규격 통일
-                        return data
-                elif res.status_code == 500 or "초당" in res.text:
+                response = requests.get(url, headers=headers, params=params, timeout=7)
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if response_data.get("output2"):
+                        response_data["output"] = response_data["output2"]
+                        return response_data
+                elif response.status_code == 500 or "초당" in response.text:
                     logger.warning(f"⏳ Rate limit hit (Overseas Ranking {kis_excd}). Retrying in 1.5s...")
                     time.sleep(1.5)
                     continue
-                else: 
-                    logger.error(f"❌ Overseas Ranking Error {res.status_code}: {res.text}")
+                else:
+                    logger.error(f"❌ Overseas Ranking Error {response.status_code}: {response.text}")
                     break
             except Exception as e:
                 logger.error(f"❌ Overseas Ranking Exception: {e}")
@@ -293,23 +299,21 @@ class KisFetcher:
             }
             try:
                 headers = cls._get_headers(token, tr_id=tr_id)
-                res = requests.get(url, headers=headers, params=params, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    # VTS 환경에서는 랭킹 데이터가 output2에 담겨오는 경우가 많음
-                    output = data.get('output') or data.get('output2')
+                response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+                if response.status_code == 200:
+                    response_data = response.json()
+                    output = response_data.get("output") or response_data.get("output2")
                     if output:
                         logger.info(f"✅ Success fetching domestic ranking with div_code={div_code} (Count: {len(output)})")
-                        data['output'] = output # 평탄화
-                        return data
-                    else:
-                        logger.warning(f"⚠️ Domestic ranking output empty for {div_code}: {data.get('msg1')}")
-                elif res.status_code == 500 or "초당" in res.text:
-                    logger.warning(f"⏳ Rate limit or 500 error for ranking. Waiting 1.5s...")
+                        response_data["output"] = output
+                        return response_data
+                    logger.warning(f"⚠️ Domestic ranking output empty for {div_code}: {response_data.get('msg1')}")
+                elif response.status_code == 500 or "초당" in response.text:
+                    logger.warning("⏳ Rate limit or 500 error for ranking. Waiting 1.5s...")
                     time.sleep(1.5)
                     continue
                 else:
-                    logger.error(f"❌ Domestic Ranking Error {res.status_code}: {res.text}")
+                    logger.error(f"❌ Domestic Ranking Error {response.status_code}: {response.text}")
                 time.sleep(1.2)
             except Exception as e:
                 logger.error(f"❌ Domestic Ranking Exception: {e}")
@@ -333,10 +337,10 @@ class KisFetcher:
         }
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=4)
-            if res is None:
+            response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
+            if response is None:
                 return {}
-            return res.json() if res.status_code == 200 else {}
+            return response.json() if response.status_code == 200 else {}
         except Exception as e:
             logger.error(f"Error fetching daily price for {ticker}: {e}")
             return {}
@@ -346,8 +350,11 @@ class KisFetcher:
         """해외 주식 일자별 시세 조회"""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
+        if not tr_id:
+            tr_id = "HHDFS76240000"
         if not path:
-            path = "/uapi/overseas-stock/v1/quotations/dailyprice"
+            # 해외 일봉은 overseas-price 경로가 맞음
+            path = "/uapi/overseas-price/v1/quotations/dailyprice"
         
         url = f"{Config.KIS_BASE_URL}{path}"
         
@@ -391,18 +398,16 @@ class KisFetcher:
 
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            res = cls._get_with_retry(url, headers=headers, params=params, timeout=5, retries=5)
-            if res is None:
+            response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=5)
+            if response is None:
                 return {}
-            if res.status_code != 200:
-                logger.error(f"❌ Overseas Price Error {res.status_code} [Daily]: {url} | TR: {tr_id} | Params: {params} | Body: {res.text}")
+            if response.status_code != 200:
+                logger.error(f"❌ Overseas Price Error {response.status_code} [Daily]: {url} | TR: {tr_id} | Params: {params} | Body: {response.text}")
                 return {}
-            
-            data = res.json()
-            if data.get('output2') and not data.get('output'):
-                data['output'] = data['output2']
-                
-            return data
+            response_data = response.json()
+            if response_data.get("output2") and not response_data.get("output"):
+                response_data["output"] = response_data["output2"]
+            return response_data
         except Exception as e:
             logger.error(f"Error fetching overseas daily price for {ticker}: {e}")
             return {}
