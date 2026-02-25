@@ -280,6 +280,9 @@ class TradeRecordDto(BaseModel):
     result_msg: Optional[str] = None
     timestamp: Optional[str] = None
     strategy_name: str = ""
+    name: Optional[str] = None
+    buy_price: Optional[float] = None
+    profit: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()

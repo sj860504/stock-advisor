@@ -10,6 +10,7 @@ from models.schemas import (
     OrderRequest, TickTradingSettingsRequest,
     StatusMessageResponse, SettingUpdateResponse,
     TickSettingsResponse, TickSettingsUpdateResponse, SellAllRebuResponse,
+    TradeRecordDto,
 )
 
 logger = get_logger("trading_router")
@@ -120,11 +121,15 @@ async def get_waiting_list() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/history", response_model=List[Dict[str, Any]])
-async def get_trade_history(limit: int = 50) -> List[Dict[str, Any]]:
-    """매매 내역 조회."""
+@router.get("/history", response_model=List[TradeRecordDto])
+async def get_trade_history(
+    limit: int = 50,
+    market: Optional[str] = None,
+    date: Optional[str] = None,
+) -> List[TradeRecordDto]:
+    """매매 내역 조회. market=kr/us(미지정시 전체), date=YYYY-MM-DD(미지정시 전체)."""
     try:
-        return OrderService.get_trade_history(limit)
+        return OrderService.get_trade_history(limit, market=market, date=date)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

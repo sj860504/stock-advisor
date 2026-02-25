@@ -219,8 +219,12 @@ class PortfolioService:
         usd_cash = cls.get_usd_cash_balance()
         summary["_usd_cash_balance"] = usd_cash
         cls._last_balance_summary = summary
-        # dnca_tot_amt=예수금, prvs_rcdl_excc_amt=주문가능금액. 마진 사용 시 음수가 올 수 있으나 0으로 클램핑.
-        cash = max(0.0, cls._extract_float(summary, "dnca_tot_amt", "prvs_rcdl_excc_amt"))
+        # dnca_tot_amt=예수금(당일 미결제 매수 차감, D+2 매도금 미반영으로 음수 가능)
+        # prvs_rcdl_excc_amt=실제 주문가능금액(D+2 결제 대기 매도금 포함)
+        # 두 값 중 큰 값이 실제 매수가능금액에 가장 가까움.
+        dnca = cls._extract_float(summary, "dnca_tot_amt")
+        prvs = cls._extract_float(summary, "prvs_rcdl_excc_amt")
+        cash = max(0.0, dnca, prvs)
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
         return [h.model_dump() for h in holdings]
