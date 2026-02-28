@@ -352,11 +352,6 @@ class KisFetcher:
         """해외 주식 일자별 시세 조회"""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
-        if not tr_id:
-            tr_id = "HHDFS76240000"
-        if not path:
-            # 해외 일봉은 overseas-price 경로가 맞음
-            path = "/uapi/overseas-price/v1/quotations/dailyprice"
         
         url = f"{Config.KIS_BASE_URL}{path}"
         

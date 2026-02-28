@@ -33,16 +33,16 @@ class StockRankingService:
                     
                     if not ticker: continue
                     
-                    # StockMeta 저장
+                    # StockMeta 저장 — TR ID/Path는 환경(VTS/실전)에 맞게 DB에서 조회
+                    tr_id, api_path = StockMetaService.get_api_info("해외주식_상세시세")
                     StockMetaService.upsert_stock_meta(
                         ticker=ticker,
                         name_en=name_en,
                         market_type="US",
                         exchange_code=excd,
-                        # 이후 상세 조회를 위한 API 상세 정보 강제 설정 (VTS 대응)
-                        api_path="/uapi/overseas-stock/v1/quotations/price-detail",
-                        api_tr_id="HHDFS70200200",
-                        api_market_code=excd
+                        api_path=api_path,
+                        api_tr_id=tr_id,
+                        api_market_code=excd,
                     )
                     count += 1
                 

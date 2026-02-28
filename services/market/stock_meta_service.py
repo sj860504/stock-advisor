@@ -1,79 +1,28 @@
-import os
 from contextlib import contextmanager
 from typing import Optional
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import func
 from datetime import datetime
 from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta, DcfOverride, MarketRegimeHistory
-from models.portfolio import Portfolio, PortfolioHolding
-from models.trade_history import TradeHistory
-from models.settings import Settings
 from utils.logger import get_logger
 from utils.market import is_kr
+import repositories.database as _db
 
 logger = get_logger("stock_meta_service")
 
 class StockMetaService:
     """
-    주식 메타 정보 및 재무 데이터 DB 연동 서비스
+    주식 메타 정보 및 재무 데이터 DB 연동 서비스.
+    DB 연결은 repositories.database 싱글톤에 위임합니다.
     """
-    DB_PATH = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-        "data", "stock_advisor.db"
-    )
-    engine = None
-    Session = None
-
-    @classmethod
-    def _create_engine_and_session(cls):
-        cls.engine = create_engine(
-            f"sqlite:///{cls.DB_PATH}",
-            echo=False,
-            pool_size=50,  # 연결 풀 크기 증가
-            max_overflow=50,  # 오버플로우 증가
-            pool_pre_ping=True,  # 연결 유효성 사전 확인
-            pool_recycle=3600  # 1시간마다 연결 재활용
-        )
-        cls.Session = scoped_session(sessionmaker(bind=cls.engine))
 
     @classmethod
     def init_db(cls):
-        """데이터베이스 및 테이블 초기화"""
-        if cls.engine:
-            return
-            
-        os.makedirs(os.path.dirname(cls.DB_PATH), exist_ok=True)
-        cls._create_engine_and_session()
-        try:
-            Base.metadata.create_all(cls.engine)
-            logger.info(f"📁 Database initialized at: {cls.DB_PATH}")
-        except OperationalError as e:
-            # sqlite 파일이 깨졌거나 포맷이 맞지 않으면 자동 백업 후 재생성
-            if "unsupported file format" in str(e).lower():
-                backup_path = f"{cls.DB_PATH}.corrupt.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                logger.error(f"❌ Corrupted sqlite detected: {e}. Backing up to {backup_path}")
-                try:
-                    if os.path.exists(cls.DB_PATH):
-                        os.replace(cls.DB_PATH, backup_path)
-                    cls.engine = None
-                    if cls.Session:
-                        cls.Session.remove()
-                    cls.Session = None
-                    cls._create_engine_and_session()
-                    Base.metadata.create_all(cls.engine)
-                    logger.warning(f"⚠️ Recreated sqlite DB after corruption recovery: {cls.DB_PATH}")
-                except Exception as recover_err:
-                    logger.error(f"❌ DB recovery failed: {recover_err}")
-                    raise
-            else:
-                raise
+        """데이터베이스 및 테이블 초기화 (repositories.database 위임)."""
+        _db.init_db()
 
     @classmethod
     def get_session(cls):
-        if not cls.Session:
-            cls.init_db()
-        return cls.Session()
+        return _db.get_session()
 
     @classmethod
     @contextmanager
@@ -84,15 +33,8 @@ class StockMetaService:
             with StockMetaService.session_scope() as s:
                 s.add(obj); ...
         """
-        session = cls.get_session()
-        try:
+        with _db.session_scope() as session:
             yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
     @classmethod
     @contextmanager
@@ -103,11 +45,8 @@ class StockMetaService:
             with StockMetaService.session_ro() as s:
                 return s.query(...).first()
         """
-        session = cls.get_session()
-        try:
+        with _db.session_ro() as session:
             yield session
-        finally:
-            session.close()
 
     @classmethod
     def upsert_stock_meta(cls, ticker: str, **kwargs):
@@ -125,6 +64,7 @@ class StockMetaService:
             
             session.commit()
             if stock:
+                session.refresh(stock)  # commit 후 만료된 속성 재로드
                 session.expunge(stock)
             return stock
         except Exception as e:
@@ -140,7 +80,6 @@ class StockMetaService:
         session = cls.get_session()
         try:
             result = session.query(StockMeta).filter_by(ticker=ticker).first()
-            # scoped_session은 자동으로 관리되지만, 명시적으로 detach
             if result:
                 session.expunge(result)
             return result
@@ -238,22 +177,24 @@ class StockMetaService:
 
     @classmethod
     def initialize_default_meta(cls, ticker: str):
-        """기본 메타 정보 초기화 (404 방지용 기본 경로 설정)"""
-        if is_kr(ticker): # 국내
+        """기본 메타 정보 초기화. TR ID/Path는 DB api_tr_meta 에서 환경(VTS/실전)에 맞게 조회."""
+        if is_kr(ticker):
+            tr_id, api_path = cls.get_api_info("주식현재가_시세")
             return cls.upsert_stock_meta(
-                ticker, 
+                ticker,
                 market_type="KR",
-                api_path="/uapi/domestic-stock/v1/quotations/inquire-price",
-                api_tr_id="FHKST01010100",
-                api_market_code="J"
+                api_path=api_path,
+                api_tr_id=tr_id,
+                api_market_code="J",
             )
-        else: # 해외
+        else:
+            tr_id, api_path = cls.get_api_info("해외주식_상세시세")
             return cls.upsert_stock_meta(
                 ticker,
                 market_type="US",
-                api_path="/uapi/overseas-stock/v1/quotations/price-detail",
-                api_tr_id="HHDFS70200200",
-                api_market_code="NAS" # 기본 NAS
+                api_path=api_path,
+                api_tr_id=tr_id,
+                api_market_code="NAS",
             )
 
     @classmethod

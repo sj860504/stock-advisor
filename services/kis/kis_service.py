@@ -139,7 +139,8 @@ class KisService:
         if not cano:
             return None
 
-        tr_id = "VTTC8434R" 
+        from services.market.stock_meta_service import StockMetaService
+        tr_id, _ = StockMetaService.get_api_info("주식잔고조회")
         url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
         headers = cls.get_headers(tr_id)
         
@@ -367,10 +368,9 @@ class KisService:
     @classmethod
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy"):
         """국내 주식 주문 (매수/매도)"""
-        if order_type == "buy":
-            tr_id = "VTTC0802U" 
-        else:
-            tr_id = "VTTC0801U"
+        from services.market.stock_meta_service import StockMetaService
+        api_name = "주식주문_매수" if order_type == "buy" else "주식주문_매도"
+        tr_id, _ = StockMetaService.get_api_info(api_name)
 
         ord_dvsn = "00" if price > 0 else "01"
         ord_price = str(price) if price > 0 else "0"
@@ -399,7 +399,9 @@ class KisService:
         if not MarketHourService.is_kr_after_hours_open():
             return {"status": "failed", "msg": "한국 사후장 주문 가능 시간이 아닙니다."}
 
-        tr_id = "TTTC0802U" if order_type == "buy" else "TTTC0801U"
+        from services.market.stock_meta_service import StockMetaService
+        api_name = "주식주문_매수" if order_type == "buy" else "주식주문_매도"
+        tr_id, _ = StockMetaService.get_api_info(api_name)
         ord_dvsn_final = (ord_dvsn or Config.KIS_AFTER_HOURS_ORD_DVSN or "81").strip()
 
         return cls._send_domestic_order(
@@ -428,7 +430,9 @@ class KisService:
         if not cano:
             return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
 
-        tr_id = "VTTT1002U" if order_type == "buy" else "VTTT1001U"
+        from services.market.stock_meta_service import StockMetaService
+        api_name = "해외주식_미국매수" if order_type == "buy" else "해외주식_미국매도"
+        tr_id, _ = StockMetaService.get_api_info(api_name)
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/order"
         headers = cls.get_headers(tr_id)
         

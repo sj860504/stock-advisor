@@ -20,6 +20,11 @@ class TokenResponse(BaseModel):
     expires_in: int  # seconds
 
 
+class TokenVerifyResponse(BaseModel):
+    valid: bool
+    username: str
+
+
 def _verify_password(plain: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
@@ -64,11 +69,11 @@ def login(body: LoginRequest):
     )
 
 
-@router.get("/verify")
-def verify(token: str):
+@router.get("/verify", response_model=TokenVerifyResponse)
+def verify(token: str) -> TokenVerifyResponse:
     """토큰 유효성 확인 (선택적 사용)."""
     try:
         username = verify_token(token)
-        return {"valid": True, "username": username}
+        return TokenVerifyResponse(valid=True, username=username)
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))

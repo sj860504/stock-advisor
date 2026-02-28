@@ -1,6 +1,5 @@
 import time
-from models.settings import Settings
-from services.market.stock_meta_service import StockMetaService
+from repositories.settings_repo import SettingsRepo
 from config import Config
 from utils.logger import get_logger
 
@@ -57,26 +56,19 @@ class SettingsService:
     @classmethod
     def init_defaults(cls):
         """기본 설정값이 DB에 없으면 초기화"""
-        session = StockMetaService.get_session()
-        try:
-            for key, (default_val, desc) in cls.DEFAULT_SETTINGS.items():
-                setting = session.query(Settings).filter_by(key=key).first()
-                if not setting:
-                    setting = Settings(key=key, value=default_val, description=desc)
-                    session.add(setting)
-                else:
-                    # 기본값이 변경된 경우(예: 익절 5%→3%, 손절 -10%→-8%)이고 사용자가 직접 수정하지 않았다면 함께 갱신
-                    if key == "STRATEGY_TAKE_PROFIT_PCT" and setting.value in ("5.0", "5", ""):
-                        setting.value = default_val
-                    if key == "STRATEGY_STOP_LOSS_PCT" and setting.value in ("-10.0", "-10", ""):
-                        setting.value = default_val
-                    # 틱매매는 재시작 시 항상 비활성화 — 명시적으로 켤 때만 동작
-                    if key == "STRATEGY_TICK_ENABLED":
-                        setting.value = "0"
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Error initializing default settings: {e}")
+        # 1. 없는 키만 삽입
+        SettingsRepo.upsert_many(cls.DEFAULT_SETTINGS)
+        # 2. 특정 키 값 보정 (구버전 기본값 → 신버전 기본값)
+        _corrections = {
+            "STRATEGY_TAKE_PROFIT_PCT": ("5.0", "5", ""),
+            "STRATEGY_STOP_LOSS_PCT": ("-10.0", "-10", ""),
+        }
+        for key, old_values in _corrections.items():
+            current = SettingsRepo.get(key)
+            if current in old_values:
+                SettingsRepo.set(key, cls.DEFAULT_SETTINGS[key][0])
+        # 3. 틱매매는 재시작 시 항상 비활성화
+        SettingsRepo.set("STRATEGY_TICK_ENABLED", "0")
 
     @classmethod
     def get_setting(cls, key: str, default=None):
@@ -86,14 +78,9 @@ class SettingsService:
         if cached and cached[1] > now:
             return cached[0]
 
-        session = StockMetaService.get_session()
-        setting = session.query(Settings).filter_by(key=key).first()
-        if setting:
-            value = setting.value
-        elif key in cls.DEFAULT_SETTINGS:
-            value = cls.DEFAULT_SETTINGS[key][0]
-        else:
-            value = default
+        value = SettingsRepo.get(key)
+        if value is None:
+            value = cls.DEFAULT_SETTINGS.get(key, (default,))[0]
 
         cls._cache[key] = (value, now + cls._CACHE_TTL)
         return value
@@ -117,33 +104,18 @@ class SettingsService:
     @classmethod
     def set_setting(cls, key: str, value: str):
         """설정값 변경"""
-        session = StockMetaService.get_session()
-        try:
-            setting = session.query(Settings).filter_by(key=key).first()
-            if setting:
-                setting.value = str(value)
-            else:
-                desc = cls.DEFAULT_SETTINGS.get(key, ("", ""))[1]
-                setting = Settings(key=key, value=str(value), description=desc)
-                session.add(setting)
-            session.commit()
-            cls._cache.pop(key, None)  # 변경 시 캐시 즉시 무효화
+        desc = cls.DEFAULT_SETTINGS.get(key, ("", ""))[1]
+        result = SettingsRepo.set(key, str(value), desc)
+        cls._cache.pop(key, None)  # 변경 시 캐시 즉시 무효화
+        if result:
             logger.info(f"⚙️ Setting updated: {key} = {value}")
-            return setting
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Error setting value for {key}: {e}")
-            return None
+        return result
 
     @classmethod
     def get_all_settings(cls):
         """전체 설정 조회"""
-        # 먼저 초기화 보장
         cls.init_defaults()
-
-        session = StockMetaService.get_session()
-        settings = session.query(Settings).all()
-        return {setting.key: {"value": setting.value, "description": setting.description} for setting in settings}
+        return SettingsRepo.get_all()
 
     @classmethod
     def get_tick_settings(cls) -> dict:

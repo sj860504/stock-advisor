@@ -4,8 +4,8 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from models.portfolio import Portfolio, PortfolioHolding
 from models.schemas import PortfolioHoldingDto, HoldingSchema, PortfolioSchema
+from repositories.portfolio_repo import PortfolioRepo
 from services.base.file_service import FileService
 from services.config.settings_service import SettingsService
 from services.kis.kis_service import KisService
@@ -67,58 +67,19 @@ class PortfolioService:
         cash_balance: Optional[float] = None,
     ) -> bool:
         """포트폴리오 및 보유 종목 정보를 DB에 저장합니다. HoldingSchema 또는 dict 모두 허용합니다."""
-        session = StockMetaService.get_session()
-        try:
-            portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
-            if not portfolio:
-                portfolio = Portfolio(user_id=user_id)
-                session.add(portfolio)
-            if cash_balance is not None:
-                portfolio.cash_balance = cash_balance
-
-            session.query(PortfolioHolding).filter_by(portfolio_id=portfolio.id).delete()
-            for holding_input in holdings:
-                ticker, name, quantity, buy_price, current_price, sector = cls._extract_holding_fields(holding_input)
-                holding_entity = PortfolioHolding(
-                    portfolio_id=portfolio.id,
-                    ticker=ticker,
-                    name=name,
-                    quantity=quantity,
-                    buy_price=buy_price,
-                    current_price=current_price,
-                    sector=sector,
-                )
-                session.add(holding_entity)
-            session.commit()
-            return True
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error saving portfolio for {user_id}: {e}")
-            return False
-        finally:
-            session.close()
+        holding_dicts = []
+        for h in holdings:
+            ticker, name, quantity, buy_price, current_price, sector = cls._extract_holding_fields(h)
+            holding_dicts.append({
+                "ticker": ticker, "name": name, "quantity": quantity,
+                "buy_price": buy_price, "current_price": current_price, "sector": sector,
+            })
+        return PortfolioRepo.save(user_id, holding_dicts, cash_balance)
 
     @classmethod
     def load_portfolio(cls, user_id: str) -> List[dict]:
         """DB에서 포트폴리오 보유 종목을 조회해 dict 리스트로 반환합니다."""
-        session = StockMetaService.get_session()
-        try:
-            portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
-            if not portfolio:
-                return []
-            return [
-                {
-                    "ticker": h.ticker,
-                    "name": h.name,
-                    "quantity": h.quantity,
-                    "buy_price": h.buy_price,
-                    "current_price": h.current_price,
-                    "sector": h.sector,
-                }
-                for h in portfolio.holdings
-            ]
-        finally:
-            session.close()
+        return PortfolioRepo.load_holdings(user_id)
 
     @classmethod
     def load_portfolio_dtos(cls, user_id: str) -> List[PortfolioHoldingDto]:
@@ -128,12 +89,7 @@ class PortfolioService:
     @classmethod
     def load_cash(cls, user_id: str) -> float:
         """DB에서 현금 잔고 조회"""
-        session = StockMetaService.get_session()
-        try:
-            portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
-            return portfolio.cash_balance if portfolio else 0.0
-        finally:
-            session.close()
+        return PortfolioRepo.load_cash(user_id)
 
     @classmethod
     def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:

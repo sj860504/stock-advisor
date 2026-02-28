@@ -3,9 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from models.schemas import TradeRecordDto
-from models.trade_history import TradeHistory
-from models.portfolio import PortfolioHolding
-from services.market.stock_meta_service import StockMetaService
+from repositories.trade_history_repo import TradeHistoryRepo
 from utils.logger import get_logger
 from utils.market import is_kr
 
@@ -74,55 +72,10 @@ class OrderService:
         strategy_name: str = "manual",
     ):
         """매매 내역을 DB에 기록합니다. 성공 시 TradeHistory 엔티티, 실패 시 None 반환."""
-        session = StockMetaService.get_session()
-        try:
-            trade = TradeHistory(
-                ticker=ticker,
-                order_type=order_type,
-                quantity=quantity,
-                price=price,
-                result_msg=result_msg,
-                timestamp=datetime.now(),
-                strategy_name=strategy_name,
-            )
-            session.add(trade)
-            session.commit()
-            logger.info(f"💾 Trade recorded: {ticker} {order_type} {quantity} @ {price}")
-            if trade:
-                session.expunge(trade)
-            return trade
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Error recording trade: {e}")
-            return None
-        finally:
-            session.close()
+        return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name)
 
     @classmethod
-    def _apply_filters(cls, query, market: Optional[str], date: Optional[str]):
-        """market/date 필터를 쿼리에 적용합니다."""
-        if market == "kr":
-            query = query.filter(TradeHistory.ticker.op("GLOB")("[0-9]*"))
-        elif market == "us":
-            query = query.filter(~TradeHistory.ticker.op("GLOB")("[0-9]*"))
-        if date:
-            start_dt = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
-            end_dt = start_dt.replace(hour=23, minute=59, second=59)
-            query = query.filter(TradeHistory.timestamp >= start_dt, TradeHistory.timestamp <= end_dt)
-        return query
-
-    @classmethod
-    def _build_holdings_map(cls, session, tickers: list) -> dict:
-        """ticker 목록으로 portfolio_holdings를 조회해 {ticker: holding} 맵을 반환합니다."""
-        if not tickers:
-            return {}
-        return {
-            h.ticker: h
-            for h in session.query(PortfolioHolding).filter(PortfolioHolding.ticker.in_(tickers)).all()
-        }
-
-    @classmethod
-    def _to_dto(cls, record: TradeHistory, holdings_map: dict) -> TradeRecordDto:
+    def _to_dto(cls, record, holdings_map: dict) -> TradeRecordDto:
         """TradeHistory 엔티티를 TradeRecordDto로 변환합니다."""
         holding = holdings_map.get(record.ticker)
         buy_price = holding.buy_price if holding and holding.buy_price else None
@@ -151,54 +104,30 @@ class OrderService:
         date: Optional[str] = None,
     ) -> List[TradeRecordDto]:
         """최근 매매 내역 조회. market=kr/us/None(전체), date=YYYY-MM-DD."""
-        session = StockMetaService.get_session()
         try:
             if market in ("kr", "us"):
-                trades = (
-                    cls._apply_filters(session.query(TradeHistory), market, date)
-                    .order_by(TradeHistory.timestamp.desc())
-                    .limit(limit)
-                    .all()
-                )
+                trades = TradeHistoryRepo.query(market=market, date=date, limit=limit)
             else:
                 # 전체: 한국/미국 각각 half건씩 보장
                 half = limit // 2
-                kr_trades = (
-                    cls._apply_filters(session.query(TradeHistory), "kr", date)
-                    .order_by(TradeHistory.timestamp.desc())
-                    .limit(half)
-                    .all()
-                )
-                us_trades = (
-                    cls._apply_filters(session.query(TradeHistory), "us", date)
-                    .order_by(TradeHistory.timestamp.desc())
-                    .limit(half)
-                    .all()
-                )
+                kr_trades = TradeHistoryRepo.query(market="kr", date=date, limit=half)
+                us_trades = TradeHistoryRepo.query(market="us", date=date, limit=half)
                 trades = sorted(kr_trades + us_trades, key=lambda x: x.timestamp, reverse=True)
-            holdings_map = cls._build_holdings_map(session, [t.ticker for t in trades])
+            holdings_map = TradeHistoryRepo.get_holdings_map([t.ticker for t in trades])
             return [cls._to_dto(r, holdings_map) for r in trades]
         except Exception as e:
             logger.error(f"❌ Error fetching trade history: {e}")
             return []
-        finally:
-            session.close()
 
     @classmethod
     def get_trade_history_by_date_range(
         cls, start_dt: datetime, end_dt: Optional[datetime] = None
     ) -> List[TradeRecordDto]:
         """지정된 날짜 범위의 매매 내역을 시간순으로 조회합니다."""
-        session = StockMetaService.get_session()
         try:
-            query = session.query(TradeHistory).filter(TradeHistory.timestamp >= start_dt)
-            if end_dt:
-                query = query.filter(TradeHistory.timestamp < end_dt)
-            trades = query.order_by(TradeHistory.timestamp.asc()).all()
-            holdings_map = cls._build_holdings_map(session, [t.ticker for t in trades])
+            trades = TradeHistoryRepo.query_by_date_range(start_dt, end_dt)
+            holdings_map = TradeHistoryRepo.get_holdings_map([t.ticker for t in trades])
             return [cls._to_dto(r, holdings_map) for r in trades]
         except Exception as e:
             logger.error(f"❌ Error fetching trade history by date range: {e}")
             return []
-        finally:
-            session.close()
