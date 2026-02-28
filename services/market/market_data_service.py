@@ -1,12 +1,13 @@
+import time
+import threading
 import pandas as pd
-import logging
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+
 from models.ticker_state import TickerState
 from services.analysis.indicator_service import IndicatorService
 from services.analysis.dcf_service import DcfService
 from services.market.data_service import DataService
-
 from utils.logger import get_logger
 
 logger = get_logger("market_data_service")
@@ -20,24 +21,36 @@ WARMUP_CONCURRENCY = 1
 TIER_HIGH = "high"   # WebSocket 실시간 (시장별 상위 20종목)
 TIER_LOW  = "low"    # 5분 주기 REST 폴링 (나머지 80종목)
 
+_EMA_SPANS = [5, 10, 20, 60, 120, 200]
+
 
 class MarketDataService:
-    """실시간 시장 데이터 및 종목별 TickerState 관리. Warm-up·실시간 수신·지표 업데이트."""
+    """실시간 시장 데이터 및 종목별 TickerState 관리."""
 
     _states: Dict[str, TickerState] = {}
-    _tiers: Dict[str, str] = {}          # ticker → TIER_HIGH | TIER_LOW
+    _tiers: Dict[str, str] = {}
     _warmup_semaphore = None
 
+    # ── 내부 유틸 ──────────────────────────────────────────────────────────
+
     @classmethod
-    def get_semaphore(cls):
+    def _get_semaphore(cls):
         if cls._warmup_semaphore is None:
-            import threading
             cls._warmup_semaphore = threading.Semaphore(WARMUP_CONCURRENCY)
         return cls._warmup_semaphore
-    
-    @classmethod
-    def _has_minimum_indicators(cls, state: TickerState) -> bool:
-        """DB 캐시 데이터가 분석에 바로 사용 가능한 최소 조건인지 확인"""
+
+    # 하위 호환 (외부에서 get_semaphore() 호출하는 곳이 있으면 유지)
+    get_semaphore = _get_semaphore
+
+    @staticmethod
+    def _normalize_kr_ticker(ticker: str) -> str:
+        """한국 종목코드를 6자리로 정규화."""
+        t = str(ticker or "").strip()
+        return t.zfill(6) if t.isdigit() and len(t) < 6 else t
+
+    @staticmethod
+    def _has_minimum_indicators(state: TickerState) -> bool:
+        """TickerState가 전략 실행에 필요한 최소 지표를 갖추고 있는지 확인."""
         if not state or state.current_price <= 0:
             return False
         if state.rsi is None or float(state.rsi) <= 0:
@@ -46,125 +59,203 @@ class MarketDataService:
         return bool(ema_val and float(ema_val) > 0)
 
     @classmethod
-    def register_ticker(cls, ticker: str, name: str = ""):
-        """종목 등록 및 초기화 (단일)"""
-        cls.register_batch([ticker])
+    def _load_indicators_from_db(cls, financials, state: TickerState) -> bool:
+        """DB 재무 데이터를 TickerState에 적용.
+        최신 데이터이고 최소 지표를 충족하면 True, 아니면 False.
+        """
+        if datetime.now() - financials.base_date >= timedelta(hours=DB_FRESH_HOURS):
+            return False
+        if financials.name:
+            state.name = financials.name
+        emas = {
+            span: float(v)
+            for span in _EMA_SPANS
+            if (v := getattr(financials, f"ema{span}", None)) is not None
+        }
+        state.current_price = float(financials.current_price or 0.0)
+        state.update_indicators(emas=emas, dcf=financials.dcf_value, rsi=financials.rsi)
+        if state.ema.get(200):
+            state.target_buy_price  = round(state.ema[200] * 1.01, 2)
+            state.target_sell_price = round(state.ema[200] * 1.15, 2)
+        return cls._has_minimum_indicators(state)
 
     @classmethod
-    def _normalize_kr_ticker(cls, ticker: str) -> str:
-        """한국 종목코드는 6자리로 통일 (KIS API 요구사항)."""
-        if not ticker or not str(ticker).strip():
-            return ticker
-        t = str(ticker).strip()
-        if t.isdigit() and len(t) < 6:
-            return t.zfill(6)
-        return t
-
-    @classmethod
-    def register_batch(cls, tickers: list):
-        """여러 종목을 일괄 등록 및 초기화 (DB 우선 로드 최적화)"""
-        normalized = [cls._normalize_kr_ticker(t) for t in tickers if t]
-        new_tickers = [t for t in normalized if t and t not in cls._states]
-        if not new_tickers:
-            return
-
-        # 시장 개장 여부에 따라 분석 대상 필터링
+    def _should_skip_by_market_hours(cls, ticker: str) -> bool:
+        """현재 개장된 시장과 반대 시장 종목이면 True (warm-up 스킵 신호)."""
         from services.market.market_hour_service import MarketHourService
         from services.config.settings_service import SettingsService
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-        
-        # 한국 시장 개장 중이면 미국 종목 제외, 미국 시장 개장 중이면 한국 종목 제외
-        analyze_kr = not is_us_open  # 미국 시장이 닫혔을 때만 한국 종목 분석
-        analyze_us = not is_kr_open  # 한국 시장이 닫혔을 때만 미국 종목 분석
-        
-        # 필터링된 종목만 등록
-        filtered_tickers = []
-        for ticker in new_tickers:
-            is_kr_ticker = ticker.isdigit()
-            if is_kr_ticker and not analyze_kr:
-                logger.debug(f"⏭️ {ticker} 한국 종목 등록 스킵 (미국 시장 개장 중)")
-                continue
-            if not is_kr_ticker and not analyze_us:
-                logger.debug(f"⏭️ {ticker} 미국 종목 등록 스킵 (한국 시장 개장 중)")
-                continue
-            filtered_tickers.append(ticker)
-        
-        if not filtered_tickers:
-            logger.info(f"⏭️ 모든 종목이 시장 개장 필터링으로 제외됨 (KR개장={is_kr_open}, US개장={is_us_open})")
-            return
-            
-        logger.info(f"🆕 Batch registering {len(filtered_tickers)} tickers (filtered from {len(new_tickers)}, KR개장={is_kr_open}, US개장={is_us_open})...")
-        
+        is_kr_ticker = ticker.isdigit()
+        if is_kr_ticker and is_us_open:
+            logger.debug(f"⏭️ {ticker} 한국 종목 스킵 (미국 시장 개장 중)")
+            return True
+        if not is_kr_ticker and is_kr_open:
+            logger.debug(f"⏭️ {ticker} 미국 종목 스킵 (한국 시장 개장 중)")
+            return True
+        return False
+
+    @classmethod
+    def _fetch_basic_price(cls, ticker: str) -> dict:
+        """KIS REST API로 현재가 및 기초 재무 정보를 조회합니다."""
+        from services.kis.kis_service import KisService
+        from services.kis.fetch.kis_fetcher import KisFetcher
         from services.market.stock_meta_service import StockMetaService
-        latest_financials_by_ticker = StockMetaService.get_batch_latest_financials(filtered_tickers)
+        token = KisService.get_access_token()
+        api_ticker = cls._normalize_kr_ticker(ticker) if ticker.isdigit() else ticker
+        if ticker.isdigit():
+            return KisFetcher.fetch_domestic_price(token, api_ticker)
+        meta_row = StockMetaService.get_stock_meta(ticker)
+        meta = {"api_market_code": getattr(meta_row, "api_market_code", "NAS")}
+        info = KisFetcher.fetch_overseas_detail(token, ticker, meta=meta)
+        return info or KisFetcher.fetch_overseas_price(token, ticker, meta=meta)
+
+    @classmethod
+    def _build_partial_metrics(cls, state: TickerState, basic_info: dict, df: pd.DataFrame) -> dict:
+        """KIS 기초 정보 + 일봉 마지막 종가로 1단계 지표 dict를 생성합니다."""
+        last_close  = float(df.iloc[-1]["Close"])
+        basic_price = float(basic_info.get("price") or 0.0)
+        return {
+            "name":         state.name or basic_info.get("name"),
+            "current_price": basic_price if basic_price > 0 else last_close,
+            "market_cap":   basic_info.get("market_cap"),
+            "per":          basic_info.get("per"),
+            "pbr":          basic_info.get("pbr"),
+            "eps":          basic_info.get("eps"),
+            "bps":          basic_info.get("bps"),
+            "high52":       basic_info.get("high52"),
+            "low52":        basic_info.get("low52"),
+            "volume":       basic_info.get("volume"),
+            "amount":       basic_info.get("amount"),
+            "base_date":    datetime.now(),
+        }
+
+    @classmethod
+    def _full_api_warmup(cls, ticker: str, state: TickerState):
+        """KIS API 호출 기반 full warm-up. 세마포어 진입 후 호출해야 합니다."""
+        from services.market.stock_meta_service import StockMetaService
+
+        api_ticker  = cls._normalize_kr_ticker(ticker) if ticker.isdigit() else ticker
+        basic_info  = cls._fetch_basic_price(ticker)
+        df          = DataService.get_price_history(api_ticker, days=300)
+
+        if df.empty:
+            logger.warning(f"⚠️ No history data for {api_ticker}. Skipping warm-up.")
+            time.sleep(1.0)
+            return
+
+        # 1단계: 기초 데이터 저장
+        partial_metrics = cls._build_partial_metrics(state, basic_info, df)
+        try:
+            StockMetaService.save_financials(ticker, partial_metrics)
+        except Exception as e:
+            logger.error(f"⚠️ Failed to save base data for {ticker}: {e}")
+
+        # 2단계: 지표 계산 및 state 반영
+        state.prev_close    = float(df.iloc[-2]["Close"]) if len(df) > 1 else float(df.iloc[-1]["Close"])
+        state.current_price = partial_metrics["current_price"]
+
+        snapshot = IndicatorService.compute_latest_indicators_snapshot(df["Close"])
+        emas     = snapshot.ema if snapshot else {}
+        rsi      = snapshot.rsi if snapshot else None
+        dcf_val  = DcfService.calculate_dcf(ticker)
+        state.update_indicators(emas=emas, dcf=dcf_val, rsi=rsi)
+
+        # 3단계: 최종 지표 DB 저장
+        try:
+            final_metrics = {
+                **partial_metrics,
+                **(snapshot.to_metrics_dict() if snapshot else {}),
+                "dcf_value": dcf_val,
+            }
+            StockMetaService.save_financials(ticker, final_metrics)
+        except Exception as e:
+            logger.error(f"⚠️ Failed to save final metrics for {ticker}: {e}")
+
+        # 4단계: EMA200 기반 목표가 산출
+        ema200 = snapshot.ema.get(200) if snapshot else None
+        if ema200:
+            state.target_buy_price  = round(ema200 * 1.01, 2)
+            state.target_sell_price = round(ema200 * 1.15, 2)
+
+        logger.info(
+            f"✅ Full warm-up: {ticker} ({state.name}) "
+            f"Price={state.current_price}, RSI={rsi}, DCF={dcf_val}, TargetBuy={state.target_buy_price}"
+        )
+        time.sleep(1.0)  # TPS 준수
+
+    # ── 등록 / Warm-up ──────────────────────────────────────────────────────
+
+    @classmethod
+    def register_ticker(cls, ticker: str, name: str = ""):
+        """단일 종목 등록 (register_batch 위임)."""
+        cls.register_batch([ticker])
+
+    @classmethod
+    def register_batch(cls, tickers: list):
+        """여러 종목을 일괄 등록 (DB 우선 로드, 부족한 종목은 백그라운드 warm-up)."""
+        normalized   = [cls._normalize_kr_ticker(t) for t in tickers if t]
+        new_tickers  = [t for t in normalized if t and t not in cls._states]
+        if not new_tickers:
+            return
+
+        from services.market.market_hour_service import MarketHourService
+        from services.config.settings_service import SettingsService
+        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
+        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+        analyze_kr = not is_us_open
+        analyze_us = not is_kr_open
+
+        filtered = [
+            t for t in new_tickers
+            if (t.isdigit() and analyze_kr) or (not t.isdigit() and analyze_us)
+        ]
+        if not filtered:
+            logger.info(f"⏭️ 모든 신규 종목이 시장 개장 필터로 제외됨 (KR={is_kr_open}, US={is_us_open})")
+            return
+
+        logger.info(f"🆕 Batch registering {len(filtered)} tickers (KR={is_kr_open}, US={is_us_open})...")
+
+        from services.market.stock_meta_service import StockMetaService
+        financials_map      = StockMetaService.get_batch_latest_financials(filtered)
         tickers_needing_warmup = []
 
-        for ticker in filtered_tickers:
+        for ticker in filtered:
             state = TickerState(ticker=ticker)
             cls._states[ticker] = state
-            latest_financials = latest_financials_by_ticker.get(ticker)
-            use_db_data = False
-            if latest_financials:
-                if latest_financials.name:
-                    state.name = latest_financials.name
-                if datetime.now() - latest_financials.base_date < timedelta(hours=DB_FRESH_HOURS):
-                    emas = {}
-                    for span in [5, 10, 20, 60, 120, 200]:
-                        val = getattr(latest_financials, f"ema{span}", None)
-                        if val is not None:
-                            emas[span] = float(val)
-                    state.current_price = float(latest_financials.current_price or 0.0)
-                    state.update_indicators(emas=emas, dcf=latest_financials.dcf_value, rsi=latest_financials.rsi)
-                    if state.ema.get(200):
-                        state.target_buy_price = round(state.ema[200] * 1.01, 2)
-                        state.target_sell_price = round(state.ema[200] * 1.15, 2)
-                    if cls._has_minimum_indicators(state):
-                        use_db_data = True
-                        logger.debug(f"✅ Batch DB Load: {ticker}")
-                    else:
-                        logger.info(
-                            f"🔄 Incomplete DB indicators for {ticker}. "
-                            f"Warm-up required (price={state.current_price}, rsi={state.rsi})."
-                        )
-            if not use_db_data:
+            financials = financials_map.get(ticker)
+            if financials and cls._load_indicators_from_db(financials, state):
+                logger.debug(f"✅ Batch DB load: {ticker}")
+            else:
+                if financials:
+                    logger.info(f"🔄 DB data incomplete for {ticker}, scheduling warm-up.")
                 tickers_needing_warmup.append(ticker)
 
         if tickers_needing_warmup:
-            import threading
-            threading.Thread(target=cls._warm_up_batch, args=(tickers_needing_warmup,), daemon=True).start()
+            threading.Thread(
+                target=cls._warm_up_batch,
+                args=(tickers_needing_warmup,),
+                daemon=True,
+            ).start()
 
     @classmethod
     def _warm_up_batch(cls, tickers: list):
-        """여러 종목에 대해 순차적으로 Warm-up 수행 (TPS 준수)"""
+        """여러 종목을 순차적으로 warm-up (TPS 준수)."""
         for ticker in tickers:
             cls._warm_up_data(ticker)
 
     @classmethod
     def _warm_up_data(cls, ticker: str):
-        """과거 데이터 로딩 및 초기 지표 계산 (최적화)"""
+        """단일 종목 warm-up 오케스트레이터."""
         try:
             state = cls._states.get(ticker)
-            if not state: return
-
-            # 0. 시장 개장 여부에 따라 분석 스킵
-            from services.market.market_hour_service import MarketHourService
-            from services.config.settings_service import SettingsService
-            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-            is_kr_ticker = ticker.isdigit()
-            is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
-            is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-            
-            # 한국 시장 개장 중이면 미국 종목 분석 스킵, 미국 시장 개장 중이면 한국 종목 분석 스킵
-            if is_kr_ticker and is_us_open:
-                logger.debug(f"⏭️ {ticker} 한국 종목 분석 스킵 (미국 시장 개장 중)")
+            if not state:
                 return
-            if not is_kr_ticker and is_kr_open:
-                logger.debug(f"⏭️ {ticker} 미국 종목 분석 스킵 (한국 시장 개장 중)")
+            if cls._should_skip_by_market_hours(ticker):
                 return
 
-            # 1. 종목명 및 기본 메타 정보 로드 (DB 조회이므로 세마포어 밖에서 수행)
             from services.market.stock_meta_service import StockMetaService
             meta = StockMetaService.get_stock_meta(ticker)
             if meta:
@@ -172,153 +263,44 @@ class MarketDataService:
             else:
                 StockMetaService.initialize_default_meta(ticker)
 
-            latest_financials = StockMetaService.get_latest_financials(ticker)
-            use_db_data = False
-            if latest_financials:
-                if datetime.now() - latest_financials.base_date < timedelta(hours=DB_FRESH_HOURS):
-                    logger.info(f"📦 Loading indicators from DB for {ticker} (Date: {latest_financials.base_date})")
-                    emas = {}
-                    for span in [5, 10, 20, 60, 120, 200]:
-                        val = getattr(latest_financials, f"ema{span}", None)
-                        if val is not None:
-                            emas[span] = float(val)
-                    state.current_price = float(latest_financials.current_price or 0.0)
-                    state.update_indicators(emas=emas, dcf=latest_financials.dcf_value, rsi=latest_financials.rsi)
-                    
-                    # 목표가 계산 (EMA200 기준)
-                    if state.ema.get(200):
-                        state.target_buy_price = round(state.ema[200] * 1.01, 2)
-                        state.target_sell_price = round(state.ema[200] * 1.15, 2)
-                        
-                    if cls._has_minimum_indicators(state):
-                        use_db_data = True
-                        logger.info(f"✅ DB Load complete for {ticker} ({state.name}): Price={state.current_price}, RSI={state.rsi}")
-                    else:
-                        logger.info(
-                            f"🔄 DB data incomplete for {ticker} ({state.name}). "
-                            f"Re-running warm-up (price={state.current_price}, RSI={state.rsi})."
-                        )
+            financials = StockMetaService.get_latest_financials(ticker)
+            if financials and cls._load_indicators_from_db(financials, state):
+                logger.info(f"✅ DB load: {ticker} ({state.name}) Price={state.current_price}, RSI={state.rsi}")
+                return
 
-            # 3. API 호출이 필요한 경우에만 세마포어 진입 및 1초 대기
-            if not use_db_data:
-                sem = cls.get_semaphore()
-                with sem:
-                    from services.kis.kis_service import KisService
-                    from services.kis.fetch.kis_fetcher import KisFetcher
-                    token = KisService.get_access_token()
-                    api_ticker = cls._normalize_kr_ticker(ticker) if ticker.isdigit() else ticker
-                    is_kr = len(api_ticker) == 6 and api_ticker.isdigit()
-                    basic_info = {}
-                    if is_kr:
-                        basic_info = KisFetcher.fetch_domestic_price(token, api_ticker)
-                    else:
-                        # 해외 종목은 거래소 메타(NAS/NYS/AMS)를 함께 전달해야 가격 매핑 정확도가 올라간다.
-                        meta_row = StockMetaService.get_stock_meta(ticker)
-                        meta = {"api_market_code": getattr(meta_row, "api_market_code", "NAS")}
-                        basic_info = KisFetcher.fetch_overseas_detail(token, ticker, meta=meta)
-                        if not basic_info:
-                             basic_info = KisFetcher.fetch_overseas_price(token, ticker, meta=meta)
-                    
-                    # B. 일봉 데이터 가져오기 (한국 종목은 6자리 코드로 요청)
-                    df = DataService.get_price_history(api_ticker, days=300)
-                    if df.empty:
-                        logger.warning(f"⚠️ No history data for {api_ticker}. Skipping analysis.")
-                        import time
-                        time.sleep(1.0) # 에러 시에도 최소 지연 유지
-                        return
+            logger.info(f"🔄 DB incomplete for {ticker}. Starting full API warm-up...")
+            with cls._get_semaphore():
+                cls._full_api_warmup(ticker, state)
 
-                    # 1단계: 기초 데이터를 먼저 DB에 저장
-                    try:
-                        last_close = float(df.iloc[-1]["Close"])
-                        basic_price = float(basic_info.get("price") or 0.0)
-                        mapped_price = basic_price if basic_price > 0 else last_close
-                        partial_metrics = {
-                            "name": state.name or basic_info.get('name'),
-                            "current_price": mapped_price,
-                            "market_cap": basic_info.get("market_cap"),
-                            "per": basic_info.get("per"),
-                            "pbr": basic_info.get("pbr"),
-                            "eps": basic_info.get("eps"),
-                            "bps": basic_info.get("bps"),
-                            "high52": basic_info.get("high52"),
-                            "low52": basic_info.get("low52"),
-                            "volume": basic_info.get("volume"),
-                            "amount": basic_info.get("amount"),
-                            "base_date": datetime.now()
-                        }
-                        StockMetaService.save_financials(ticker, partial_metrics)
-                    except Exception as e:
-                        logger.error(f"⚠️ Failed to save base data: {e}")
-
-                    # 2단계: 분석 수행
-                    last_row = df.iloc[-1]
-                    state.prev_close = float(df.iloc[-2]['Close']) if len(df) > 1 else float(last_row['Close'])
-                    state.current_price = partial_metrics["current_price"]
-                    
-                    indicators_snapshot = IndicatorService.compute_latest_indicators_snapshot(df["Close"])
-                    emas = indicators_snapshot.ema if indicators_snapshot else {}
-                    rsi = indicators_snapshot.rsi if indicators_snapshot else None
-                    dcf_val = DcfService.calculate_dcf(ticker)
-                    state.update_indicators(emas=emas, dcf=dcf_val, rsi=rsi)
-                    # 3단계: 최종 업데이트 (DB 저장용 지표는 스냅샷에서 변환)
-                    try:
-                        indicators_for_db = indicators_snapshot.to_metrics_dict() if indicators_snapshot else {}
-                        final_metrics = {
-                            **partial_metrics,
-                            **indicators_for_db,
-                            "dcf_value": dcf_val,
-                        }
-                        StockMetaService.save_financials(ticker, final_metrics)
-                    except Exception as se:
-                        logger.error(f"⚠️ Failed to save final analysis: {se}")
-                    
-                    # 4단계: 목표가 산출
-                    ema200 = (indicators_snapshot.ema.get(200) if indicators_snapshot else None)
-                    if ema200:
-                        state.target_buy_price = round(ema200 * 1.01, 2)
-                        state.target_sell_price = round(ema200 * 1.15, 2)
-                    
-                    logger.info(f"✅ Full Warm-up complete for {ticker} ({state.name}): Price={state.current_price}, RSI={rsi}, DCF={dcf_val}, TargetBuy={state.target_buy_price}")
-                    
-                    # API 호출 후 1초 대기 (TPS 준수)
-                    import time
-                    time.sleep(1.0)
-            
         except Exception as e:
-            logger.error(f"❌ Failed to warm up {ticker}: {e}", exc_info=True)
+            logger.error(f"❌ Warm-up failed for {ticker}: {e}", exc_info=True)
+
+    # ── 실시간 데이터 수신 ────────────────────────────────────────────────
 
     @classmethod
     def on_realtime_data(cls, ticker: str, data: dict):
-        """
-        WebSocket 실시간 데이터 수신 시 호출
-        data: 전처리된 딕셔너리 (price, open, high, low, rate, etc.)
-        """
+        """WebSocket 실시간 데이터 수신 시 호출."""
         if ticker not in cls._states:
             cls.register_ticker(ticker)
-            
         state = cls._states[ticker]
-        
-        # 1. 기본 시세 업데이트
-        state.current_price = float(data.get('price', state.current_price))
-        state.open_price = float(data.get('open', state.open_price))
-        state.high_price = float(data.get('high', state.high_price))
-        state.low_price = float(data.get('low', state.low_price))
-        state.change_rate = float(data.get('rate', state.change_rate))
-        state.volume = int(data.get('volume', state.volume))
-        
-        # 2. 실시간 지표 재계산 (특성상)
+        state.current_price = float(data.get("price", state.current_price))
+        state.open_price    = float(data.get("open",  state.open_price))
+        state.high_price    = float(data.get("high",  state.high_price))
+        state.low_price     = float(data.get("low",   state.low_price))
+        state.change_rate   = float(data.get("rate",  state.change_rate))
+        state.volume        = int(data.get("volume",  state.volume))
         state.recalculate_indicators()
-        
-        # logger.debug(f"⚡ Update {ticker}: {state.current_price} ({state.change_rate}%)")
 
     @classmethod
     def update_price_from_sync(cls, ticker: str, price: float, change_rate: float = None):
-        """포트폴리오 동기화 시 현재가만 갱신 (EMA 재계산 없음, state가 이미 등록된 경우만)"""
+        """포트폴리오 동기화·REST 폴링 시 현재가만 갱신 (EMA 재계산 없음)."""
         state = cls._states.get(ticker)
         if state and price > 0:
             state.current_price = price
             if change_rate is not None:
                 state.change_rate = change_rate
+
+    # ── 상태 조회 ─────────────────────────────────────────────────────────
 
     @classmethod
     def get_state(cls, ticker: str) -> Optional[TickerState]:
@@ -329,8 +311,18 @@ class MarketDataService:
         return cls._states
 
     @classmethod
+    def prune_states(cls, keep_tickers: set):
+        """유니버스 외 종목 상태를 캐시에서 제거."""
+        stale = [t for t in cls._states if t not in keep_tickers]
+        for ticker in stale:
+            cls._states.pop(ticker, None)
+        if stale:
+            logger.info(f"🧹 Pruned {len(stale)} stale states (kept {len(keep_tickers)}).")
+
+    # ── 티어 관리 ─────────────────────────────────────────────────────────
+
+    @classmethod
     def set_tiers(cls, high_tickers: set, low_tickers: set):
-        """티어 정보를 일괄 설정합니다."""
         for t in high_tickers:
             cls._tiers[t] = TIER_HIGH
         for t in low_tickers:
@@ -342,22 +334,22 @@ class MarketDataService:
 
     @classmethod
     def get_low_tier_tickers(cls) -> List[str]:
-        """현재 LOW 티어 종목 목록을 반환합니다."""
         return [t for t, tier in cls._tiers.items() if tier == TIER_LOW]
 
     @classmethod
     def get_high_tier_tickers(cls) -> List[str]:
-        """현재 HIGH 티어 종목 목록을 반환합니다."""
         return [t for t, tier in cls._tiers.items() if tier == TIER_HIGH]
+
+    # ── 뷰 / 신호 생성 ───────────────────────────────────────────────────
 
     @classmethod
     def build_trading_signals(cls, data: dict) -> dict:
         """캐시 데이터에서 과매도/과매수/저평가/EMA200 신호를 분류합니다."""
         oversold, overbought, undervalued, ema200_support = [], [], [], []
         for ticker, info in data.items():
-            rsi = info.get("rsi")
-            price = info.get("price")
-            dcf = info.get("fair_value_dcf")
+            rsi    = info.get("rsi")
+            price  = info.get("price")
+            dcf    = info.get("fair_value_dcf")
             ema200 = info.get("ema200")
             if rsi is not None and rsi < 30:
                 oversold.append({"ticker": ticker, "rsi": rsi, "price": price, "signal": "BUY"})
@@ -380,34 +372,22 @@ class MarketDataService:
         }
 
     @classmethod
-    def build_watch_item(cls, ticker: str, state) -> dict:
-        """MarketDataState 객체에서 WatchItem dict를 생성합니다."""
+    def build_watch_item(cls, ticker: str, state: TickerState) -> dict:
+        """TickerState에서 WatchItem dict를 생성합니다."""
         change = state.current_price - state.prev_close if state.prev_close > 0 else 0
-        ma20 = state.ema.get(20) if state.ema else None
         return {
-            "ticker": ticker,
-            "price": state.current_price,
-            "change": change,
+            "ticker":      ticker,
+            "price":       state.current_price,
+            "change":      change,
             "change_rate": state.change_rate,
-            "volume": float(state.volume),
-            "rsi": state.rsi,
-            "ma20": ma20,
+            "volume":      float(state.volume),
+            "rsi":         state.rsi,
+            "ma20":        state.ema.get(20) if state.ema else None,
         }
 
     @classmethod
     def get_watch_list(cls) -> list:
-        """현재 감시 중인 종목 목록 (ticker 알파벳순 정렬)."""
-        result = [cls.build_watch_item(ticker, state) for ticker, state in cls._states.items()]
+        """감시 중인 종목 목록 (ticker 알파벳순)."""
+        result = [cls.build_watch_item(t, s) for t, s in cls._states.items()]
         result.sort(key=lambda x: x["ticker"])
         return result
-
-    @classmethod
-    def prune_states(cls, keep_tickers: set):
-        """대상 유니버스 외 종목 상태를 캐시에서 제거"""
-        if not keep_tickers:
-            return
-        stale = [t for t in cls._states.keys() if t not in keep_tickers]
-        for ticker in stale:
-            cls._states.pop(ticker, None)
-        if stale:
-            logger.info(f"🧹 Pruned {len(stale)} stale ticker states (kept {len(keep_tickers)}).")
