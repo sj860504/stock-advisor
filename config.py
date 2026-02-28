@@ -65,3 +65,4 @@ class Config:
     DCF_DISCOUNT_RATE_CEIL = float(os.getenv("DCF_DISCOUNT_RATE_CEIL", "0.15"))
     DCF_DEFAULT_DISCOUNT_RATE = float(os.getenv("DCF_DEFAULT_DISCOUNT_RATE", "0.10"))
     DCF_STAGE1_YEARS = int(os.getenv("DCF_STAGE1_YEARS", "10"))
+    DCF_TERMINAL_GROWTH = float(os.getenv("DCF_TERMINAL_GROWTH", "0.03"))

@@ -50,7 +50,8 @@ class SettingsService:
         "DCF_DISCOUNT_RATE_FLOOR": (str(Config.DCF_DISCOUNT_RATE_FLOOR), "DCF 할인율 하한(예: 6%=0.06)"),
         "DCF_DISCOUNT_RATE_CEIL": (str(Config.DCF_DISCOUNT_RATE_CEIL), "DCF 할인율 상한(예: 15%=0.15)"),
         "DCF_DEFAULT_DISCOUNT_RATE": (str(Config.DCF_DEFAULT_DISCOUNT_RATE), "DCF beta 미제공 시 기본 할인율(예: 10%=0.10)"),
-        "DCF_STAGE1_YEARS": (str(Config.DCF_STAGE1_YEARS), "DCF 1단계 고성장 기간(년)")
+        "DCF_STAGE1_YEARS": (str(Config.DCF_STAGE1_YEARS), "DCF 1단계 고성장 기간(년)"),
+        "DCF_TERMINAL_GROWTH": (str(Config.DCF_TERMINAL_GROWTH), "DCF 터미널 성장률(예: 3%=0.03, GDP 성장률 연동)")
     }
 
     @classmethod
