@@ -1,5 +1,6 @@
 import os
-from sqlalchemy import create_engine
+from typing import Optional
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import OperationalError
 from datetime import datetime
@@ -121,6 +122,21 @@ class StockMetaService:
             for r in results:
                 session.expunge(r)
             return results
+        finally:
+            session.close()
+
+    @classmethod
+    def find_ticker_by_name(cls, name: str) -> Optional[str]:
+        """종목명으로 티커 조회 (name_ko 또는 name_en 대소문자 무시 검색)."""
+        if not name:
+            return None
+        session = cls.get_session()
+        try:
+            result = session.query(StockMeta).filter(
+                (func.lower(StockMeta.name_ko) == name.lower()) |
+                (func.lower(StockMeta.name_en) == name.lower())
+            ).first()
+            return result.ticker if result else None
         finally:
             session.close()
 

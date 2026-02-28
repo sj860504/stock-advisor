@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from typing import Optional
+from typing import Optional, Dict, Any
 from services.analysis.analysis_service import AnalysisService
 from services.strategy.trading_strategy_service import TradingStrategyService
 from services.analysis.financial_service import FinancialService
@@ -185,8 +185,6 @@ def update_strategy_weights(payload: StrategyWeightOverrideRequest) -> StrategyW
     overrides = TradingStrategyService.set_top_weight_overrides(payload.weights)
     return StrategyWeightsResponse(overrides=overrides)
 
-
-from typing import Dict, Any
 
 @router.get("/sector-weights", response_model=Dict[str, Any])
 def get_sector_weights(user_id: str = "sean") -> Dict[str, Any]:

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from services.base.scheduler_service import SchedulerService
 from services.kis.kis_ws_service import kis_ws_service
 from routers import analysis, market, alerts, portfolio, reports, trading, auth as auth_router
+from routers.auth import verify_token
 import os
 import asyncio
 from services.strategy.trading_strategy_service import TradingStrategyService # 추가
@@ -64,7 +65,6 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "인증이 필요합니다."})
     token = auth_header[7:]
     try:
-        from routers.auth import verify_token
         verify_token(token)
     except ValueError as e:
         return JSONResponse(status_code=401, content={"detail": str(e)})
