@@ -40,7 +40,7 @@ class Financials(Base):
     __tablename__ = 'financials'
     
     id = Column(Integer, primary_key=True)
-    stock_id = Column(Integer, ForeignKey('stock_meta.id'), nullable=False)
+    stock_id = Column(Integer, ForeignKey('stock_meta.id'), nullable=False, index=True)
     name = Column(String(100)) # 조인 없이 확인하기 위한 종목명 필드 추가
     base_date = Column(DateTime, nullable=False, index=True) # 조회/기준 일자
     

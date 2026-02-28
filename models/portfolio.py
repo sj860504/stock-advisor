@@ -23,7 +23,7 @@ class PortfolioHolding(Base):
     __tablename__ = 'portfolio_holdings'
     
     id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey('portfolios.id'))
+    portfolio_id = Column(Integer, ForeignKey('portfolios.id'), index=True)
     ticker = Column(String(20), index=True)
     name = Column(String(100))
     quantity = Column(Integer, default=0)

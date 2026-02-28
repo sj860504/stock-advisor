@@ -13,6 +13,16 @@ KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 REQUEST_TIMEOUT_DEFAULT = 5
 
 
+def _safe_float(val, default: float = 0.0) -> float:
+    """문자열/None을 float으로 변환. 실패 시 default 반환."""
+    try:
+        if val is None or str(val).strip() == "":
+            return default
+        return float(val)
+    except Exception:
+        return default
+
+
 class KisFetcher:
     """
     한국투자증권(KIS) REST API를 통해 원시 데이터를 수집하는 헬퍼 클래스
@@ -105,26 +115,20 @@ class KisFetcher:
                 if not output:
                     logger.warning(f"⚠️ Domestic price output empty for {ticker}: {response_data.get('msg1')}")
                     return {}
-                def safe_float(val, default=0.0):
-                    try:
-                        if val is None or str(val).strip() == "": return default
-                        return float(val)
-                    except: return default
-
                 return {
-                    "price": safe_float(output.get('stck_prpr')),
-                    "prev_close": safe_float(output.get('stck_sdpr')),
-                    "change": safe_float(output.get('prdy_vrss')),
-                    "change_rate": safe_float(output.get('prdy_ctrt')),
-                    "per": safe_float(output.get('per')),
-                    "pbr": safe_float(output.get('pbr')),
-                    "eps": safe_float(output.get('eps')),
-                    "bps": safe_float(output.get('bps')),
-                    "market_cap": safe_float(output.get('lstn_stcn')) * safe_float(output.get('stck_prpr')) if output.get('lstn_stcn') else 0,
-                    "high52": safe_float(output.get('h52_curr_prc')),
-                    "low52": safe_float(output.get('l52_curr_prc')),
-                    "volume": safe_float(output.get('acml_vol')),
-                    "amount": safe_float(output.get('acml_tr_pbmn')),
+                    "price": _safe_float(output.get('stck_prpr')),
+                    "prev_close": _safe_float(output.get('stck_sdpr')),
+                    "change": _safe_float(output.get('prdy_vrss')),
+                    "change_rate": _safe_float(output.get('prdy_ctrt')),
+                    "per": _safe_float(output.get('per')),
+                    "pbr": _safe_float(output.get('pbr')),
+                    "eps": _safe_float(output.get('eps')),
+                    "bps": _safe_float(output.get('bps')),
+                    "market_cap": _safe_float(output.get('lstn_stcn')) * _safe_float(output.get('stck_prpr')) if output.get('lstn_stcn') else 0,
+                    "high52": _safe_float(output.get('h52_curr_prc')),
+                    "low52": _safe_float(output.get('l52_curr_prc')),
+                    "volume": _safe_float(output.get('acml_vol')),
+                    "amount": _safe_float(output.get('acml_tr_pbmn')),
                     "name": output.get('hts_kor_isnm', ticker),
                     "raw": output
                 }
@@ -168,27 +172,20 @@ class KisFetcher:
                 if output_raw:
                     # 스키마를 통한 검증 및 파싱
                     output = OverseasDetailPriceResponse(**output_raw)
-                    
-                    def safe_float(val, default=0.0):
-                        try:
-                            if val is None or str(val).strip() == "": return default
-                            return float(val)
-                        except: return default
-
                     return {
-                        "price": safe_float(output.last),
-                        "prev_close": safe_float(output.base),
-                        "change": safe_float(output.t_xdif or output.p_xdif), # 당일/전일 대비 유연하게
-                        "change_rate": safe_float(output.t_xrat or output.p_xrat),
-                        "per": safe_float(output.perx),
-                        "pbr": safe_float(output.pbrx),
-                        "eps": safe_float(output.epsx),
-                        "bps": safe_float(output.bpsx),
-                        "market_cap": safe_float(output.tomv),
-                        "high52": safe_float(output.h52p),
-                        "low52": safe_float(output.l52p),
-                        "volume": safe_float(output.tvol),
-                        "amount": safe_float(output.tamt),
+                        "price": _safe_float(output.last),
+                        "prev_close": _safe_float(output.base),
+                        "change": _safe_float(output.t_xdif or output.p_xdif),
+                        "change_rate": _safe_float(output.t_xrat or output.p_xrat),
+                        "per": _safe_float(output.perx),
+                        "pbr": _safe_float(output.pbrx),
+                        "eps": _safe_float(output.epsx),
+                        "bps": _safe_float(output.bpsx),
+                        "market_cap": _safe_float(output.tomv),
+                        "high52": _safe_float(output.h52p),
+                        "low52": _safe_float(output.l52p),
+                        "volume": _safe_float(output.tvol),
+                        "amount": _safe_float(output.tamt),
                         "name": output.hnam or ticker,
                         "raw": output.model_dump()
                     }
@@ -219,19 +216,12 @@ class KisFetcher:
                 response_data = response.json()
                 output = response_data.get("output", {})
                 if output:
-                    def safe_float(val, default=0.0):
-                        try:
-                            if val is None or str(val).strip() == "":
-                                return default
-                            return float(val)
-                        except Exception:
-                            return default
-                    price = safe_float(output.get("last")) or safe_float(output.get("clos"))
+                    price = _safe_float(output.get("last")) or _safe_float(output.get("clos"))
                     return {
                         "price": price,
-                        "prev_close": safe_float(output.get('base')),
-                        "change": safe_float(output.get('diff')),
-                        "change_rate": safe_float(output.get('rate')),
+                        "prev_close": _safe_float(output.get('base')),
+                        "change": _safe_float(output.get('diff')),
+                        "change_rate": _safe_float(output.get('rate')),
                         "name": output.get('hnam', ticker),
                         "raw": output
                     }

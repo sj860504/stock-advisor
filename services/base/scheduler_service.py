@@ -587,6 +587,7 @@ class SchedulerService:
         tier: 'high' = WebSocket 실시간, 'low' = 5분 폴링
         """
         all_states = MarketDataService.get_all_states()
+        tiers = MarketDataService._tiers  # 루프 내 반복 호출 방지
         result = {}
         for ticker, ticker_state in all_states.items():
             result[ticker] = {
@@ -605,6 +606,6 @@ class SchedulerService:
                 "ema60": ticker_state.ema.get(60),
                 "ema120": ticker_state.ema.get(120),
                 "ema200": ticker_state.ema.get(200),
-                "tier": MarketDataService.get_tier(ticker),
+                "tier": tiers.get(ticker, "low"),
             }
         return result
