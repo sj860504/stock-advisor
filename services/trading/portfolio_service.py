@@ -14,6 +14,7 @@ from services.market.stock_meta_service import StockMetaService
 from services.market.ticker_service import TickerService
 from services.notification.alert_service import AlertService
 from utils.logger import get_logger
+from utils.market import is_kr, filter_kr, filter_us, profit_pct
 
 logger = get_logger("portfolio_service")
 
@@ -161,7 +162,7 @@ class PortfolioService:
             if qty <= 0:
                 continue
 
-            is_kr = ticker.isdigit()
+            is_kr_ticker = is_kr(ticker)
             parsed = HoldingSchema(
                 ticker=ticker,
                 name=item.get('prdt_name') or item.get('ovrs_item_name') or item.get('hldg_pdno_name') or ticker,
@@ -170,7 +171,7 @@ class PortfolioService:
                 current_price=float(item.get('prpr') or item.get('ovrs_now_pric') or item.get('now_pric') or 0),
                 sector=DEFAULT_SECTOR,
             )
-            if is_kr:
+            if is_kr_ticker:
                 holdings.append(parsed)
             else:
                 us_holdings_by_ticker[ticker] = parsed
@@ -181,7 +182,7 @@ class PortfolioService:
                 ticker = str(
                     item.get("ovrs_pdno") or item.get("pdno") or item.get("symb") or item.get("ovrs_item_cd") or ""
                 ).strip().upper()
-                if not ticker or ticker.isdigit():
+                if not ticker or is_kr(ticker):
                     continue
                 qty = int(float(item.get("ovrs_cblc_qty") or item.get("hldg_qty") or item.get("ord_psbl_qty") or 0))
                 if qty <= 0:
@@ -260,8 +261,8 @@ class PortfolioService:
         usd_cash = cls.get_usd_cash_balance()
         exchange_rate = MacroService.get_exchange_rate()
 
-        kr_holdings = [h for h in holdings if str(h.get("ticker", "")).isdigit()]
-        us_holdings = [h for h in holdings if not str(h.get("ticker", "")).isdigit()]
+        kr_holdings = filter_kr(holdings)
+        us_holdings = filter_us(holdings)
 
         results = []
         kr_invested = 0
@@ -278,7 +279,7 @@ class PortfolioService:
             results.append({
                 **h,
                 'profit': round(val - inv, 2),
-                'profit_pct': round(((val - inv)/inv)*100, 2) if inv > 0 else 0,
+                'profit_pct': profit_pct(val, inv),
                 'market': 'KR'
             })
 
@@ -292,7 +293,7 @@ class PortfolioService:
                 **h,
                 'profit_usd': round(val_usd - inv_usd, 2),
                 'profit_krw': round((val_usd - inv_usd) * exchange_rate, 2),
-                'profit_pct': round(((val_usd - inv_usd)/inv_usd)*100, 2) if inv_usd > 0 else 0,
+                'profit_pct': profit_pct(val_usd, inv_usd),
                 'market': 'US'
             })
         
@@ -307,13 +308,13 @@ class PortfolioService:
                 'total_invested': round(total_invested, 2),
                 'total_current': round(total_current, 2),
                 'profit': round(total_current - total_invested, 2),
-                'profit_pct': round(((total_current-total_invested)/total_invested)*100, 2) if total_invested > 0 else 0
+                'profit_pct': profit_pct(total_current, total_invested)
             },
             'kr': {
                 'invested': round(kr_invested, 2),
                 'current': round(kr_current, 2),
                 'profit': round(kr_current - kr_invested, 2),
-                'profit_pct': round(((kr_current-kr_invested)/kr_invested)*100, 2) if kr_invested > 0 else 0,
+                'profit_pct': profit_pct(kr_current, kr_invested),
                 'cash': round(cash, 2),
                 'total': round(kr_current + cash, 2)
             },
@@ -324,7 +325,7 @@ class PortfolioService:
                 'current_krw': round(us_current_krw, 2),
                 'profit_usd': round(us_current_usd - us_invested_usd, 2),
                 'profit_krw': round(us_current_krw - us_invested_krw, 2),
-                'profit_pct': round(((us_current_usd-us_invested_usd)/us_invested_usd)*100, 2) if us_invested_usd > 0 else 0,
+                'profit_pct': profit_pct(us_current_usd, us_invested_usd),
                 'cash_usd': round(usd_cash, 2),
                 'cash_krw': round(usd_cash * exchange_rate, 2),
                 'total_krw': round(us_current_krw + usd_cash * exchange_rate, 2)
@@ -340,9 +341,9 @@ class PortfolioService:
         if exchange_rate <= 0:
             exchange_rate = MacroService.get_exchange_rate()
         
-        kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit()]
-        us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit()]
-        
+        kr_holdings = filter_kr(holdings)
+        us_holdings = filter_us(holdings)
+
         kr_value = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in kr_holdings)
         us_value_usd = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in us_holdings)
         us_value_krw = us_value_usd * exchange_rate

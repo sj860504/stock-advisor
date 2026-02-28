@@ -7,6 +7,7 @@ from datetime import datetime
 from config import Config
 from services.market.market_hour_service import MarketHourService
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("kis_service")
 
@@ -393,7 +394,7 @@ class KisService:
             return {"status": "failed", "msg": "사후장 주문은 모의투자(VTS)에서 지원하지 않습니다."}
         if not Config.KIS_ENABLE_AFTER_HOURS_ORDER:
             return {"status": "failed", "msg": "사후장 주문이 비활성화되어 있습니다. (KIS_ENABLE_AFTER_HOURS_ORDER=false)"}
-        if not ticker.isdigit():
+        if not is_kr(ticker):
             return {"status": "failed", "msg": "사후장 주문은 국내 주식 티커만 지원합니다."}
         if not MarketHourService.is_kr_after_hours_open():
             return {"status": "failed", "msg": "한국 사후장 주문 가능 시간이 아닙니다."}

@@ -1,6 +1,7 @@
 import re
 from typing import Optional
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("ticker_service")
 
@@ -56,7 +57,7 @@ class TickerService:
         if not ticker:
             return "UNKNOWN"
 
-        if ticker.isdigit():  # 005930
+        if is_kr(ticker):  # 005930
             return "KR"
         if ticker.endswith(".KS") or ticker.endswith(".KQ"):
             return "KR"

@@ -2,6 +2,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List, Union
 
+from utils.market import is_kr, filter_kr, filter_us
+
 from models.schemas import ComprehensiveReport
 
 
@@ -173,8 +175,8 @@ class ReportService:
             except Exception:
                 pass
 
-        kr_holdings = [h for h in holdings if str(h.get("ticker", "")).isdigit()]
-        us_holdings = [h for h in holdings if not str(h.get("ticker", "")).isdigit()]
+        kr_holdings = filter_kr(holdings)
+        us_holdings = filter_us(holdings)
 
         kr_stock_val = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in kr_holdings)
         kr_invested = sum(h.get("buy_price", 0) * h.get("quantity", 0) for h in kr_holdings)
@@ -259,10 +261,9 @@ class ReportService:
         def _aggregate_by_ticker(trade_list: List) -> dict:
             grouped = defaultdict(lambda: {"qty": 0, "total_amt": 0.0, "is_kr": True})
             for t in trade_list:
-                is_kr = str(t.ticker).isdigit()
                 grouped[t.ticker]["qty"] += t.quantity
                 grouped[t.ticker]["total_amt"] += t.quantity * t.price
-                grouped[t.ticker]["is_kr"] = is_kr
+                grouped[t.ticker]["is_kr"] = is_kr(t.ticker)
             return grouped
 
         if buys:

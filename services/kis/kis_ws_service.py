@@ -7,6 +7,7 @@ import requests
 from config import Config
 from services.market.market_data_service import MarketDataService
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("kis_ws_service")
 
@@ -89,7 +90,7 @@ class KisWsService:
                         self.subscribed_tickers.clear()
                         for ticker, market in saved_items:
                             if not market:
-                                market = "KRX" if ticker.isdigit() else "NAS"
+                                market = "KRX" if is_kr(ticker) else "NAS"
                             await self.subscribe(ticker, market=market)
                             await asyncio.sleep(1.0) # 재구독 속도 조절 (TPS 준수)
 
@@ -168,7 +169,7 @@ class KisWsService:
             if tr_id == "H0STCNT0":
                 ticker = parts[2]
                 # KIS 일부 메시지는 parts[2]가 종목코드가 아니라 순번('001','002') 등으로 옴 → 6자리 한국 종목만 처리
-                if ticker.isdigit() and len(ticker) == 6:
+                if is_kr(ticker) and len(ticker) == 6:
                     self.parse_realtime_price(ticker, data_str)
             elif tr_id == "HDFSUSP0":
                 values = data_str.split('^')

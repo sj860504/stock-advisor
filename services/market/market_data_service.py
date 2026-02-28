@@ -9,6 +9,7 @@ from services.analysis.indicator_service import IndicatorService
 from services.analysis.dcf_service import DcfService
 from services.market.data_service import DataService
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("market_data_service")
 
@@ -87,7 +88,7 @@ class MarketDataService:
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-        is_kr_ticker = ticker.isdigit()
+        is_kr_ticker = is_kr(ticker)
         if is_kr_ticker and is_us_open:
             logger.debug(f"⏭️ {ticker} 한국 종목 스킵 (미국 시장 개장 중)")
             return True
@@ -103,8 +104,8 @@ class MarketDataService:
         from services.kis.fetch.kis_fetcher import KisFetcher
         from services.market.stock_meta_service import StockMetaService
         token = KisService.get_access_token()
-        api_ticker = cls._normalize_kr_ticker(ticker) if ticker.isdigit() else ticker
-        if ticker.isdigit():
+        api_ticker = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
+        if is_kr(ticker):
             return KisFetcher.fetch_domestic_price(token, api_ticker)
         meta_row = StockMetaService.get_stock_meta(ticker)
         meta = {"api_market_code": getattr(meta_row, "api_market_code", "NAS")}
@@ -136,7 +137,7 @@ class MarketDataService:
         """KIS API 호출 기반 full warm-up. 세마포어 진입 후 호출해야 합니다."""
         from services.market.stock_meta_service import StockMetaService
 
-        api_ticker  = cls._normalize_kr_ticker(ticker) if ticker.isdigit() else ticker
+        api_ticker  = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
         basic_info  = cls._fetch_basic_price(ticker)
         df          = DataService.get_price_history(api_ticker, days=300)
 
@@ -210,7 +211,7 @@ class MarketDataService:
 
         filtered = [
             t for t in new_tickers
-            if (t.isdigit() and analyze_kr) or (not t.isdigit() and analyze_us)
+            if (is_kr(t) and analyze_kr) or (not is_kr(t) and analyze_us)
         ]
         if not filtered:
             logger.info(f"⏭️ 모든 신규 종목이 시장 개장 필터로 제외됨 (KR={is_kr_open}, US={is_us_open})")

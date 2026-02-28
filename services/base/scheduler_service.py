@@ -15,6 +15,7 @@ from services.market.market_hour_service import MarketHourService
 from services.config.settings_service import SettingsService
 from services.market.stock_meta_service import StockMetaService
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("scheduler")
 
@@ -187,11 +188,11 @@ class SchedulerService:
                 _norm_ticker(h.get('ticker') if isinstance(h, dict) else getattr(h, "ticker", ""))
                 for h in portfolio
             ]
-            kr_holdings = {t for t in holdings_raw if t and t.isdigit() and len(t) == 6}
+            kr_holdings = {t for t in holdings_raw if t and is_kr(t) and len(t) == 6}
             us_holdings = {t for t in holdings_raw if t and t.isalpha()}
 
             all_kr = list(dict.fromkeys(  # 순서 유지하면서 중복 제거 (시총 순위 보존)
-                [t for t in kr_tickers if t and t.isdigit() and len(t) == 6]
+                [t for t in kr_tickers if t and is_kr(t) and len(t) == 6]
                 + list(kr_holdings)
             ))
             all_us = list(dict.fromkeys(
@@ -236,7 +237,7 @@ class SchedulerService:
             # ── 4. WebSocket 구독: HIGH 티어만 ────────────────────────────
             if watch_kr:
                 for ticker in all_kr:
-                    if ticker in kr_high_set and len(ticker) == 6 and ticker.isdigit():
+                    if ticker in kr_high_set and len(ticker) == 6 and is_kr(ticker):
                         await kis_ws_service.subscribe(ticker, market="KRX")
                         await asyncio.sleep(0.05)
 
@@ -371,14 +372,14 @@ class SchedulerService:
         # 개장 시장 기준으로 대상 필터링
         active_tickers = []
         for t in low_tickers:
-            is_kr = t.isdigit()
-            if is_kr and is_kr_open and not is_us_open:
+            is_kr_t = is_kr(t)
+            if is_kr_t and is_kr_open and not is_us_open:
                 active_tickers.append(t)
-            elif not is_kr and is_us_open and not is_kr_open:
+            elif not is_kr_t and is_us_open and not is_kr_open:
                 active_tickers.append(t)
-            elif is_kr and is_kr_open:
+            elif is_kr_t and is_kr_open:
                 active_tickers.append(t)
-            elif not is_kr and is_us_open:
+            elif not is_kr_t and is_us_open:
                 active_tickers.append(t)
 
         if not active_tickers:
@@ -390,7 +391,7 @@ class SchedulerService:
             from services.kis.fetch.kis_fetcher import KisFetcher
             token = KisService.get_access_token()
             us_meta_map = {}
-            us_tickers_in_low = [t for t in active_tickers if not t.isdigit()]
+            us_tickers_in_low = [t for t in active_tickers if not is_kr(t)]
             if us_tickers_in_low:
                 us_meta_map = {
                     m.ticker: m for m in StockMetaService.get_stock_meta_bulk(us_tickers_in_low)
@@ -399,7 +400,7 @@ class SchedulerService:
             success, fail = 0, 0
             for ticker in active_tickers:
                 try:
-                    if ticker.isdigit():
+                    if is_kr(ticker):
                         info = KisFetcher.fetch_domestic_price(token, ticker)
                     else:
                         meta_row = us_meta_map.get(ticker)

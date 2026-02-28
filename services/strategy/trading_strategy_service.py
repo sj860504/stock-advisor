@@ -15,6 +15,7 @@ from services.notification.alert_service import AlertService
 from services.config.settings_service import SettingsService
 from services.trading.order_service import OrderService
 from utils.logger import get_logger
+from utils.market import is_kr, filter_kr, filter_us
 
 logger = get_logger("strategy_service")
 
@@ -116,7 +117,7 @@ class TradingStrategyService:
 
     @classmethod
     def _get_ticker_market(cls, ticker: str) -> str:
-        return "KR" if ticker.isdigit() else "US"
+        return "KR" if is_kr(ticker) else "US"
 
     @classmethod
     def _get_ticker_sector(cls, ticker: str, holding: Optional[dict] = None) -> str:
@@ -154,7 +155,7 @@ class TradingStrategyService:
             if val <= 0:
                 continue
             ticker = h.get("ticker", "")
-            if not ticker.isdigit():   # 미국 주식 → KRW 변환
+            if not is_kr(ticker):   # 미국 주식 → KRW 변환
                 val *= exchange_rate
             grp = cls._get_sector_group(ticker, h)
             group_values[grp] = group_values.get(grp, 0.0) + val
@@ -268,8 +269,8 @@ class TradingStrategyService:
         sector = cls._get_ticker_sector(ticker, holding)
 
         # 한국/미국 자산 분리 계산
-        kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit()]
-        us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit()]
+        kr_holdings = filter_kr(holdings)
+        us_holdings = filter_us(holdings)
         
         kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings if h.get("quantity", 0) > 0)
         # 미국 주식은 USD 가격이므로 KRW로 변환
@@ -374,7 +375,7 @@ class TradingStrategyService:
     @classmethod
     def _is_near_market_close(cls, ticker: str, minutes: int = 5) -> bool:
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        if ticker.isdigit():
+        if is_kr(ticker):
             tz = pytz.timezone("Asia/Seoul")
             now = datetime.now(tz)
             kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
@@ -442,7 +443,8 @@ class TradingStrategyService:
         current_price = getattr(state, 'current_price', 0)
 
         allow_ext = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        if (ticker.isdigit() and not MarketHourService.is_kr_market_open(allow_extended=allow_ext)) or            (not ticker.isdigit() and not MarketHourService.is_us_market_open(allow_extended=allow_ext)): return False
+        if (is_kr(ticker) and not MarketHourService.is_kr_market_open(allow_extended=allow_ext)) or \
+           (not is_kr(ticker) and not MarketHourService.is_us_market_open(allow_extended=allow_ext)): return False
 
         tick_state = cls._load_state()
         user_state = tick_state.setdefault(user_id, {})
@@ -502,10 +504,10 @@ class TradingStrategyService:
         portfolio = PortfolioService.load_portfolio(user_id)
         holdings = [_norm_ticker(h.get('ticker')) for h in portfolio]
         
-        kr_holdings = [t for t in holdings if t and t.isdigit() and len(t) == 6]
+        kr_holdings = [t for t in holdings if t and is_kr(t) and len(t) == 6]
         us_holdings = [t for t in holdings if t and t.isalpha()]
-        
-        all_kr = list(set([t for t in kr_tickers if t and t.isdigit() and len(t) == 6] + kr_holdings))
+
+        all_kr = list(set([t for t in kr_tickers if t and is_kr(t) and len(t) == 6] + kr_holdings))
         all_us = list(set([t for t in us_tickers if t and t.isalpha()] + us_holdings))
         target_universe = set(all_kr + all_us)
         
@@ -519,8 +521,8 @@ class TradingStrategyService:
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
 
-        kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit() and h.get('quantity', 0) > 0]
-        us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit() and h.get('quantity', 0) > 0]
+        kr_holdings = [h for h in filter_kr(holdings) if h.get('quantity', 0) > 0]
+        us_holdings = [h for h in filter_us(holdings) if h.get('quantity', 0) > 0]
 
         kr_stock_val = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in kr_holdings)
         us_stock_usd = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in us_holdings)
@@ -552,9 +554,9 @@ class TradingStrategyService:
         usd_cash = PortfolioService.get_usd_cash_balance()
         exchange_rate = MacroService.get_exchange_rate()
         
-        kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit()]
-        us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit()]
-        
+        kr_holdings = filter_kr(holdings)
+        us_holdings = filter_us(holdings)
+
         kr_market_value = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in kr_holdings)
         us_market_value_usd = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in us_holdings)
         us_market_value_krw = us_market_value_usd * exchange_rate
@@ -587,7 +589,7 @@ class TradingStrategyService:
         
         holdings_map = {h['ticker']: h for h in holdings}
         for ticker, ticker_state in list(all_states.items()):
-            is_kr_ticker = ticker.isdigit()
+            is_kr_ticker = is_kr(ticker)
             if (is_kr_ticker and not analyze_kr) or (not is_kr_ticker and not analyze_us):
                 continue
             if not getattr(ticker_state, 'is_ready', False):
@@ -908,8 +910,7 @@ class TradingStrategyService:
 
         # 시장별 목표 현금 비중 (전달받지 못한 경우 기본값 사용)
         if market_cash_ratio is None:
-            is_kr = ticker.isdigit()
-            market = 'KR' if is_kr else 'US'
+            market = 'KR' if is_kr(ticker) else 'US'
             market_cash_ratio = cls._get_target_cash_ratio(market, regime)
         target_cash_ratio = market_cash_ratio
         base_score = SettingsService.get_int("STRATEGY_BASE_SCORE", 50)
@@ -1120,26 +1121,26 @@ class TradingStrategyService:
     def _check_market_hours(cls, ticker: str) -> bool:
         """시장 운영 시간 체크"""
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        return MarketHourService.is_kr_market_open(allow_extended=allow_extended) if ticker.isdigit() else MarketHourService.is_us_market_open(allow_extended=allow_extended)
+        return MarketHourService.is_kr_market_open(allow_extended=allow_extended) if is_kr(ticker) else MarketHourService.is_us_market_open(allow_extended=allow_extended)
 
     @classmethod
     def _is_cash_ratio_sufficient(cls, ticker: str, holdings: list, cash_balance: float, total_assets: float, exchange_rate: float, target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict) -> bool:
         """목표 현금 비중 조건 충족 여부 검사"""
-        is_kr_ticker = ticker.isdigit()
+        is_kr_ticker = is_kr(ticker)
         regime_status = (macro or {}).get('market_regime', {}).get('status', 'Neutral').upper()
         target_cash_ratio = target_cash_ratio_kr if is_kr_ticker else target_cash_ratio_us
-        
+
         if target_cash_ratio is None:
             target_cash_ratio = cls._get_target_cash_ratio('KR' if is_kr_ticker else 'US', regime_status)
-        
+
         if is_kr_ticker:
-            kr_holdings = [h for h in (holdings or []) if str(h.get('ticker', '')).isdigit()]
-            kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings if h.get("quantity", 0) > 0)
+            kr_holdings = [h for h in filter_kr(holdings or []) if h.get("quantity", 0) > 0]
+            kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings)
             kr_total = kr_market_value + cash_balance
             cash_ratio = cash_balance / kr_total if kr_total > 0 else 0
         else:
             from services.trading.portfolio_service import PortfolioService
-            us_holdings = [h for h in (holdings or []) if not str(h.get('ticker', '')).isdigit()]
+            us_holdings = [h for h in filter_us(holdings or []) if h.get("quantity", 0) > 0]
             us_market_value_krw = sum(cls._get_holding_value(h) * exchange_rate for h in us_holdings if h.get("quantity", 0) > 0)
             usd_cash = PortfolioService.get_usd_cash_balance()
             us_cash_krw = usd_cash * exchange_rate
@@ -1181,8 +1182,8 @@ class TradingStrategyService:
         meta = StockMetaService.get_stock_meta(ticker)
         name = (holding.get("name") if holding and holding.get("name")
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
-        is_kr = ticker.isdigit()
-        price_str = f"{current_price:,.0f}원" if is_kr else f"${current_price:,.2f}"
+        is_kr_flag = is_kr(ticker)
+        price_str = f"{current_price:,.0f}원" if is_kr_flag else f"${current_price:,.2f}"
         if side == "buy":
             msg = (
                 f"🔵 *[매수 체결 - 틱매매]*\n"
@@ -1194,7 +1195,7 @@ class TradingStrategyService:
         else:
             buy_price = float(holding.get("buy_price", 0)) if holding else 0
             profit_amt = (current_price - buy_price) * qty if buy_price else 0
-            profit_amt_str = f"{profit_amt:+,.0f}원" if is_kr else f"${profit_amt:+,.2f}"
+            profit_amt_str = f"{profit_amt:+,.0f}원" if is_kr_flag else f"${profit_amt:+,.2f}"
             msg = (
                 f"🔴 *[매도 체결 - 틱매매]*\n"
                 f"• 종목: {ticker} {name}\n"
@@ -1212,9 +1213,9 @@ class TradingStrategyService:
         meta = StockMetaService.get_stock_meta(ticker)
         name = (holding.get("name") if holding and holding.get("name")
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
-        is_kr = ticker.isdigit()
-        currency = "원" if is_kr else "USD"
-        price_str = f"{current_price:,.0f}{currency}" if is_kr else f"${current_price:,.2f}"
+        is_kr_flag = is_kr(ticker)
+        currency = "원" if is_kr_flag else "USD"
+        price_str = f"{current_price:,.0f}{currency}" if is_kr_flag else f"${current_price:,.2f}"
 
         if side == "buy":
             msg = (
@@ -1253,16 +1254,16 @@ class TradingStrategyService:
 
         executed = False
         trade_qty = 0
-        is_kr = ticker.isdigit()
+        is_kr_flag = is_kr(ticker)
         state = MarketDataService.get_state(ticker)
         change_rate = getattr(state, 'change_rate', 0.0)
 
         if side == 'buy':
             # 현금 부족 시 매수 차단 (마진 방지)
-            if is_kr and cash_balance <= 0:
+            if is_kr_flag and cash_balance <= 0:
                 logger.info(f"⏭️ {ticker} 원화 현금 부족 ({cash_balance:,.0f}원). 매수 차단.")
                 return False
-            if not is_kr:
+            if not is_kr_flag:
                 from services.trading.portfolio_service import PortfolioService as _PS
                 _usd_cash = _PS.get_usd_cash_balance()
                 if _usd_cash <= 0:
@@ -1281,8 +1282,8 @@ class TradingStrategyService:
                 
             from services.trading.portfolio_service import PortfolioService
             holdings = holdings or PortfolioService.load_portfolio(user_id)
-            kr_holdings = [h for h in holdings if str(h.get('ticker', '')).isdigit()]
-            us_holdings = [h for h in holdings if not str(h.get('ticker', '')).isdigit()]
+            kr_holdings = filter_kr(holdings)
+            us_holdings = filter_us(holdings)
             kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings if h.get("quantity", 0) > 0)
             us_market_value_krw = sum(cls._get_holding_value(h) * exchange_rate for h in us_holdings if h.get("quantity", 0) > 0)
             usd_cash = PortfolioService.get_usd_cash_balance()
@@ -1290,8 +1291,8 @@ class TradingStrategyService:
             us_assets_krw = us_market_value_krw + (usd_cash * exchange_rate)  # US 포트폴리오 총액
 
             # 매수 규모는 해당 시장 포트폴리오 기준으로 계산
-            market_total_krw = kr_assets if is_kr else us_assets_krw
-            quantity, est_krw, final_price = cls._calculate_buy_quantity(score, total_assets, cash_balance, current_price, exchange_rate, is_kr, market_total_krw=market_total_krw)
+            market_total_krw = kr_assets if is_kr_flag else us_assets_krw
+            quantity, est_krw, final_price = cls._calculate_buy_quantity(score, total_assets, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw)
             if quantity > 0:
                 
                 ok, limit_reasons = cls._passes_allocation_limits(ticker, est_krw, holdings, total_assets, cash_balance, holding, kr_assets, us_assets_krw)
@@ -1302,7 +1303,7 @@ class TradingStrategyService:
                 trade_qty = quantity
                 logger.info(f"⚖️ {ticker} 분할 매수 예정 ({quantity}주)")
                 
-                order_result = KisService.send_order(ticker, quantity, 0, "buy") if is_kr else KisService.send_overseas_order(ticker, quantity, round(float(current_price), 2), "buy")
+                order_result = KisService.send_order(ticker, quantity, 0, "buy") if is_kr_flag else KisService.send_overseas_order(ticker, quantity, round(float(current_price), 2), "buy")
                 if order_result.get("status") == "success":
                     OrderService.record_trade(ticker, "buy", quantity, final_price, "Strategy execution", "v3_strategy")
                     executed = True
@@ -1416,7 +1417,7 @@ class TradingStrategyService:
                 if executed:
                     sells_executed += 1
                     sell_val = current_price * max(1, int(h.get("quantity", 0) / 3))
-                    cash_balance += sell_val * (exchange_rate if not ticker.isdigit() else 1.0)
+                    cash_balance += sell_val * (exchange_rate if not is_kr(ticker) else 1.0)
                     result["sold"].append({
                         "ticker": ticker, "group": grp,
                         "dev": round(dev, 4), "profit_pct": round(profit_pct, 2),
@@ -1451,7 +1452,7 @@ class TradingStrategyService:
                 score, reasons = cls.calculate_score(
                     ticker, state, holding, macro, user_state,
                     total_assets, cash_balance,
-                    market_cash_ratio=target_cash_kr if ticker.isdigit() else target_cash_us,
+                    market_cash_ratio=target_cash_kr if is_kr(ticker) else target_cash_us,
                 )
                 candidates.append((ticker, state, holding, score, reasons))
 

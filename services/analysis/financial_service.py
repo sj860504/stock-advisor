@@ -6,6 +6,7 @@ import pandas as pd
 import math
 from config import Config
 from utils.logger import get_logger
+from utils.market import is_kr
 from services.kis.kis_service import KisService
 from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 from services.market.stock_meta_service import StockMetaService
@@ -54,7 +55,7 @@ class FinancialService:
             )
 
             # 3. KIS 원시 데이터 수집 → 응답 DTO로 수신 후 분석
-            if ticker.isdigit():
+            if is_kr(ticker):
                 kis_payload = KisService.get_financials(ticker, meta=kis_request_meta)
                 kis_financials_response = KisFinancialsResponse(
                     output=kis_payload.get("raw") or kis_payload.get("output") or {}
@@ -155,7 +156,7 @@ class FinancialService:
                 return dcf_input
 
             # 2. yfinance 에서 실제 FCF 데이터 조회 (EPS*PER 동어반복 방지)
-            market_type = "KR" if ticker.isdigit() else "US"
+            market_type = "KR" if is_kr(ticker) else "US"
             yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
             if yf_data and yf_data.fcf_per_share and yf_data.fcf_per_share > 0:
                 dcf_input = DcfInputData(
@@ -192,7 +193,7 @@ class FinancialService:
                 return dcf_input
 
             # 4. KIS API로 원시 데이터 조회 후 DCF 입력 추출
-            if ticker.isdigit():
+            if is_kr(ticker):
                 kis_payload = KisService.get_financials(ticker)
                 dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
             else:

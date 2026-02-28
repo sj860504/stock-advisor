@@ -3,6 +3,8 @@ import json
 import os
 from typing import Optional
 
+from utils.market import is_kr
+
 class ExecutionService:
     """
     한국투자증권(KIS) API를 통한 실시간 주문 실행 서비스
@@ -47,15 +49,15 @@ class ExecutionService:
         url = f"{cls._base_url}/uapi/domestic-stock/v1/trading/order-cash" # 국내 주식 기본 주문 URL
         
         # 해외 주식은 URL/헤더가 다름
-        if not ticker.isdigit(): # 해외 주식(미국 등) 종목
+        if not is_kr(ticker): # 해외 주식(미국 등) 종목
             url = f"{cls._base_url}/uapi/overseas-stock/v1/trading/order"
-            
+
         headers = {
             "Content-Type": "application/json",
             "authorization": f"Bearer {cls._access_token}",
             "appkey": os.getenv("KIS_APP_KEY"),
             "appsecret": os.getenv("KIS_APP_SECRET"),
-            "tr_id": "VTTT0001U" if ticker.isdigit() else "VTTT1002U" # 모의투자 매수 TR ID
+            "tr_id": "VTTT0001U" if is_kr(ticker) else "VTTT1002U" # 모의투자 매수 TR ID
         }
         
         # 실제 주문 데이터는 계좌 정보가 필요

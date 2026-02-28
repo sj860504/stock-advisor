@@ -7,6 +7,7 @@ from models.trade_history import TradeHistory
 from models.portfolio import PortfolioHolding
 from services.market.stock_meta_service import StockMetaService
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("order_service")
 
@@ -22,7 +23,7 @@ class OrderService:
     ) -> Tuple[bool, str]:
         """단일 종목 매도를 실행하고 (성공 여부, 오류 메시지)를 반환합니다."""
         from services.kis.kis_service import KisService
-        is_us = not ticker.isdigit()
+        is_us = not is_kr(ticker)
         if is_us:
             if current_price <= 0:
                 return False, f"{ticker} 현재가 정보 없음"

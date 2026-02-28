@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from typing import Optional
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, scoped_session
@@ -9,6 +10,7 @@ from models.portfolio import Portfolio, PortfolioHolding
 from models.trade_history import TradeHistory
 from models.settings import Settings
 from utils.logger import get_logger
+from utils.market import is_kr
 
 logger = get_logger("stock_meta_service")
 
@@ -72,6 +74,40 @@ class StockMetaService:
         if not cls.Session:
             cls.init_db()
         return cls.Session()
+
+    @classmethod
+    @contextmanager
+    def session_scope(cls):
+        """DB 세션 자동 관리 (commit/rollback/close).
+
+        쓰기 작업에 사용:
+            with StockMetaService.session_scope() as s:
+                s.add(obj); ...
+        """
+        session = cls.get_session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @classmethod
+    @contextmanager
+    def session_ro(cls):
+        """읽기 전용 세션 (commit 없음).
+
+        조회 전용:
+            with StockMetaService.session_ro() as s:
+                return s.query(...).first()
+        """
+        session = cls.get_session()
+        try:
+            yield session
+        finally:
+            session.close()
 
     @classmethod
     def upsert_stock_meta(cls, ticker: str, **kwargs):
@@ -151,7 +187,7 @@ class StockMetaService:
             stock = session.query(StockMeta).filter_by(ticker=ticker).first()
             if not stock:
                 logger.warning(f"Stock meta not found for {ticker}. Creating basic meta first.")
-                stock = cls.upsert_stock_meta(ticker, market_type="KR" if ticker.isdigit() else "US")
+                stock = cls.upsert_stock_meta(ticker, market_type="KR" if is_kr(ticker) else "US")
 
             if base_date is None:
                 base_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -203,7 +239,7 @@ class StockMetaService:
     @classmethod
     def initialize_default_meta(cls, ticker: str):
         """기본 메타 정보 초기화 (404 방지용 기본 경로 설정)"""
-        if ticker.isdigit(): # 국내
+        if is_kr(ticker): # 국내
             return cls.upsert_stock_meta(
                 ticker, 
                 market_type="KR",

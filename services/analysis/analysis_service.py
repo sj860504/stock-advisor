@@ -13,6 +13,7 @@ from models.schemas import (
 )
 from services.analysis.financial_service import FinancialService
 from services.analysis.indicator_service import IndicatorService
+from utils.market import is_kr
 from services.kis.fetch.kis_fetcher import KisFetcher
 from services.kis.kis_service import KisService
 from services.market.data_service import DataService
@@ -40,7 +41,7 @@ class AnalysisService:
         """
         try:
             token = KisService.get_access_token()
-            if ticker.isdigit():
+            if is_kr(ticker):
                 price_data = KisFetcher.fetch_domestic_price(token, ticker)
             else:
                 price_data = KisFetcher.fetch_overseas_price(token, ticker)

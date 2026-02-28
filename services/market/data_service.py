@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 from config import Config
 from utils.logger import get_logger
+from utils.market import is_kr
 from services.kis.kis_service import KisService
 from services.kis.fetch.kis_fetcher import KisFetcher
 from services.market.stock_meta_service import StockMetaService
@@ -260,8 +261,8 @@ class DataService:
         # 기존에 fetch_daily_price, fetch_overseas_daily_price를 이미 구현/정리했음을 가정
         from services.kis.fetch.kis_fetcher import KisFetcher
         # 과거 시세 조회는 시장 운영 시간과 무관하게 허용됨 (MarketHourService.can_fetch_history() 반영)
-        is_kr = ticker.isdigit()
-        
+        is_kr_ticker = is_kr(ticker)
+
         logger.info(f"💾 Fetching history for {ticker} (Last {days} days)...")
 
         try:
@@ -270,7 +271,7 @@ class DataService:
             end_date = datetime.now().strftime("%Y%m%d")
             start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
             
-            if ticker.isdigit():
+            if is_kr_ticker:
                 response = KisFetcher.fetch_daily_price(token, ticker, start_date, end_date)
                 if not response or not response.get("output2"):
                     return pd.DataFrame()
@@ -311,7 +312,7 @@ class DataService:
                     new_end_date = (earliest_date - timedelta(days=1)).strftime("%Y%m%d")
                     
                     logger.info(f"➕ Fetching additional 100 rows for {ticker} (End Date: {new_end_date})")
-                    if ticker.isdigit():
+                    if is_kr(ticker):
                         response2 = KisFetcher.fetch_daily_price(token, ticker, start_date, new_end_date)
                         if response2 and response2.get("output2"):
                             df2 = pd.DataFrame(response2["output2"])
