@@ -302,18 +302,18 @@ class FinancialService:
     def get_overrides(cls) -> dict:
         """DB에 저장된 종목별 DCF 사용자 오버라이드 설정을 ticker → 설정 dict 로 반환."""
         try:
-            session = StockMetaService.get_session()
             from models.stock_meta import DcfOverride
-            override_records = session.query(DcfOverride).all()
-            return {
-                record.ticker: {
-                    "fcf_per_share": record.fcf_per_share,
-                    "beta": record.beta,
-                    "growth_rate": record.growth_rate,
-                    "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            with StockMetaService.session_ro() as session:
+                override_records = session.query(DcfOverride).all()
+                return {
+                    record.ticker: {
+                        "fcf_per_share": record.fcf_per_share,
+                        "beta": record.beta,
+                        "growth_rate": record.growth_rate,
+                        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+                    }
+                    for record in override_records
                 }
-                for record in override_records
-            }
         except Exception:
             return {}
 

@@ -148,26 +148,26 @@ class DataService:
             if len(tickers) < limit:
                 try:
                     from models.stock_meta import StockMeta
-                    session = StockMetaService.get_session()
                     existing = set(tickers)
-                    query = (
-                        session.query(StockMeta)
-                        .filter(StockMeta.market_type == "KR")
-                        .all()
-                    )
-                    for row in query:
-                        meta_ticker = str(getattr(row, "ticker", "") or "").strip()
-                        name_ko = str(getattr(row, "name_ko", "") or "").strip()
-                        if not (meta_ticker.isdigit() and len(meta_ticker) == 6):
-                            continue
-                        if meta_ticker in existing:
-                            continue
-                        if cls._is_fund_like_security(meta_ticker, name_ko, "KR"):
-                            continue
-                        existing.add(meta_ticker)
-                        tickers.append(meta_ticker)
-                        if len(tickers) >= limit:
-                            break
+                    with StockMetaService.session_ro() as session:
+                        query = (
+                            session.query(StockMeta)
+                            .filter(StockMeta.market_type == "KR")
+                            .all()
+                        )
+                        for row in query:
+                            meta_ticker = str(getattr(row, "ticker", "") or "").strip()
+                            name_ko = str(getattr(row, "name_ko", "") or "").strip()
+                            if not (meta_ticker.isdigit() and len(meta_ticker) == 6):
+                                continue
+                            if meta_ticker in existing:
+                                continue
+                            if cls._is_fund_like_security(meta_ticker, name_ko, "KR"):
+                                continue
+                            existing.add(meta_ticker)
+                            tickers.append(meta_ticker)
+                            if len(tickers) >= limit:
+                                break
                 except Exception as ex:
                     logger.warning(f"⚠️ KR fallback supplement from DB failed: {ex}")
             return tickers
@@ -377,7 +377,8 @@ class DataService:
         us_tickers = cls.get_top_us_tickers(limit=limit)
         
         all_tickers = [(t, "KR") for t in kr_tickers] + [(t, "US") for t in us_tickers]
-        
+        token = KisService.get_access_token()  # 루프 밖에서 1회만 조회
+
         for ticker, market in all_tickers:
             try:
                 # 시장 시간 체크
@@ -386,8 +387,6 @@ class DataService:
                     continue
 
                 logger.info(f"🔄 Processing {ticker} ({market})...")
-                
-                token = KisService.get_access_token()
                 if market == "KR":
                     price_info = KisFetcher.fetch_domestic_price(token, ticker)
                 else:
