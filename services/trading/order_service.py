@@ -1,6 +1,6 @@
 """매매 내역 기록 및 조회 서비스."""
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from models.schemas import TradeRecordDto
 from models.trade_history import TradeHistory
@@ -15,6 +15,52 @@ DEFAULT_TRADE_HISTORY_LIMIT = 50
 
 class OrderService:
     """매매 내역 DB 기록 및 최근 내역 조회."""
+
+    @classmethod
+    def sell_single_holding(
+        cls, ticker: str, name: str, quantity: int, current_price: float
+    ) -> Tuple[bool, str]:
+        """단일 종목 매도를 실행하고 (성공 여부, 오류 메시지)를 반환합니다."""
+        from services.kis.kis_service import KisService
+        is_us = not ticker.isdigit()
+        if is_us:
+            if current_price <= 0:
+                return False, f"{ticker} 현재가 정보 없음"
+            res = KisService.send_overseas_order(
+                ticker=ticker, quantity=quantity,
+                price=round(float(current_price), 2), order_type="sell",
+            )
+        else:
+            res = KisService.send_order(ticker, quantity, 0, "sell")
+        if res.get("status") == "success":
+            return True, ""
+        return False, res.get("msg", "Unknown error")
+
+    @classmethod
+    def execute_mass_sell(cls, holdings: list) -> Tuple[int, int, List[str]]:
+        """보유 종목 전량 매도를 실행하고 (성공수, 실패수, 실패_티커_목록)을 반환합니다."""
+        success_count, fail_count, failed_tickers = 0, 0, []
+        for holding in holdings:
+            ticker = holding["ticker"]
+            name = holding.get("name", ticker)
+            quantity = holding["quantity"]
+            if quantity <= 0:
+                continue
+            logger.info(f"📤 {ticker} ({name}) {quantity}주 매도 시도...")
+            try:
+                ok, err = cls.sell_single_holding(ticker, name, quantity, holding.get("current_price", 0))
+                if ok:
+                    logger.info(f"✅ {ticker} ({name}) {quantity}주 매도 성공")
+                    success_count += 1
+                else:
+                    logger.error(f"❌ {ticker} 매도 실패: {err}")
+                    fail_count += 1
+                    failed_tickers.append(ticker)
+            except Exception as e:
+                logger.error(f"❌ {ticker} 매도 중 오류: {e}")
+                fail_count += 1
+                failed_tickers.append(ticker)
+        return success_count, fail_count, failed_tickers
 
     @classmethod
     def record_trade(

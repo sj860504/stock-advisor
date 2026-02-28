@@ -50,7 +50,11 @@ class AlertService:
 
     @classmethod
     def add_user_alert(cls, alert: PriceAlert):
-        """사용자 알림 추가"""
+        """사용자 알림 추가 (티커명 자동 해석 포함)."""
+        from services.market.ticker_service import TickerService
+        resolved = TickerService.resolve_ticker(alert.ticker)
+        if resolved:
+            alert.ticker = resolved
         cls._user_alerts.append(alert)
 
     @classmethod

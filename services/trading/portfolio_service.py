@@ -385,6 +385,100 @@ class PortfolioService:
         }
 
     @classmethod
+    def build_holding_report_row(cls, holding: dict, cached: dict) -> dict:
+        """보유 종목 한 건의 분석 리포트 row를 생성합니다."""
+        price = cached.get("price") or holding.get("buy_price")
+        buy_price = holding.get("buy_price") or 0
+        profit_pct = ((price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
+        dcf = cached.get("fair_value_dcf")
+        upside = ((dcf - price) / price) * 100 if (dcf and price) else 0
+        return {
+            "ticker": holding.get("ticker"),
+            "name": holding.get("name"),
+            "price": price,
+            "change": cached.get("change", 0),
+            "change_pct": cached.get("change_pct", 0),
+            "pre_price": cached.get("pre_price"),
+            "pre_change_pct": cached.get("pre_change_pct"),
+            "return_pct": round(profit_pct, 2),
+            "rsi": cached.get("rsi"),
+            "ema5": cached.get("ema5"),
+            "ema10": cached.get("ema10"),
+            "ema20": cached.get("ema20"),
+            "ema60": cached.get("ema60"),
+            "ema120": cached.get("ema120"),
+            "ema200": cached.get("ema200"),
+            "dcf_fair": dcf,
+            "dcf_upside": round(upside, 1) if dcf else None,
+        }
+
+    @classmethod
+    def apply_buy(cls, holdings: list, ticker: str, quantity: float, price: float) -> list:
+        """매수: 기존 보유 시 평단가 계산, 없으면 신규 추가."""
+        target = next((h for h in holdings if h.get("ticker") == ticker), None)
+        if target:
+            total_qty = target["quantity"] + quantity
+            avg_price = ((target["quantity"] * target["buy_price"]) + (quantity * price)) / total_qty
+            target["quantity"] = total_qty
+            target["buy_price"] = avg_price
+        else:
+            holdings.append({
+                "ticker": ticker, "name": ticker,
+                "quantity": quantity, "buy_price": price,
+                "current_price": price, "sector": "Unknown",
+            })
+        return holdings
+
+    @classmethod
+    def apply_sell(cls, holdings: list, ticker: str, quantity: float) -> list:
+        """매도: 수량 차감 후 0 이하이면 목록에서 제거. 잔고 부족 시 ValueError."""
+        target = next((h for h in holdings if h.get("ticker") == ticker), None)
+        if not target:
+            raise ValueError("보유하지 않은 종목입니다.")
+        if target["quantity"] < quantity:
+            raise ValueError("매도 수량이 보유 수량보다 많습니다.")
+        target["quantity"] -= quantity
+        if target["quantity"] <= 0:
+            holdings = [h for h in holdings if h.get("ticker") != ticker]
+        return holdings
+
+    @classmethod
+    def apply_trade_action(
+        cls, holdings: list, ticker: str, action: str, quantity: float, price: float
+    ) -> list:
+        """매수/매도 액션을 검증하고 실행합니다. 잘못된 action이면 ValueError."""
+        if action.lower() == "buy":
+            return cls.apply_buy(holdings, ticker, quantity, price)
+        elif action.lower() == "sell":
+            return cls.apply_sell(holdings, ticker, quantity)
+        raise ValueError(f"Invalid action: {action}. Use 'buy' or 'sell'.")
+
+    @classmethod
+    def build_full_report(cls, user_id: str, price_cache: dict) -> list:
+        """보유 종목 전체 상세 분석 데이터 반환 (수익률 내림차순)."""
+        holdings = cls.load_portfolio(user_id)
+        report = [
+            cls.build_holding_report_row(h, price_cache.get(h.get("ticker"), {}))
+            for h in holdings if h.get("ticker")
+        ]
+        report.sort(key=lambda row: row["return_pct"], reverse=True)
+        return report
+
+    @classmethod
+    def add_holding_manual(
+        cls, user_id: str, ticker: str, quantity: float, buy_price: float, name: Optional[str] = None
+    ) -> list:
+        """수동으로 보유 종목을 추가합니다 (평단가 계산 포함)."""
+        holdings = cls.load_portfolio(user_id)
+        holdings = cls.apply_buy(holdings, ticker, quantity, buy_price)
+        if name:
+            target = next((h for h in holdings if h.get("ticker") == ticker), None)
+            if target and target.get("name") == ticker:
+                target["name"] = name
+        cls.save_portfolio(user_id, holdings)
+        return holdings
+
+    @classmethod
     def rebalance_portfolio(cls, user_id: str = "sean"):
         # 기존 로직과 동일하되 sync_with_kis가 DB를 업데이트하므로 이를 활용
         return cls._rebalance_logic(user_id)

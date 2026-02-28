@@ -707,6 +707,40 @@ class TradingStrategyService:
             logger.warning(f"⚠️ 포트폴리오 리포트 전송 실패: {e}")
 
     @classmethod
+    def sell_all_and_rebuy(cls, user_id: str = "sean") -> dict:
+        """보유 종목 전량 매도 후 전략대로 재매수.
+        Returns: {status, message, sold, failed, failed_tickers, strategy_error?}
+        """
+        from services.trading.order_service import OrderService
+        logger.info("🔄 보유 종목 전량 매도 후 전략 재매수 시작")
+        holdings = PortfolioService.sync_with_kis(user_id)
+        if not holdings:
+            return {"status": "success", "message": "보유 종목이 없습니다.", "sold": 0, "failed": 0}
+        logger.info(f"📊 보유 종목 {len(holdings)}개 확인")
+        success_count, fail_count, failed_tickers = OrderService.execute_mass_sell(holdings)
+        PortfolioService.sync_with_kis(user_id)
+        try:
+            cls.run_strategy(user_id)
+            logger.info("✅ 전략 실행 완료")
+            return {
+                "status": "success",
+                "message": f"전량 매도 및 전략 재매수 완료 (매도 성공: {success_count}, 실패: {fail_count})",
+                "sold": success_count,
+                "failed": fail_count,
+                "failed_tickers": failed_tickers or None,
+            }
+        except Exception as e:
+            logger.error(f"❌ 전략 실행 중 오류: {e}")
+            return {
+                "status": "partial",
+                "message": f"매도 완료 (성공: {success_count}, 실패: {fail_count}), 전략 실행 실패",
+                "sold": success_count,
+                "failed": fail_count,
+                "failed_tickers": failed_tickers or None,
+                "strategy_error": str(e),
+            }
+
+    @classmethod
     def run_strategy(cls, user_id: str = "sean"):
         """전체 전략 실행 루프"""
         from utils.logger import get_logger

@@ -324,6 +324,57 @@ class MarketDataService:
         return cls._states
 
     @classmethod
+    def build_trading_signals(cls, data: dict) -> dict:
+        """캐시 데이터에서 과매도/과매수/저평가/EMA200 신호를 분류합니다."""
+        oversold, overbought, undervalued, ema200_support = [], [], [], []
+        for ticker, info in data.items():
+            rsi = info.get("rsi")
+            price = info.get("price")
+            dcf = info.get("fair_value_dcf")
+            ema200 = info.get("ema200")
+            if rsi is not None and rsi < 30:
+                oversold.append({"ticker": ticker, "rsi": rsi, "price": price, "signal": "BUY"})
+            if rsi is not None and rsi > 70:
+                overbought.append({"ticker": ticker, "rsi": rsi, "price": price, "signal": "SELL"})
+            if dcf and price and price < dcf * 0.8:
+                upside = ((dcf - price) / price) * 100
+                undervalued.append({
+                    "ticker": ticker, "price": price,
+                    "dcf": round(dcf, 2), "upside_pct": round(upside, 1), "signal": "BUY",
+                })
+            if ema200 and price and abs(price - ema200) / ema200 < 0.02:
+                ema200_support.append({
+                    "ticker": ticker, "price": price,
+                    "ema200": round(ema200, 2), "signal": "WATCH",
+                })
+        return {
+            "oversold": oversold, "overbought": overbought,
+            "undervalued": undervalued, "ema200_support": ema200_support,
+        }
+
+    @classmethod
+    def build_watch_item(cls, ticker: str, state) -> dict:
+        """MarketDataState 객체에서 WatchItem dict를 생성합니다."""
+        change = state.current_price - state.prev_close if state.prev_close > 0 else 0
+        ma20 = state.ema.get(20) if state.ema else None
+        return {
+            "ticker": ticker,
+            "price": state.current_price,
+            "change": change,
+            "change_rate": state.change_rate,
+            "volume": float(state.volume),
+            "rsi": state.rsi,
+            "ma20": ma20,
+        }
+
+    @classmethod
+    def get_watch_list(cls) -> list:
+        """현재 감시 중인 종목 목록 (ticker 알파벳순 정렬)."""
+        result = [cls.build_watch_item(ticker, state) for ticker, state in cls._states.items()]
+        result.sort(key=lambda x: x["ticker"])
+        return result
+
+    @classmethod
     def prune_states(cls, keep_tickers: set):
         """대상 유니버스 외 종목 상태를 캐시에서 제거"""
         if not keep_tickers:

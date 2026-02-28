@@ -140,7 +140,27 @@ class SettingsService:
         """전체 설정 조회"""
         # 먼저 초기화 보장
         cls.init_defaults()
-        
+
         session = StockMetaService.get_session()
         settings = session.query(Settings).all()
         return {setting.key: {"value": setting.value, "description": setting.description} for setting in settings}
+
+    @classmethod
+    def get_tick_settings(cls) -> dict:
+        """틱매매 설정 조회."""
+        return {
+            "enabled": cls.get_int("STRATEGY_TICK_ENABLED", 0) == 1,
+            "ticker": cls.get_setting("STRATEGY_TICK_TICKER", "005930"),
+            "cash_ratio": cls.get_float("STRATEGY_TICK_CASH_RATIO", 0.20),
+            "entry_pct": cls.get_float("STRATEGY_TICK_ENTRY_PCT", -1.0),
+            "add_pct": cls.get_float("STRATEGY_TICK_ADD_PCT", -3.0),
+            "take_profit_pct": cls.get_float("STRATEGY_TICK_TAKE_PROFIT_PCT", 1.0),
+            "stop_loss_pct": cls.get_float("STRATEGY_TICK_STOP_LOSS_PCT", -5.0),
+            "close_minutes": cls.get_int("STRATEGY_TICK_CLOSE_MINUTES", 5),
+        }
+
+    @classmethod
+    def update_tick_settings(cls, updates: dict) -> None:
+        """틱매매 설정을 일괄 변경합니다."""
+        for key, value in updates.items():
+            cls.set_setting(key, value)
