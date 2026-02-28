@@ -1,0 +1,14 @@
+services:
+  stock-advisor:
+    build: .
+    image: stock-advisor:latest
+    container_name: stock-advisor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # DB·토큰 등 런타임 데이터 영속화 (컨테이너 재시작 후에도 유지)
+      - ./data:/app/data
+      - ./logs:/app/logs
