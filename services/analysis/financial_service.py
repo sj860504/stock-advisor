@@ -9,6 +9,7 @@ from utils.logger import get_logger
 from services.kis.kis_service import KisService
 from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 from services.market.stock_meta_service import StockMetaService
+from services.analysis.yfinance_service import YFinanceService
 from models.schemas import (
     KisFinancialsMeta,
     KisFinancialsResponse,
@@ -112,13 +113,17 @@ class FinancialService:
 
     @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
-        """DCF 계산에 필요한 입력 데이터 반환. 사용자 오버라이드 → 5년 EPS → DB 재무 → KIS API 순으로 조회."""
+        """DCF 계산에 필요한 입력 데이터 반환.
+        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER 폴백 → KIS API."""
         user_override = StockMetaService.get_dcf_override(ticker)
         if user_override:
+            # fair_value 직접 지정 시 FCF 계산 없이 바로 반환
+            fv = getattr(user_override, "fair_value", None)
             dcf_input = DcfInputData(
                 fcf_per_share=user_override.fcf_per_share,
-                beta=user_override.beta,
-                growth_rate=user_override.growth_rate,
+                beta=user_override.beta or 1.0,
+                growth_rate=user_override.growth_rate or 0.0,
+                fallback_fair_value=float(fv) if fv else None,
                 timestamp=user_override.updated_at.timestamp() if user_override.updated_at else time.time(),
                 source="override",
             )
@@ -149,7 +154,22 @@ class FinancialService:
                 cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
                 return dcf_input
 
-            # 2. 5년 데이터 부족 시: DB 최신 EPS·PER로 적정가 추정
+            # 2. yfinance 에서 실제 FCF 데이터 조회 (EPS*PER 동어반복 방지)
+            market_type = "KR" if ticker.isdigit() else "US"
+            yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
+            if yf_data and yf_data.fcf_per_share and yf_data.fcf_per_share > 0:
+                dcf_input = DcfInputData(
+                    fcf_per_share=yf_data.fcf_per_share,
+                    beta=yf_data.beta,
+                    growth_rate=yf_data.growth_rate,
+                    discount_rate=None,
+                    timestamp=time.time(),
+                    source="yfinance",
+                )
+                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+                return dcf_input
+
+            # 3. 5년 데이터 부족 + yfinance FCF 없을 시: DB 최신 EPS·PER로 적정가 추정
             latest_financials = StockMetaService.get_latest_financials(ticker)
             if (
                 latest_financials
@@ -171,7 +191,7 @@ class FinancialService:
                 cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
                 return dcf_input
 
-            # 3. KIS API로 원시 데이터 조회 후 DCF 입력 추출
+            # 4. KIS API로 원시 데이터 조회 후 DCF 입력 추출
             if ticker.isdigit():
                 kis_payload = KisService.get_financials(ticker)
                 dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
@@ -304,6 +324,7 @@ class FinancialService:
             fcf_per_share=override_params.get("fcf_per_share"),
             beta=override_params.get("beta"),
             growth_rate=override_params.get("growth_rate"),
+            fair_value=override_params.get("fair_value"),
         )
         if not saved_override:
             return {}
@@ -311,6 +332,7 @@ class FinancialService:
             "fcf_per_share": saved_override.fcf_per_share,
             "beta": saved_override.beta,
             "growth_rate": saved_override.growth_rate,
+            "fair_value": saved_override.fair_value,
             "updated_at": saved_override.updated_at.isoformat() if saved_override.updated_at else None,
         }
         cls._dcf_input_by_ticker[ticker] = {
@@ -321,9 +343,16 @@ class FinancialService:
         return override_snapshot
 
     @classmethod
-    def update_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float) -> dict:
-        """사용자 지정 DCF 입력값 저장 (fcf_per_share, beta, growth_rate)."""
+    def update_dcf_override(
+        cls,
+        ticker: str,
+        fcf_per_share: float = None,
+        beta: float = None,
+        growth_rate: float = None,
+        fair_value: float = None,
+    ) -> dict:
+        """사용자 지정 DCF 입력값 저장."""
         return cls.save_override(
             ticker,
-            {"fcf_per_share": fcf_per_share, "beta": beta, "growth_rate": growth_rate},
+            {"fcf_per_share": fcf_per_share, "beta": beta, "growth_rate": growth_rate, "fair_value": fair_value},
         )

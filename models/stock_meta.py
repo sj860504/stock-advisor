@@ -66,6 +66,7 @@ class Financials(Base):
     ema10 = Column(Float)
     ema20 = Column(Float)
     ema60 = Column(Float)
+    ema100 = Column(Float)
     ema120 = Column(Float)
     ema200 = Column(Float)
     dcf_value = Column(Float)
@@ -98,15 +99,38 @@ class ApiTrMeta(Base):
 
 class DcfOverride(Base):
     """
-    사용자 지정 DCF 입력값 저장
+    사용자 지정 DCF 입력값 저장.
+    fair_value 가 설정된 경우 FCF 계산 없이 해당 값을 DCF 적정가로 직접 사용.
     """
     __tablename__ = 'dcf_overrides'
-    
+
     ticker = Column(String(20), primary_key=True)
     fcf_per_share = Column(Float)
     beta = Column(Float)
     growth_rate = Column(Float)
+    fair_value = Column(Float)   # 직접 지정 적정가 (설정 시 FCF 계산 우선)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     def __repr__(self):
         return f"<DcfOverride(ticker='{self.ticker}')>"
+
+
+class MarketRegimeHistory(Base):
+    """일별 시장 국면(regime) 스냅샷 이력."""
+    __tablename__ = 'market_regime_history'
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    date         = Column(String(10), nullable=False, unique=True, index=True)  # YYYY-MM-DD
+    status       = Column(String(10))           # Bull / Bear / Neutral
+    regime_score = Column(Integer)              # 0~100
+    vix          = Column(Float)
+    fear_greed   = Column(Integer)
+    us_10y_yield = Column(Float)
+    spx_price    = Column(Float)
+    spx_ma200    = Column(Float)
+    spx_diff_pct = Column(Float)
+    components_json = Column(String)            # JSON: {technical, vix, fear_greed, economic, other, other_detail}
+    created_at   = Column(DateTime, default=datetime.now)
+
+    def __repr__(self):
+        return f"<MarketRegimeHistory(date='{self.date}', status='{self.status}', score={self.regime_score})>"

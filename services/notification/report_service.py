@@ -1,4 +1,6 @@
-from typing import Union
+from collections import defaultdict
+from datetime import datetime
+from typing import List, Union
 
 from models.schemas import ComprehensiveReport
 
@@ -71,9 +73,29 @@ class ReportService:
         msg = f"🌍 **시장 현황 요약**\n"
         if macro:
             regime = macro.get('market_regime', {})
-            msg += f"🔸 **상태**: {regime.get('status')} ({regime.get('diff_pct', 0):+.1f}% above MA200)\n"
-            msg += f"🔸 **금리**: {macro.get('us_10y_yield')}%\n"
-            msg += f"🔸 **VIX**: {macro.get('vix')}\n"
+            regime_score = regime.get('regime_score', 50)
+            comp = regime.get('components', {})
+            od = comp.get('other_detail', {})
+            t_s = comp.get('technical', 10)
+            v_s = comp.get('vix', 10)
+            f_s = comp.get('fear_greed', 10)
+            e_s = comp.get('economic', 10)
+            o_s = comp.get('other', 10)
+            td = comp.get('technical_detail', {})
+            spx_1m = td.get('spx_1m_ret')
+            spread = od.get('yield_spread_10y2y')
+            vix_1m = od.get('vix_1m_chg')
+            btc_ret = od.get('btc_1m_ret')
+            dxy_ret = od.get('dxy_1m_ret')
+            gold_ret = od.get('gold_1m_ret')
+            spx_str = f"SPX1M{spx_1m:+.1f}%" if spx_1m is not None else ""
+            spread_str = f"{spread:+.2f}%" if spread is not None else "-"
+            vix_str = f"(1M{vix_1m:+.0f}%)" if vix_1m is not None else ""
+            btc_str = f"BTC{btc_ret:+.1f}%" if btc_ret is not None else "BTC-"
+            dxy_str = f"DXY{dxy_ret:+.1f}%" if dxy_ret is not None else "DXY-"
+            gold_str = f"Gold{gold_ret:+.1f}%" if gold_ret is not None else "Gold-"
+            msg += f"🔸 **상태**: {regime.get('status')} | **{regime_score}점/100** (기술{t_s} VIX{v_s} F&G{f_s} 경제{e_s} 기타{o_s})\n"
+            msg += f"🔸 **SPX**: MA200 {regime.get('diff_pct', 0):+.1f}% {spx_str} | 금리 {macro.get('us_10y_yield')}% | 곡선 {spread_str} | VIX {macro.get('vix')}{vix_str} | {btc_str} | {dxy_str} | {gold_str}\n"
             
             btc = macro.get('crypto', {}).get('BTC')
             if btc:
@@ -219,3 +241,63 @@ class ReportService:
                 lines.append(ReportService._format_us_holding_line(h, states, exchange_rate))
 
         return "\n".join(lines)
+
+    @staticmethod
+    def format_daily_trade_history(trades: list, start_dt: datetime, end_dt: datetime) -> str:
+        """일일 매매 내역을 Slack 메시지로 포맷팅합니다. 티커별로 집계하여 보여줍니다."""
+        date_str = start_dt.strftime("%m/%d %H:%M") + " ~ " + end_dt.strftime("%m/%d %H:%M")
+        msg = f"📋 **일일 매매 히스토리** ({date_str})\n\n"
+
+        if not trades:
+            msg += "📭 해당 기간 매매 내역이 없습니다."
+            return msg
+
+        buys = [t for t in trades if t.order_type == "buy"]
+        sells = [t for t in trades if t.order_type == "sell"]
+        msg += f"📊 총 **{len(trades)}건** (매수 {len(buys)}건 / 매도 {len(sells)}건)\n\n"
+
+        def _aggregate_by_ticker(trade_list: List) -> dict:
+            grouped = defaultdict(lambda: {"qty": 0, "total_amt": 0.0, "is_kr": True})
+            for t in trade_list:
+                is_kr = str(t.ticker).isdigit()
+                grouped[t.ticker]["qty"] += t.quantity
+                grouped[t.ticker]["total_amt"] += t.quantity * t.price
+                grouped[t.ticker]["is_kr"] = is_kr
+            return grouped
+
+        if buys:
+            buy_groups = _aggregate_by_ticker(buys)
+            total_krw = sum(v["total_amt"] for v in buy_groups.values() if v["is_kr"])
+            total_usd = sum(v["total_amt"] for v in buy_groups.values() if not v["is_kr"])
+            summary = f"🟢 **매수** ({len(buys)}건"
+            if total_krw > 0:
+                summary += f", KR {total_krw:,.0f}원"
+            if total_usd > 0:
+                summary += f", US ${total_usd:,.2f}"
+            msg += summary + ")\n"
+            for ticker, info in sorted(buy_groups.items()):
+                avg = info["total_amt"] / info["qty"] if info["qty"] else 0
+                if info["is_kr"]:
+                    msg += f"  • {ticker} {info['qty']}주 | 평균 {avg:,.0f}원 | 합계 {info['total_amt']:,.0f}원\n"
+                else:
+                    msg += f"  • {ticker} {info['qty']}주 | 평균 ${avg:,.2f} | 합계 ${info['total_amt']:,.2f}\n"
+            msg += "\n"
+
+        if sells:
+            sell_groups = _aggregate_by_ticker(sells)
+            total_krw = sum(v["total_amt"] for v in sell_groups.values() if v["is_kr"])
+            total_usd = sum(v["total_amt"] for v in sell_groups.values() if not v["is_kr"])
+            summary = f"🔴 **매도** ({len(sells)}건"
+            if total_krw > 0:
+                summary += f", KR {total_krw:,.0f}원"
+            if total_usd > 0:
+                summary += f", US ${total_usd:,.2f}"
+            msg += summary + ")\n"
+            for ticker, info in sorted(sell_groups.items()):
+                avg = info["total_amt"] / info["qty"] if info["qty"] else 0
+                if info["is_kr"]:
+                    msg += f"  • {ticker} {info['qty']}주 | 평균 {avg:,.0f}원 | 합계 {info['total_amt']:,.0f}원\n"
+                else:
+                    msg += f"  • {ticker} {info['qty']}주 | 평균 ${avg:,.2f} | 합계 ${info['total_amt']:,.2f}\n"
+
+        return msg

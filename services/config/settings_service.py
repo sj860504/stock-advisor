@@ -1,3 +1,4 @@
+import time
 from models.settings import Settings
 from services.market.stock_meta_service import StockMetaService
 from config import Config
@@ -9,6 +10,8 @@ class SettingsService:
     """
     시스템 설정 관리 서비스
     """
+    _cache: dict = {}       # {key: (value, expire_time)}
+    _CACHE_TTL: int = 30    # 30초 TTL — 변경 후 최대 30초 내 반영
     
     # 기본 설정값 정의 (Config에서 가져옴)
     DEFAULT_SETTINGS = {
@@ -67,6 +70,9 @@ class SettingsService:
                         setting.value = default_val
                     if key == "STRATEGY_STOP_LOSS_PCT" and setting.value in ("-10.0", "-10", ""):
                         setting.value = default_val
+                    # 틱매매는 재시작 시 항상 비활성화 — 명시적으로 켤 때만 동작
+                    if key == "STRATEGY_TICK_ENABLED":
+                        setting.value = "0"
             session.commit()
         except Exception as e:
             session.rollback()
@@ -74,17 +80,23 @@ class SettingsService:
 
     @classmethod
     def get_setting(cls, key: str, default=None):
-        """설정값 조회 (캐싱 없이 DB 조회)"""
+        """설정값 조회 (30초 TTL 인메모리 캐시)"""
+        now = time.time()
+        cached = cls._cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]
+
         session = StockMetaService.get_session()
         setting = session.query(Settings).filter_by(key=key).first()
         if setting:
-            return setting.value
-        
-        # DB에 없으면 기본값(Config) 확인
-        if key in cls.DEFAULT_SETTINGS:
-            return cls.DEFAULT_SETTINGS[key][0]
-            
-        return default
+            value = setting.value
+        elif key in cls.DEFAULT_SETTINGS:
+            value = cls.DEFAULT_SETTINGS[key][0]
+        else:
+            value = default
+
+        cls._cache[key] = (value, now + cls._CACHE_TTL)
+        return value
 
     @classmethod
     def get_float(cls, key: str, default: float = 0.0) -> float:
@@ -115,6 +127,7 @@ class SettingsService:
                 setting = Settings(key=key, value=str(value), description=desc)
                 session.add(setting)
             session.commit()
+            cls._cache.pop(key, None)  # 변경 시 캐시 즉시 무효화
             logger.info(f"⚙️ Setting updated: {key} = {value}")
             return setting
         except Exception as e:

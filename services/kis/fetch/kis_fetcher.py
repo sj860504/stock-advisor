@@ -96,7 +96,9 @@ class KisFetcher:
         
         try:
             headers = cls._get_headers(token, tr_id=tr_id)
-            response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+            response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
+            if response is None:
+                return {}
             if response.status_code == 200:
                 response_data = response.json()
                 output = response_data.get("output", {})
@@ -254,7 +256,7 @@ class KisFetcher:
         for attempt in range(2):
             try:
                 headers = cls._get_headers(token, tr_id=tr_id)
-                response = requests.get(url, headers=headers, params=params, timeout=7)
+                response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
                 if response.status_code == 200:
                     response_data = response.json()
                     if response_data.get("output2"):

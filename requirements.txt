@@ -12,3 +12,7 @@ python-dotenv
 sqlalchemy
 python-multipart
 pytz
+yfinance>=0.2.50
+bcrypt==5.0.0
+passlib==1.7.4
+python-jose==3.5.0

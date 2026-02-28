@@ -1,10 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 from services.base.scheduler_service import SchedulerService
 from services.kis.kis_ws_service import kis_ws_service
-from routers import analysis, market, alerts, portfolio, reports, trading
+from routers import analysis, market, alerts, portfolio, reports, trading, auth as auth_router
 import os
 import asyncio
 from services.strategy.trading_strategy_service import TradingStrategyService # 추가
@@ -40,11 +40,35 @@ async def lifespan(app: FastAPI):
     AlertService.send_slack_alert("🛑 [시스템 알림] 서버가 종료되었습니다. 모든 실시간 감시 및 스케줄러가 중단됩니다.")
 
 app = FastAPI(
-    title="Sean's Stock Advisor", 
+    title="Sean's Stock Advisor",
     description="한국투자증권(KIS) API 및 WebSocket 기반 주식 분석 및 알림 API",
     version="2.0.0",
     lifespan=lifespan
 )
+
+# ── 인증 미들웨어 ────────────────────────────────────────────────
+_PUBLIC_PATHS = {"/api/auth/login", "/api/auth/verify"}
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # /api/* 가 아닌 경로(정적 파일, 루트)는 통과
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    # 공개 엔드포인트 통과
+    if path in _PUBLIC_PATHS:
+        return await call_next(request)
+    # Authorization 헤더 검증
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"detail": "인증이 필요합니다."})
+    token = auth_header[7:]
+    try:
+        from routers.auth import verify_token
+        verify_token(token)
+    except ValueError as e:
+        return JSONResponse(status_code=401, content={"detail": str(e)})
+    return await call_next(request)
 
 # 정적 파일 서빙
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -60,6 +84,7 @@ def serve_dashboard():
     return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
 
 # 라우터 등록
+app.include_router(auth_router.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")

@@ -227,6 +227,14 @@ class PortfolioService:
         cash = max(0.0, dnca, prvs)
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
+
+        # 인-메모리 state 가격 동기화 (VTS WebSocket이 해외 실시간 미지원 대응)
+        from services.market.market_data_service import MarketDataService
+        for h in holdings:
+            price = float(h.current_price or 0)
+            if price > 0:
+                MarketDataService.update_price_from_sync(h.ticker, price)
+
         return [h.model_dump() for h in holdings]
 
     @classmethod

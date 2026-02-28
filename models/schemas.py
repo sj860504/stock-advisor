@@ -134,9 +134,10 @@ class PriceAlert(BaseModel):
 
 class DcfOverrideRequest(BaseModel):
     ticker: str
-    fcf_per_share: float
-    beta: float
-    growth_rate: float
+    fcf_per_share: Optional[float] = None
+    beta: Optional[float] = None
+    growth_rate: Optional[float] = None
+    fair_value: Optional[float] = None   # 직접 지정 적정가 (설정 시 FCF 계산 우선)
 
 class StrategyWeightOverrideRequest(BaseModel):
     weights: Dict[str, int]
@@ -218,6 +219,8 @@ class ComprehensiveReport(BaseModel):
     fundamental: FundamentalSummaryInReport = Field(default_factory=FundamentalSummaryInReport)
     macro_context: MacroContextInReport = Field(default_factory=MacroContextInReport)
     news_summary: str = ""
+    score: Optional[int] = None
+    score_reasons: List[str] = Field(default_factory=list)
 
     def to_report_dict(self) -> Dict[str, Any]:
         """ReportService.format_comprehensive_report 호환 dict."""
@@ -381,6 +384,32 @@ class CustomDcfResponse(BaseModel):
 class DcfOverrideResponse(BaseModel):
     ticker: str
     override: Optional[Dict[str, Any]] = None
+
+
+class DcfListItem(BaseModel):
+    ticker: str
+    name: Optional[str] = None
+    market_type: Optional[str] = None
+    current_price: Optional[float] = None
+    dcf_value: Optional[float] = None
+    upside_pct: Optional[float] = None
+    is_override: bool = False
+    base_date: Optional[str] = None
+
+
+class DcfListResponse(BaseModel):
+    count: int
+    items: List[DcfListItem]
+
+
+class DcfDetailResponse(BaseModel):
+    ticker: str
+    dcf_value: Optional[float] = None
+    source: Optional[str] = None
+    fcf_per_share: Optional[float] = None
+    growth_rate: Optional[float] = None
+    beta: Optional[float] = None
+    fallback_fair_value: Optional[float] = None
 
 
 class StrategyWeightsResponse(BaseModel):

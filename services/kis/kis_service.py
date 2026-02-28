@@ -14,6 +14,7 @@ logger = get_logger("kis_service")
 KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 TOKEN_REQUEST_TIMEOUT = 5
 BALANCE_REQUEST_TIMEOUT = 8
+ORDER_REQUEST_TIMEOUT = 10
 MAX_BALANCE_RETRIES = 3
 
 
@@ -312,7 +313,7 @@ class KisService:
                 # Throttle 적용
                 cls._throttle_request()
                 
-                response = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
+                response = requests.post(url, headers=headers, data=json.dumps(body), timeout=ORDER_REQUEST_TIMEOUT)
                 if cls._is_rate_limited_response(response):
                     wait_sec = 1.2 * (attempt + 1)
                     logger.warning(f"⏳ {log_tag} TPS limit hit. retry {attempt + 1}/{max_retries} in {wait_sec:.1f}s...")
@@ -451,7 +452,7 @@ class KisService:
                 # Throttle 적용
                 cls._throttle_request()
                 
-                response = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
+                response = requests.post(url, headers=headers, data=json.dumps(body), timeout=ORDER_REQUEST_TIMEOUT)
                 if cls._is_rate_limited_response(response):
                     wait_sec = 1.2 * (attempt + 1)
                     logger.warning(f"⏳ Overseas Order TPS limit hit. retry {attempt + 1}/{max_retries} in {wait_sec:.1f}s...")

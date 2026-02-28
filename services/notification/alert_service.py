@@ -4,6 +4,7 @@ from config import Config
 from services.market.news_service import NewsService
 from models.schemas import PriceAlert
 from services.market.data_service import DataService
+from services.market.market_data_service import MarketDataService
 from utils.logger import get_logger
 
 logger = get_logger("alert_service")
@@ -56,11 +57,13 @@ class AlertService:
     def check_user_alerts(cls) -> List[str]:
         """사용자 설정 알림 확인"""
         triggered = []
+        all_states = MarketDataService.get_all_states()
         for alert in cls._user_alerts:
             if not alert.is_active:
                 continue
-                
-            current_price = DataService.get_current_price(alert.ticker)
+
+            state = all_states.get(alert.ticker)
+            current_price = getattr(state, 'current_price', None) if state else DataService.get_current_price(alert.ticker)
             if current_price:
                 if alert.condition == "above" and current_price >= alert.target_price:
                     triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} >= 목표가: {alert.target_price}")

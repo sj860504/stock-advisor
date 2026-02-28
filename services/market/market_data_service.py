@@ -307,6 +307,15 @@ class MarketDataService:
         # logger.debug(f"⚡ Update {ticker}: {state.current_price} ({state.change_rate}%)")
 
     @classmethod
+    def update_price_from_sync(cls, ticker: str, price: float, change_rate: float = None):
+        """포트폴리오 동기화 시 현재가만 갱신 (EMA 재계산 없음, state가 이미 등록된 경우만)"""
+        state = cls._states.get(ticker)
+        if state and price > 0:
+            state.current_price = price
+            if change_rate is not None:
+                state.change_rate = change_rate
+
+    @classmethod
     def get_state(cls, ticker: str) -> Optional[TickerState]:
         return cls._states.get(ticker)
 

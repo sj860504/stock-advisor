@@ -40,15 +40,54 @@ class SchedulerService:
             # 1시간 단위 포트폴리오 현황 체크 및 알림
             cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', hours=1)
             
+            # 매일 오전 9시 00분: 전일 매매 히스토리 Slack 보고
+            cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
+
             # 매일 오전 9시 10분: 리밸런싱 실행 (국내장 개장 직후)
             cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
+
+            # 매주 월요일 오전 9시 20분: 섹터 비중 리밸런싱 (Tech 50% / Value 30% / Fin 20%)
+            # 편차 < 5% 자동 스킵, 5~10% 절반 실행, >10% 전체 실행
+            cls._scheduler.add_job(cls.run_sector_rebalance, 'cron',
+                                   day_of_week='mon', hour=9, minute=20,
+                                   id='weekly_sector_rebalance')
             
             # 10분 단위 포트폴리오 DB 동기화 (KIS 데이터 우선)
             cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
             
             # 10분 단위 틱매매 현황 리포트
             cls._scheduler.add_job(cls.report_tick_trade_status, 'interval', minutes=10)
-            
+
+            # 미국 경제지표 주요 발표 시각에 신규 발표 감지 & regime 갱신
+            # APScheduler timezone 파라미터로 ET(미동부) 기준 cron 등록
+            from zoneinfo import ZoneInfo
+            _ET = ZoneInfo("America/New_York")
+            # 08:31 ET (월~금): CPI/PPI/NFP/실업수당 등 대부분 지표 (8:30 발표)
+            cls._scheduler.add_job(
+                cls._check_economic_releases, 'cron',
+                day_of_week='mon-fri', hour=8, minute=31,
+                timezone=_ET, id='econ_0830',
+            )
+            # 09:16 ET (월~금): 산업생산/설비가동률 (9:15 발표)
+            cls._scheduler.add_job(
+                cls._check_economic_releases, 'cron',
+                day_of_week='mon-fri', hour=9, minute=16,
+                timezone=_ET, id='econ_0915',
+            )
+            # 10:01 ET (월~금): 소비자신뢰지수-미시간 (10:00 발표)
+            cls._scheduler.add_job(
+                cls._check_economic_releases, 'cron',
+                day_of_week='mon-fri', hour=10, minute=1,
+                timezone=_ET, id='econ_1000',
+            )
+
+            # 미국장 시간 중 30분마다 VIX 스파이크 감지 (ET 09:30~16:00)
+            cls._scheduler.add_job(
+                cls._check_vix_spike, 'cron',
+                day_of_week='mon-fri', hour='9-15', minute='0,30',
+                timezone=_ET, id='vix_spike_check',
+            )
+
             # 2. KIS WebSocket 서비스 시작 (완전 분리된 전용 스레드)
             def start_ws_thread():
                 """웹소켓 전용 이벤트 루프를 생성하고 무한 연결 루프를 실행"""
@@ -73,11 +112,19 @@ class SchedulerService:
             
             cls._scheduler.start()
             logger.info("✅ Scheduler and Real-time WebSocket Service Started.")
-            
-            # 3. 자동 매매 시작 여부 문의
 
-            # 4. 앱 기동 직후 KIS 잔고 동기화
+            # 3. 서버 기동 직후: FRED 최신 관측일 초기화 (기준점 설정)
             try:
+                cls._init_economic_baselines()
+            except Exception as e:
+                logger.warning(f"⚠️ 경제지표 기준점 초기화 실패 (무시): {e}")
+
+            # 4. 자동 매매 시작 여부 문의
+
+            # 5. 앱 기동 직후 KIS 잔고 동기화
+            try:
+                # 이전 세션의 전략 활성화 상태 복원 (재시작 시 자동 재개)
+                TradingStrategyService._restore_enabled_state()
                 PortfolioService.sync_with_kis("sean")
                 logger.info("✅ Portfolio synced with KIS on startup.")
                 cls._send_start_inquiry()
@@ -166,9 +213,10 @@ class SchedulerService:
             # 미국 주식 구독
             if watch_us:
                 market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS", "NAS": "NAS", "NYS": "NYS", "AMS": "AMS"}
+                us_meta_map = {m.ticker: m for m in StockMetaService.get_stock_meta_bulk(all_us)} if all_us else {}
                 for ticker in all_us:
                     if ticker.isalpha():
-                        meta = StockMetaService.get_stock_meta(ticker)
+                        meta = us_meta_map.get(ticker)
                         raw_market = (meta.api_market_code if meta and meta.api_market_code else "NAS").upper()
                         ws_market = market_map_4to3.get(raw_market, "NAS")
                         await kis_ws_service.subscribe(ticker, market=ws_market)
@@ -235,6 +283,23 @@ class SchedulerService:
             logger.error(f"❌ Error in check_portfolio_hourly: {e}")
 
     @classmethod
+    def report_daily_trade_history(cls):
+        """매일 오전 9시: 전 24시간 매매 히스토리를 Slack으로 보고합니다."""
+        from services.trading.order_service import OrderService
+        from services.notification.report_service import ReportService
+
+        logger.info("📋 Generating daily trade history report...")
+        try:
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(hours=24)
+            trades = OrderService.get_trade_history_by_date_range(start_dt, end_dt)
+            msg = ReportService.format_daily_trade_history(trades, start_dt, end_dt)
+            AlertService.send_slack_alert(msg)
+            logger.info(f"📤 Daily trade history report sent: {len(trades)} trades.")
+        except Exception as e:
+            logger.error(f"❌ Error in daily trade history report: {e}")
+
+    @classmethod
     def run_rebalancing(cls):
         """포트폴리오 리밸런싱 실행"""
         logger.info("⚖️ Running daily Portfolio Rebalancing check...")
@@ -242,6 +307,22 @@ class SchedulerService:
             PortfolioService.rebalance_portfolio("sean")
         except Exception as e:
             logger.error(f"❌ Error during rebalancing: {e}")
+
+    @classmethod
+    def run_sector_rebalance(cls):
+        """주간 섹터 비중 리밸런싱 (매주 월요일 9:20 KST).
+
+        Tech 50% / Value 30% / Financial 20% 목표 비중 대비:
+        - 편차 < 5%  → 스킵
+        - 편차 5~10% → 절반 리밸런싱
+        - 편차 > 10% → 전체 리밸런싱
+        """
+        logger.info("🔄 주간 섹터 리밸런싱 시작 (매주 월요일)...")
+        try:
+            result = TradingStrategyService.run_sector_rebalance(user_id="sean")
+            logger.info(f"✅ 섹터 리밸런싱 완료: 매도 {len(result.get('sold',[]))}건, 매수 {len(result.get('bought',[]))}건")
+        except Exception as e:
+            logger.error(f"❌ 섹터 리밸런싱 오류: {e}")
 
     @classmethod
     def sync_portfolio_periodic(cls):
@@ -299,6 +380,111 @@ class SchedulerService:
             )
         except Exception as e:
             logger.error(f"❌ Error during tick trade report: {e}")
+
+    # ── 경제지표 발표 감지 ────────────────────────────────────────────────
+
+    @classmethod
+    def _init_economic_baselines(cls):
+        """서버 기동 시 각 FRED 시리즈의 현재 최신 관측일을 기준점으로 저장.
+        이후 _check_economic_releases 에서 이 기준보다 새로운 날짜가 나오면 신규 발표로 판단.
+        """
+        from services.market.economic_calendar_service import EconomicCalendarService
+        EconomicCalendarService.check_for_new_releases()  # 초기화 (변경 감지 없이 기준점 세팅)
+        logger.info("✅ 경제지표 FRED 기준점(baseline) 초기화 완료")
+
+    @classmethod
+    def _check_economic_releases(cls):
+        """미국 경제지표 발표 시각(8:31/9:16/10:01 ET)에 실행.
+        FRED 관측일이 이전 기준보다 최신이면 신규 발표로 판단하여 macro 재계산.
+        """
+        from services.market.economic_calendar_service import EconomicCalendarService
+        logger.info("🔍 경제지표 신규 발표 확인 중...")
+        try:
+            new_releases = EconomicCalendarService.check_for_new_releases()
+            if not new_releases:
+                logger.info("ℹ️ 신규 경제지표 발표 없음")
+                return
+            names = ", ".join(r["name"] for r in new_releases)
+            series_ids = [r["series_id"] for r in new_releases]
+            logger.info(f"🆕 신규 발표 {len(new_releases)}개 감지: {names}")
+            MacroService.refresh_on_release(names, series_ids)
+        except Exception as e:
+            logger.error(f"❌ _check_economic_releases 오류: {e}")
+
+    # ── VIX 스파이크 감지 ─────────────────────────────────────────────────
+    # 마지막 알림 시각 (24h 쿨다운용)
+    _vix_alert_last: dict = {}   # {"spike": datetime, "warning": datetime}
+
+    @classmethod
+    def _check_vix_spike(cls):
+        """미국장 중 30분 간격으로 VIX 급등 스파이크 감지.
+
+        발동 조건:
+          - VIX 5거래일 변화율 > +40% AND VIX > 22  → 경보(🔴)
+          - VIX > 35                                  → 비상(🚨)
+        알림 쿨다운: 동일 레벨 알림은 24시간 이내 재발송 안 함.
+        """
+        try:
+            import yfinance as yf
+            vix_h = yf.Ticker("^VIX").history(period="10d")
+            if len(vix_h) < 6:
+                return
+            vix_cur  = float(vix_h["Close"].iloc[-1])
+            vix_5d_ago = float(vix_h["Close"].iloc[-6])   # 5거래일 전
+            vix_5d_chg = (vix_cur - vix_5d_ago) / vix_5d_ago * 100 if vix_5d_ago > 0 else 0
+            now = datetime.now()
+
+            def _cooldown_ok(key: str, hours: int = 24) -> bool:
+                last = cls._vix_alert_last.get(key)
+                return last is None or (now - last).total_seconds() > hours * 3600
+
+            # ── 비상: VIX > 35 ────────────────────────────────────────────
+            if vix_cur > 35 and _cooldown_ok("emergency"):
+                cls._vix_alert_last["emergency"] = now
+                cls._vix_alert_last["spike"] = now  # spike 쿨다운도 리셋
+                MacroService.invalidate_cache()       # regime 즉시 재계산 트리거
+                msg = (
+                    f"🚨 *VIX 비상경보* — VIX {vix_cur:.1f} (>35)\n"
+                    f"5거래일 변화: {vix_5d_chg:+.1f}%\n"
+                    f"➡️ 포지션 긴급 점검 필요. Regime 캐시 초기화됨."
+                )
+                AlertService.send_slack_alert(msg)
+                logger.warning(f"🚨 VIX 비상: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+
+            # ── 경보: VIX 5일 급등 +40% 이상 + VIX > 22 ──────────────────
+            elif vix_5d_chg > 40 and vix_cur > 22 and _cooldown_ok("spike"):
+                cls._vix_alert_last["spike"] = now
+                MacroService.invalidate_cache()
+                regime_data = MacroService.get_macro_data()
+                regime = regime_data.get("market_regime", {})
+                msg = (
+                    f"🔴 *VIX 급등 경보* — VIX {vix_cur:.1f}\n"
+                    f"5거래일 급등: *{vix_5d_chg:+.1f}%*\n"
+                    f"시장 국면: {regime.get('status','?')} ({regime.get('regime_score','?')}/100)\n"
+                    f"➡️ 단기 변동성 확대. 신규 매수 신중."
+                )
+                AlertService.send_slack_alert(msg)
+                logger.warning(f"🔴 VIX 급등: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+
+            # ── 정상화: VIX < 18 (이전에 경보 발동된 경우만) ────────────────
+            elif vix_cur < 18 and ("spike" in cls._vix_alert_last or "emergency" in cls._vix_alert_last):
+                last_alert = max(
+                    cls._vix_alert_last.get("spike", now - timedelta(days=999)),
+                    cls._vix_alert_last.get("emergency", now - timedelta(days=999)),
+                )
+                if (now - last_alert).total_seconds() > 3600 and _cooldown_ok("recovery", hours=48):
+                    cls._vix_alert_last["recovery"] = now
+                    msg = (
+                        f"✅ *VIX 정상화* — VIX {vix_cur:.1f} (<18)\n"
+                        f"이전 경보 이후 변동성 안정. 정상 운용 복귀."
+                    )
+                    AlertService.send_slack_alert(msg)
+                    logger.info(f"✅ VIX 정상화: {vix_cur:.1f}")
+            else:
+                logger.debug(f"VIX 정상: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+
+        except Exception as e:
+            logger.error(f"❌ _check_vix_spike 오류: {e}")
 
     @classmethod
     def get_all_cached_prices(cls) -> dict:

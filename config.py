@@ -52,6 +52,13 @@ class Config:
     STRATEGY_OVERSOLD_RSI = float(os.getenv("STRATEGY_OVERSOLD_RSI", "30.0"))
     STRATEGY_OVERBOUGHT_RSI = float(os.getenv("STRATEGY_OVERBOUGHT_RSI", "70.0"))
 
+    # 인증 (JWT)
+    JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+    JWT_ALGORITHM = "HS256"
+    JWT_EXPIRE_HOURS = 24
+    AUTH_USERNAME = os.getenv("AUTH_USERNAME", "sean")
+    AUTH_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
+
     # DCF(현금흐름할인법) 설정
     DCF_EQUITY_RISK_PREMIUM = float(os.getenv("DCF_EQUITY_RISK_PREMIUM", "0.055"))
     DCF_DISCOUNT_RATE_FLOOR = float(os.getenv("DCF_DISCOUNT_RATE_FLOOR", "0.06"))

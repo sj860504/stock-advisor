@@ -114,6 +114,33 @@ class AnalysisService:
             regime_status = (macro_snapshot.get("market_regime") or {}).get("status", "")
             vix = macro_snapshot.get("vix")
 
+            # 매매 점수 계산 — 이미 수집한 지표로 TickerState 구성 후 calculate_score 호출
+            score, score_reasons = None, []
+            try:
+                from services.strategy.trading_strategy_service import TradingStrategyService
+                from services.market.market_data_service import MarketDataService
+                from models.ticker_state import TickerState
+                # 인메모리 캐시 우선, 없으면 현재 데이터로 직접 구성
+                state = MarketDataService.get_all_states().get(ticker)
+                if not state:
+                    state = TickerState(
+                        ticker=ticker,
+                        current_price=current_price,
+                        change_rate=change_rate_pct,
+                        rsi=rsi,
+                        ema=emas,
+                        bollinger=bollinger_dict,
+                        dcf_value=dcf_fair if isinstance(dcf_fair, float) else 0.0,
+                    )
+                holding_dict = holding_for_ticker.model_dump() if holding_for_ticker else None
+                cash = PortfolioService.load_cash(user_id)
+                total_assets = cash
+                score, score_reasons = TradingStrategyService.calculate_score(
+                    ticker, state, holding_dict, macro_snapshot, {}, total_assets, cash
+                )
+            except Exception:
+                pass
+
             return ComprehensiveReport(
                 ticker=ticker,
                 name=price_data.get("name", ticker),
@@ -136,6 +163,8 @@ class AnalysisService:
                 ),
                 macro_context=MacroContextInReport(regime=regime_status, vix=vix),
                 news_summary=news_summary,
+                score=score,
+                score_reasons=score_reasons,
             )
         except Exception as e:
             print(f"Error generating comprehensive report for {ticker}: {e}")

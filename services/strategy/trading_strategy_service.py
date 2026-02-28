@@ -34,33 +34,74 @@ class TradingStrategyService:
     # 여기서는 메서드 내에서 호출하도록 변경
 
     # 가중치 설정
+    # 기준: base_score=50, BUY ≤30, SELL ≥70
+    # → 매수 신호는 음수(점수 하락), 매도 신호는 양수(점수 상승)
     WEIGHTS = {
-        'RSI_OVERSOLD': 20, 'RSI_OVERBOUGHT': -15,
-        'DIP_BUY_5PCT': 15, 'SURGE_SELL_5PCT': -15,
-        'SUPPORT_EMA': 10, 'RESISTANCE_EMA': -10,
-        'ADD_POSITION_LOSS': 10, 'GOLDEN_CROSS_DROP': -15,
-        'PANIC_MARKET_BUY': 30, 'PROFIT_TAKE_TARGET': -30,
-        'BULL_MARKET_SECTOR': 15, 'CASH_PENALTY': -15,
+        'RSI_OVERSOLD': -20, 'RSI_OVERBOUGHT': +15,   # 과매도=매수, 과매수=매도
+        'DIP_BUY_5PCT': -15, 'SURGE_SELL_5PCT': +15,  # 급락=매수, 급등=매도
+        'SUPPORT_EMA': -10, 'RESISTANCE_EMA': +10,    # EMA지지=매수, EMA저항=매도
+        'ADD_POSITION_LOSS': -10, 'GOLDEN_CROSS_DROP': +15,
+        'PANIC_MARKET_BUY': -30, 'PROFIT_TAKE_TARGET': +30,  # 공포=매수, 익절권=매도
+        'BULL_MARKET_SECTOR': -15, 'CASH_PENALTY': +15,      # 상승장=매수우위, 현금부족=매도유도
         # DCF 기반 가치평가 가중치
-        'DCF_UNDERVALUE_HIGH': 25,   # DCF 대비 20% 이상 저평가
-        'DCF_UNDERVALUE_MID': 15,    # DCF 대비 10~20% 저평가
-        'DCF_UNDERVALUE_LOW': 10,    # DCF 대비 5~10% 저평가
-        'DCF_FAIR_VALUE': 5,         # DCF ±5% (적정가)
-        'DCF_OVERVALUE_LOW': -10,    # DCF 대비 5~15% 고평가
-        'DCF_OVERVALUE_HIGH': -20,   # DCF 대비 15% 이상 고평가
+        'DCF_UNDERVALUE_HIGH': -25,  # DCF 대비 20% 이상 저평가 → 매수
+        'DCF_UNDERVALUE_MID': -15,   # DCF 대비 10~20% 저평가
+        'DCF_UNDERVALUE_LOW': -10,   # DCF 대비 5~10% 저평가
+        'DCF_FAIR_VALUE': -5,        # DCF ±5% (적정가, 약한 매수 우위)
+        'DCF_OVERVALUE_LOW': +10,    # DCF 대비 5~15% 고평가 → 매도
+        'DCF_OVERVALUE_HIGH': +20,   # DCF 대비 15% 이상 고평가
     }
+
+    # ── 섹터 그룹 목표 비중 (주식 자산 내) ────────────────────────────────────
+    # StockMeta.sector 문자열 → 그룹 키 (GICS + 한국어 섹터명 매핑)
+    SECTOR_GROUP_MAP: dict = {
+        # 기술주
+        "Technology": "tech", "IT": "tech", "기술": "tech",
+        "Information Technology": "tech",
+        "Communication Services": "tech", "통신서비스": "tech", "통신": "tech",
+        # 가치주 (방어적: 필수소비재 + 헬스케어 + 유틸리티)
+        "Consumer Staples": "value", "Consumer Defensive": "value", "필수소비재": "value",
+        "Healthcare": "value", "Health Care": "value", "헬스케어": "value", "의료": "value",
+        "Utilities": "value", "유틸리티": "value",
+        # 금융주
+        "Financials": "financial", "Financial": "financial",
+        "Financial Services": "financial", "금융": "financial", "은행": "financial",
+    }
+    # 그룹별 목표 비중 (합계 = 1.0, 주식 자산 대비)
+    SECTOR_TARGET_WEIGHT: dict = {"tech": 0.50, "value": 0.30, "financial": 0.20}
+    # 리밸런싱 편차 임계값: 목표 대비 ±5% 이탈 시 신호 발생
+    SECTOR_REBAL_THRESHOLD: float = 0.05
 
     @classmethod
     def set_enabled(cls, enabled: bool):
-        from utils.logger import get_logger
-        logger = get_logger("strategy_service")
         cls._enabled = enabled
         logger.info(f"⚙️ Trading Strategy Engine {'ENABLED' if enabled else 'DISABLED'}")
+        # enabled 상태를 파일에 영속적으로 저장 (재시작 후 복원)
+        try:
+            state = cls._load_state()
+            state["_enabled"] = enabled
+            cls._save_state(state)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to persist strategy enabled state: {e}")
 
     @classmethod
     def is_enabled(cls) -> bool:
         return cls._enabled
-    
+
+    @classmethod
+    def _restore_enabled_state(cls):
+        """앱 시작 시 저장된 enabled 상태를 복원합니다."""
+        try:
+            state = cls._load_state()
+            persisted = state.get("_enabled")
+            if persisted is True:
+                cls._enabled = True
+                logger.info("⚙️ Trading Strategy Engine restored: ENABLED (from last session)")
+            else:
+                logger.info("⚙️ Trading Strategy Engine restored: DISABLED (default or last session)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to restore strategy enabled state: {e}")
+
     @classmethod
     def _load_state(cls):
         if os.path.exists(cls._state_path):
@@ -83,6 +124,94 @@ class TradingStrategyService:
             return (getattr(holding, "sector", None) if not isinstance(holding, dict) else holding.get("sector", None))
         meta = StockMetaService.get_stock_meta(ticker)
         return meta.sector if meta and meta.sector else "Others"
+
+    @classmethod
+    def _get_sector_group(cls, ticker: str, holding: Optional[dict] = None) -> str:
+        """SECTOR_GROUP_MAP 기반 섹터 그룹 반환 ('tech'/'value'/'financial'/'other')."""
+        sector = cls._get_ticker_sector(ticker, holding)
+        return cls.SECTOR_GROUP_MAP.get(sector, "other")
+
+    @classmethod
+    def _get_sector_group_weights(cls, holdings: list, exchange_rate: float = 1400.0) -> dict:
+        """주식 자산 내 섹터 그룹 현재 비중 및 목표 대비 편차 반환.
+
+        Returns:
+            {
+              "total_stock_krw": float,
+              "weights": {
+                  "tech":      {"value_krw": float, "weight": float, "target": float, "dev": float},
+                  "value":     {...},
+                  "financial": {...},
+                  "other":     {...},
+              }
+            }
+        """
+        group_values: dict = {"tech": 0.0, "value": 0.0, "financial": 0.0, "other": 0.0}
+        for h in holdings:
+            if h.get("quantity", 0) <= 0:
+                continue
+            val = cls._get_holding_value(h)
+            if val <= 0:
+                continue
+            ticker = h.get("ticker", "")
+            if not ticker.isdigit():   # 미국 주식 → KRW 변환
+                val *= exchange_rate
+            grp = cls._get_sector_group(ticker, h)
+            group_values[grp] = group_values.get(grp, 0.0) + val
+
+        total = sum(group_values.values())
+        weights: dict = {}
+        for grp, val in group_values.items():
+            w = val / total if total > 0 else 0.0
+            target = cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0)
+            weights[grp] = {"value_krw": round(val), "weight": round(w, 4),
+                            "target": target, "dev": round(w - target, 4)}
+        return {"total_stock_krw": round(total), "weights": weights}
+
+    @classmethod
+    def get_sector_rebalance_status(cls, user_id: str = "sean") -> dict:
+        """섹터 비중 현황 및 리밸런싱 필요 종목 반환 (API용).
+
+        Returns:
+            {
+              "weights": {...},          # 그룹별 현재/목표/편차
+              "underweight": [...],      # 매수 우선 섹터 종목 목록
+              "overweight": [...],       # 매도 고려 섹터 종목 목록
+            }
+        """
+        exchange_rate = MacroService.get_exchange_rate()
+        holdings = PortfolioService.load_portfolio(user_id)
+        sw = cls._get_sector_group_weights(holdings, exchange_rate)
+        weights = sw["weights"]
+
+        underweight, overweight = [], []
+        for h in holdings:
+            if h.get("quantity", 0) <= 0:
+                continue
+            ticker = h.get("ticker", "")
+            grp = cls._get_sector_group(ticker, h)
+            if grp == "other":
+                continue
+            dev = weights.get(grp, {}).get("dev", 0.0)
+            entry = {
+                "ticker": ticker,
+                "name": h.get("name", ""),
+                "group": grp,
+                "dev": round(dev, 4),
+                "current_weight": weights.get(grp, {}).get("weight", 0),
+                "target_weight": weights.get(grp, {}).get("target", 0),
+            }
+            if dev < -cls.SECTOR_REBAL_THRESHOLD:
+                entry["action"] = "buy_priority"
+                underweight.append(entry)
+            elif dev > cls.SECTOR_REBAL_THRESHOLD:
+                entry["action"] = "sell_consider"
+                overweight.append(entry)
+
+        underweight.sort(key=lambda x: x["dev"])           # 가장 부족한 순
+        overweight.sort(key=lambda x: -x["dev"])           # 가장 초과한 순
+        return {"weights": weights, "underweight": underweight, "overweight": overweight,
+                "total_stock_krw": sw["total_stock_krw"]}
 
     @classmethod
     def _get_holding_value(cls, holding: dict) -> float:
@@ -176,8 +305,7 @@ class TradingStrategyService:
             sector_values[sec] = sector_values.get(sec, 0.0) + value
         
         # 추가 매수 반영
-        add_value_krw = add_value if market == "KR" else add_value
-        sector_values[sector] = sector_values.get(sector, 0.0) + add_value_krw
+        sector_values[sector] = sector_values.get(sector, 0.0) + add_value
 
         # KR/US는 독립 포트폴리오로 관리 — 전체 자산 기준 시장비중 제한 없음.
         # 현금 비중은 _is_cash_ratio_sufficient에서 각 시장 내부 기준으로 별도 체크.
@@ -188,6 +316,18 @@ class TradingStrategyService:
             ratio = sector_values.get(sector, 0.0) / total_assets if total_assets > 0 else 0
             if ratio > max_sector:
                 reasons.append(f"섹터비중초과({sector} {ratio:.2%} > {max_sector:.2%})")
+
+        # 섹터 그룹 목표 비중 소프트 경고 (차단 아님 — calculate_score에서 점수로 반영)
+        grp = cls._get_sector_group(ticker, holding)
+        if grp != "other":
+            sw = cls._get_sector_group_weights(holdings, exchange_rate)
+            grp_info = sw["weights"].get(grp, {})
+            grp_weight = grp_info.get("weight", 0.0)
+            grp_target = cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0)
+            if grp_weight > grp_target + cls.SECTOR_REBAL_THRESHOLD:
+                reasons.append(
+                    f"섹터그룹비중초과({grp} {grp_weight:.1%} > 목표 {grp_target:.1%})"
+                )
 
         return len(reasons) == 0, reasons
 
@@ -233,17 +373,16 @@ class TradingStrategyService:
 
     @classmethod
     def _is_near_market_close(cls, ticker: str, minutes: int = 5) -> bool:
+        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         if ticker.isdigit():
             tz = pytz.timezone("Asia/Seoul")
             now = datetime.now(tz)
-            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
             end_h, end_m = (18, 0) if kr_allow_extended else (15, 30)
             close_time = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
             return now.weekday() < 5 and (close_time - timedelta(minutes=minutes)) <= now <= close_time
         tz = pytz.timezone("America/New_York")
         now = datetime.now(tz)
-        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         end_h, end_m = (20, 0) if allow_extended else (16, 0)
         close_time = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
         return now.weekday() < 5 and (close_time - timedelta(minutes=minutes)) <= now <= close_time
@@ -257,7 +396,7 @@ class TradingStrategyService:
             if result.get("status") == "success":
                 reason = "Tick TP" if pnl_pct >= tp_pct else "Tick SL"
                 OrderService.record_trade(ticker, "sell", hold_qty, getattr(state, 'current_price', 0), reason, "tick_strategy")
-                AlertService.send_slack_alert(f"🔴 **[SELL] {ticker} 틱매매 청산 수량: {hold_qty}주 수익율: {pnl_pct:.2f}%")
+                cls._send_tick_alert(ticker, "sell", getattr(state, 'current_price', 0), hold_qty, reason, pnl_pct, holding)
                 trade_state.update({"second_done": False, "last_sell_price": float(getattr(state, 'current_price', 0))})
                 return True
         return False
@@ -273,7 +412,7 @@ class TradingStrategyService:
             result = KisService.send_order(ticker, qty, 0, "buy")
             if result.get("status") == "success":
                 OrderService.record_trade(ticker, "buy", qty, current_price, "Tick Add", "tick_strategy")
-                AlertService.send_slack_alert(f"🔵 **[BUY] {ticker} 틱매매 추가매수 수량: {qty}주")
+                cls._send_tick_alert(ticker, "buy", current_price, qty, "Tick Add", holding=holding)
                 trade_state["second_done"] = True
                 return True
         elif not holding:
@@ -285,7 +424,7 @@ class TradingStrategyService:
                 if result.get("status") == "success":
                     reason = "Tick ReEntry" if reentry else "Tick Entry (1h low)"
                     OrderService.record_trade(ticker, "buy", qty, current_price, reason, "tick_strategy")
-                    AlertService.send_slack_alert(f"🔵 **[BUY] {ticker} 틱매매 신규진입 수량: {qty}주")
+                    cls._send_tick_alert(ticker, "buy", current_price, qty, reason)
                     trade_state["second_done"] = False
                     return True
         return False
@@ -325,7 +464,10 @@ class TradingStrategyService:
             qty = int(holding.get("quantity", 0))
             if qty > 0 and KisService.send_order(ticker, qty, 0, "sell").get("status") == "success":
                 OrderService.record_trade(ticker, "sell", qty, current_price, "Tick EOD", "tick_strategy")
-                AlertService.send_slack_alert(f"🔴 **[SELL] {ticker} 틱매매 장마감 청산: {qty}주")
+                holding_eod = next((h for h in holdings if h["ticker"] == ticker), None)
+                buy_p = float(holding_eod.get("buy_price", 0)) if holding_eod else 0
+                pnl_eod = (current_price - buy_p) / buy_p * 100 if buy_p else 0
+                cls._send_tick_alert(ticker, "sell", current_price, qty, "Tick EOD", pnl_eod, holding_eod)
                 trade_state.update({"second_done": False, "last_sell_price": float(current_price)})
                 user_state["tick_trade"] = trade_state
                 cls._save_state(tick_state)
@@ -443,14 +585,15 @@ class TradingStrategyService:
         all_states = MarketDataService.get_all_states()
         prepared_signals = []
         
+        holdings_map = {h['ticker']: h for h in holdings}
         for ticker, ticker_state in list(all_states.items()):
             is_kr_ticker = ticker.isdigit()
             if (is_kr_ticker and not analyze_kr) or (not is_kr_ticker and not analyze_us):
                 continue
             if not getattr(ticker_state, 'is_ready', False):
                 continue
-            
-            holding = next((h for h in holdings if h['ticker'] == ticker), None)
+
+            holding = holdings_map.get(ticker)
             market_cash_ratio = target_cash_kr if is_kr_ticker else target_cash_us
             score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, total_assets, cash_balance, market_cash_ratio=market_cash_ratio)
             
@@ -471,6 +614,11 @@ class TradingStrategyService:
 
         # 분할매도 쿨다운: 당일 이미 분할매도한 종목은 재매도 방지
         sell_cooldown: dict = (user_state or {}).setdefault('sell_cooldown', {})
+        # 추가매수 쿨다운: 당일 이미 추매한 종목은 재추매 방지
+        add_buy_cooldown: dict = (user_state or {}).setdefault('add_buy_cooldown', {})
+        stop_loss_pct = SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0)
+        add_rsi_limit = SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0)
+        add_score_limit = SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55)
         today: str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
 
         trade_executed = False
@@ -479,7 +627,9 @@ class TradingStrategyService:
             score, reasons = sig['score'], sig['reasons']
             reason_str = ", ".join(reasons)
             stock_name = getattr(state, "name", "") or (holding.get("name") if holding else "")
-            logger.info(f"🔍 Evaluated {ticker} ({stock_name}): Score={score}, RSI={getattr(state, 'rsi', 0):.1f}, Reasons=[{reason_str}]")
+            dcf_val = getattr(state, 'dcf_value', None)
+            dcf_str = f", DCF={dcf_val:,.0f}" if dcf_val and dcf_val > 0 else ""
+            logger.info(f"🔍 Evaluated {ticker} ({stock_name}): Score={score}, RSI={getattr(state, 'rsi', 0):.1f}{dcf_str}, Reasons=[{reason_str}]")
 
             profit_pct = 0.0
             if holding:
@@ -498,11 +648,30 @@ class TradingStrategyService:
                 trade_executed = trade_executed or bool(executed)
                 continue
 
+            # 추가 매수: 보유 종목이 -5% ~ stop_loss 구간 진입 시 분할 추매 (하루 1회)
+            # 조건: RSI < 60 (과매수 구간 제외) + 스코어 ≤ add_score_limit (매수 우호적 신호 필요)
+            current_rsi = getattr(state, 'rsi', 50.0)
+            if holding and profit_pct <= -5.0 and profit_pct > stop_loss_pct:
+                if current_rsi >= add_rsi_limit:
+                    logger.info(f"⏭️ {ticker} 추가매수 RSI 과매수({current_rsi:.1f} ≥ {add_rsi_limit}). 스킵.")
+                    continue
+                if score > add_score_limit:
+                    logger.info(f"⏭️ {ticker} 추가매수 스코어 불충족({score} > {add_score_limit}). 스킵.")
+                    continue
+                if add_buy_cooldown.get(ticker) == today:
+                    logger.info(f"⏭️ {ticker} 추가매수 쿨다운 중 (오늘 이미 추매). 내일 재판단.")
+                    continue
+                executed = cls._execute_trade_v2(ticker, "buy", f"추가매수({profit_pct:.2f}%)", profit_pct, True, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
+                if executed:
+                    add_buy_cooldown[ticker] = today
+                trade_executed = trade_executed or bool(executed)
+                continue
+
             # 매수/매도 로직
             if score <= buy_max and not holding:
                 executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
                 trade_executed = trade_executed or bool(executed)
-            elif score >= sell_min and holding:
+            elif (score >= sell_min or score <= 10) and holding:
                 is_stop_loss = score <= 10  # 손절은 전량매도 — 쿨다운 없음
                 if not is_stop_loss and sell_cooldown.get(ticker) == today:
                     logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 점수매도). 내일 재판단.")
@@ -598,20 +767,19 @@ class TradingStrategyService:
         state = cls._load_state()
         user_state = state.get(user_id, {})
         
-        # 자산 가치 대략 추정 (점수 계산에 필요)
-        # 정확한 계산을 위해서는 PortfolioService.sync_with_kis가 필요하지만, 조회용이므로 DB값 사용
-        # total_assets, cash_balance = ... (생략하고 0으로 처리하거나 기본값 사용)
-        total_assets = 10000000 # 임시
-        cash_balance = 5000000  # 임시
+        # 실제 포트폴리오 기반 자산/현금 계산 (조회용이므로 sync_with_kis 없이 DB값 사용)
+        cash_balance = PortfolioService.load_cash(user_id)
+        total_assets, _, _ = cls._calculate_total_assets(holdings, cash_balance, macro_data)
         
+        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
+        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
+        holdings_map = {h['ticker']: h for h in holdings}
         for ticker, ticker_state in all_state_items:
-            holding = next((h for h in holdings if h['ticker'] == ticker), None)
-            
+            holding = holdings_map.get(ticker)
+
             # 점수 계산 (단순화된 버전 또는 전체 로직 사용)
             score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, total_assets, cash_balance)
-            
-            buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
-            sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
+
             if score <= buy_threshold_max or score >= sell_threshold_min:
                 action = "BUY" if score <= buy_threshold_max else "SELL"
                 waiting_list.append({
@@ -682,7 +850,8 @@ class TradingStrategyService:
             "recommendation": recommendation,
             "reasons": reasons,
             "current_price": state.current_price,
-            "rsi": state.rsi
+            "rsi": state.rsi,
+            "dcf_value": getattr(state, 'dcf_value', None),
         }
 
     @classmethod
@@ -717,37 +886,40 @@ class TradingStrategyService:
         stop_loss_pct = SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0)
 
         if ticker in panic_locks:
-            return (100, ["3일룰회복대기"]) if state.rsi < oversold_rsi else (0, ["패닉락구간"])
+            # 패닉락 구간: 매매 금지 (중립 50)
+            # RSI가 과매도 수준 회복 시 재진입 허용 (낮은 점수 = 매수 신호)
+            return (20, ["3일룰회복대기"]) if state.rsi < oversold_rsi else (50, ["패닉락구간"])
 
         # 점수 계산
         score = base_score
         reasons = []
 
         # [A] 기술적 지표
-        # RSI 연속 점수 (50 기준, 더 극단적일수록 높은 가중치)
+        # RSI 연속 점수: 과매도 → 점수 하락(매수), 과매수 → 점수 상승(매도)
+        # base_score=50 기준: BUY ≤30, SELL ≥70
         rsi = state.rsi
         if rsi <= 30:
-            # 0~30: +20 ~ +10 (극과매도)
-            rsi_score = 20 - (rsi / 30) * 10
+            # 0~30: -20 ~ -10 (극과매도 → 강한 매수 신호)
+            rsi_score = -(20 - (rsi / 30) * 10)
             score += int(rsi_score)
-            reasons.append(f"RSI극과매도({rsi:.1f},+{int(rsi_score)})")
+            reasons.append(f"RSI극과매도({rsi:.1f},{int(rsi_score)})")
         elif rsi < 50:
-            # 30~50: +10 ~ 0 (과매도)
-            rsi_score = 10 - ((rsi - 30) / 20) * 10
-            if rsi_score >= 5:
-                score += int(rsi_score)
-                reasons.append(f"RSI과매도({rsi:.1f},+{int(rsi_score)})")
-        elif rsi <= 70:
-            # 50~70: 0 ~ -10 (과매수)
-            rsi_score = -((rsi - 50) / 20) * 10
+            # 30~50: -10 ~ 0 (과매도 → 약한 매수 신호)
+            rsi_score = -(10 - ((rsi - 30) / 20) * 10)
             if rsi_score <= -5:
                 score += int(rsi_score)
-                reasons.append(f"RSI과매수({rsi:.1f},{int(rsi_score)})")
+                reasons.append(f"RSI과매도({rsi:.1f},{int(rsi_score)})")
+        elif rsi <= 70:
+            # 50~70: 0 ~ +10 (과매수 → 약한 매도 신호)
+            rsi_score = ((rsi - 50) / 20) * 10
+            if rsi_score >= 5:
+                score += int(rsi_score)
+                reasons.append(f"RSI과매수({rsi:.1f},+{int(rsi_score)})")
         else:
-            # 70~100: -10 ~ -20 (극과매수)
-            rsi_score = -10 - ((rsi - 70) / 30) * 10
+            # 70~100: +10 ~ +20 (극과매수 → 강한 매도 신호)
+            rsi_score = 10 + ((rsi - 70) / 30) * 10
             score += int(rsi_score)
-            reasons.append(f"RSI극과매수({rsi:.1f},{int(rsi_score)})")
+            reasons.append(f"RSI극과매수({rsi:.1f},+{int(rsi_score)})")
 
         change_rate = getattr(state, 'change_rate', 0)
         if change_rate <= dip_buy_pct: 
@@ -791,7 +963,7 @@ class TradingStrategyService:
             elif profit_pct <= -5.0 and profit_pct > stop_loss_pct: 
                 score += cls.WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"추매권({profit_pct:.1f}%)")
             elif profit_pct <= stop_loss_pct:
-                score = 0; reasons.append("손절도달")
+                score = 100; reasons.append("손절도달")  # 강제 매도
 
         # [C] 시장/거시
         macro_score = macro.get('economic_indicators', {}).get('summary', {}).get('total_score', 0)
@@ -806,23 +978,23 @@ class TradingStrategyService:
         if regime == 'BULL':
             score += cls.WEIGHTS['BULL_MARKET_SECTOR']; reasons.append("상승장어드밴티지")
         elif regime == 'BEAR':
-            score -= 10; reasons.append("하락장리스크관리")
+            score += 10; reasons.append("하락장리스크관리")  # 하락장 = 매도 우위
 
         # [D] 목표가 도달 (실시간 워칭 기반)
         target_buy = getattr(state, 'target_buy_price', 0)
         target_sell = getattr(state, 'target_sell_price', 0)
         
         if target_buy > 0 and curr_price <= target_buy:
-            score += 30; reasons.append(f"목표진입가도달(${target_buy})")
-        
+            score -= 30; reasons.append(f"목표진입가도달(${target_buy})")  # 매수 신호 → 점수 하락
+
         if target_sell > 0 and curr_price >= target_sell:
-            score -= 30; reasons.append(f"목표매도가도달(${target_sell})")
+            score += 30; reasons.append(f"목표매도가도달(${target_sell})")  # 매도 신호 → 점수 상승
 
         # [E] 시가총액 상위 10개 가중치
         top10_bonus = SettingsService.get_int("STRATEGY_TOP10_BONUS", 10)
         if top10_bonus and ticker in cls._get_top10_market_cap_tickers():
-            score += top10_bonus
-            reasons.append(f"시총상위10(+{top10_bonus})")
+            score -= top10_bonus
+            reasons.append(f"시총상위10(-{top10_bonus})")
 
         # [F] 사용자 지정 가중치 오버라이드
         overrides = cls.get_top_weight_overrides()
@@ -831,6 +1003,24 @@ class TradingStrategyService:
             if custom_bonus != 0:
                 score += custom_bonus
                 reasons.append(f"가중치사용자설정({custom_bonus:+d})")
+
+        # [G] 섹터 그룹 목표 비중 편차 반영 (holdings 정보가 있을 때만)
+        # 부족 섹터 → score -10 (매수 신호 강화), 초과 섹터 → score +10 (매도 신호 강화)
+        try:
+            grp = cls._get_sector_group(ticker, holding)
+            if grp != "other":
+                exchange_rate_g = MacroService.get_exchange_rate()
+                all_holdings = PortfolioService.load_portfolio(user_state.get("user_id", "sean"))
+                sw = cls._get_sector_group_weights(all_holdings, exchange_rate_g)
+                dev = sw["weights"].get(grp, {}).get("dev", 0.0)
+                if dev < -cls.SECTOR_REBAL_THRESHOLD:
+                    score -= 10
+                    reasons.append(f"섹터부족매수우선({grp} {dev:+.1%})")
+                elif dev > cls.SECTOR_REBAL_THRESHOLD:
+                    score += 10
+                    reasons.append(f"섹터초과매도우선({grp} {dev:+.1%})")
+        except Exception:
+            pass
 
         if cash_ratio < target_cash_ratio and score > 50:
             score += cls.WEIGHTS['CASH_PENALTY']; reasons.append("현금부족")
@@ -952,13 +1142,67 @@ class TradingStrategyService:
         return quantity, quantity * final_price, final_price
 
     @classmethod
-    def _send_trade_alert(cls, ticker: str, side: str, score: int, current_price: float, change_rate: float, trade_qty: int, profit_pct: float, holding: dict, executed: bool):
+    def _send_tick_alert(cls, ticker: str, side: str, current_price: float, qty: int, reason: str, pnl_pct: float = 0.0, holding: dict = None):
+        """틱매매 체결 알림 (구조화 슬랙 메시지)."""
         meta = StockMetaService.get_stock_meta(ticker)
-        name = holding.get("name") if holding and holding.get("name") else (meta.name_ko or meta.name_en or "" if meta else "")
-        emoji = "🔵" if side == "buy" else "🔴"
-        msg = f"{emoji} **[{side.upper()}] {ticker}, {name}, 점수: {score}, 가격: {current_price:,.2f}, 등락률: {change_rate:.2f}%, 수량: {trade_qty}주"
-        if side == "sell": msg += f", 수익율: {profit_pct:.2f}%"
-        if executed: AlertService.send_slack_alert(msg)
+        name = (holding.get("name") if holding and holding.get("name")
+                else (meta.name_ko or meta.name_en or "" if meta else ""))
+        is_kr = ticker.isdigit()
+        price_str = f"{current_price:,.0f}원" if is_kr else f"${current_price:,.2f}"
+        if side == "buy":
+            msg = (
+                f"🔵 *[매수 체결 - 틱매매]*\n"
+                f"• 종목: {ticker} {name}\n"
+                f"• 매수가: {price_str}\n"
+                f"• 수량: {qty}주\n"
+                f"• 사유: {reason}"
+            )
+        else:
+            buy_price = float(holding.get("buy_price", 0)) if holding else 0
+            profit_amt = (current_price - buy_price) * qty if buy_price else 0
+            profit_amt_str = f"{profit_amt:+,.0f}원" if is_kr else f"${profit_amt:+,.2f}"
+            msg = (
+                f"🔴 *[매도 체결 - 틱매매]*\n"
+                f"• 종목: {ticker} {name}\n"
+                f"• 매도가: {price_str}\n"
+                f"• 수량: {qty}주\n"
+                f"• 수익률: {pnl_pct:+.2f}%  |  수익금: {profit_amt_str}\n"
+                f"• 사유: {reason}"
+            )
+        AlertService.send_slack_alert(msg)
+
+    @classmethod
+    def _send_trade_alert(cls, ticker: str, side: str, score: int, current_price: float, change_rate: float, trade_qty: int, profit_pct: float, holding: dict, executed: bool):
+        if not executed:
+            return
+        meta = StockMetaService.get_stock_meta(ticker)
+        name = (holding.get("name") if holding and holding.get("name")
+                else (meta.name_ko or meta.name_en or "" if meta else ""))
+        is_kr = ticker.isdigit()
+        currency = "원" if is_kr else "USD"
+        price_str = f"{current_price:,.0f}{currency}" if is_kr else f"${current_price:,.2f}"
+
+        if side == "buy":
+            msg = (
+                f"🔵 *[매수 체결]*\n"
+                f"• 종목: {ticker} {name}\n"
+                f"• 매수가: {price_str}\n"
+                f"• 수량: {trade_qty}주\n"
+                f"• 등락률: {change_rate:+.2f}%  |  점수: {score}"
+            )
+        else:
+            buy_price = float(holding.get("buy_price", 0)) if holding else 0
+            profit_amt = (current_price - buy_price) * trade_qty if buy_price else 0
+            profit_amt_str = (f"{profit_amt:+,.0f}원" if is_kr else f"${profit_amt:+,.2f}")
+            msg = (
+                f"🔴 *[매도 체결]*\n"
+                f"• 종목: {ticker} {name}\n"
+                f"• 매도가: {price_str}\n"
+                f"• 수량: {trade_qty}주\n"
+                f"• 수익률: {profit_pct:+.2f}%  |  수익금: {profit_amt_str}\n"
+                f"• 등락률: {change_rate:+.2f}%  |  점수: {score}"
+            )
+        AlertService.send_slack_alert(msg)
 
     @classmethod
     def _execute_trade_v2(
@@ -1056,3 +1300,179 @@ class TradingStrategyService:
 
         cls._send_trade_alert(ticker, side, score, current_price, change_rate, trade_qty, profit_pct, holding, executed)
         return executed
+
+    # ── 주간 섹터 리밸런싱 ──────────────────────────────────────────────────────
+
+    @classmethod
+    def run_sector_rebalance(cls, user_id: str = "sean") -> dict:
+        """주 1회 섹터 그룹 비중 리밸런싱.
+
+        로직:
+          1. 현재 섹터 비중 계산
+          2. 편차 < 5%  → 패스
+             편차 5~10% → 절반만 리밸런싱
+             편차 > 10% → 전체 리밸런싱
+          3. 초과 섹터(overweight): 수익 높은 보유 종목 분할 매도
+          4. 부족 섹터(underweight): DCF 저평가 + RSI 낮은 후보 매수
+             → 매도 대금 + 잉여 현금 순서로 사용
+        """
+        logger.info("🔄 주간 섹터 리밸런싱 시작...")
+
+        exchange_rate  = MacroService.get_exchange_rate()
+        holdings       = PortfolioService.load_portfolio(user_id)
+        macro          = MacroService.get_macro_data()
+        total_assets, target_cash_kr, target_cash_us = cls._get_portfolio_totals(user_id, holdings)
+        cash_balance   = PortfolioService.get_cash_balance(user_id) or 0.0
+
+        sw = cls._get_sector_group_weights(holdings, exchange_rate)
+        weights = sw["weights"]
+
+        result = {"sold": [], "bought": [], "skipped": [], "weights_before": weights}
+        sells_executed = 0
+        buys_executed  = 0
+
+        # ── STEP 1: 초과 섹터 수익 실현 ─────────────────────────────────────
+        overweight_groups = [
+            (grp, info) for grp, info in weights.items()
+            if grp != "other" and info["dev"] > cls.SECTOR_REBAL_THRESHOLD
+        ]
+        overweight_groups.sort(key=lambda x: -x[1]["dev"])   # 초과폭 큰 순
+
+        for grp, info in overweight_groups:
+            dev = info["dev"]
+            # 편차 크기에 따라 매도 강도 결정
+            if dev >= 0.10:
+                sell_ratio = 1.0    # 전체 리밸런싱 (분할매도 로직 내부에서 1/3)
+            else:
+                sell_ratio = 0.5    # 절반만
+
+            # 해당 그룹 보유 종목 중 수익률 높은 순 정렬
+            grp_holdings = [
+                h for h in holdings
+                if h.get("quantity", 0) > 0 and cls._get_sector_group(h["ticker"], h) == grp
+            ]
+            grp_holdings.sort(key=lambda h: (
+                (float(h.get("current_price") or 0) - float(h.get("buy_price") or 1))
+                / float(h.get("buy_price") or 1)
+            ), reverse=True)
+
+            for h in grp_holdings:
+                ticker = h["ticker"]
+                if not cls._check_market_hours(ticker):
+                    result["skipped"].append({"ticker": ticker, "reason": "시장비개장"})
+                    continue
+
+                current_price = float(h.get("current_price") or 0)
+                buy_price     = float(h.get("buy_price") or 0)
+                profit_pct    = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
+
+                # 손실 중인 종목은 섹터 리밸런싱으로 매도 안 함 (손절과 혼동 방지)
+                if profit_pct < 0:
+                    result["skipped"].append({"ticker": ticker, "reason": f"손실중({profit_pct:.1f}%) 리밸런싱 제외"})
+                    continue
+
+                executed = cls._execute_trade_v2(
+                    ticker, "sell",
+                    f"섹터리밸런싱-초과({grp} {dev:+.1%})",
+                    profit_pct, True, 60,
+                    current_price, total_assets, cash_balance, exchange_rate,
+                    holdings=holdings, user_id=user_id, holding=h, macro=macro,
+                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+                )
+                if executed:
+                    sells_executed += 1
+                    sell_val = current_price * max(1, int(h.get("quantity", 0) / 3))
+                    cash_balance += sell_val * (exchange_rate if not ticker.isdigit() else 1.0)
+                    result["sold"].append({
+                        "ticker": ticker, "group": grp,
+                        "dev": round(dev, 4), "profit_pct": round(profit_pct, 2),
+                    })
+                    break  # 그룹당 1종목씩 매도 (점진적 리밸런싱)
+
+        # ── STEP 2: 부족 섹터 매수 ──────────────────────────────────────────
+        underweight_groups = [
+            (grp, info) for grp, info in weights.items()
+            if grp != "other" and info["dev"] < -cls.SECTOR_REBAL_THRESHOLD
+        ]
+        underweight_groups.sort(key=lambda x: x[1]["dev"])    # 부족폭 큰 순
+
+        all_states    = MarketDataService.get_all_states()
+        holdings_map  = {h["ticker"]: h for h in holdings}
+        user_state    = {"user_id": user_id}
+
+        for grp, info in underweight_groups:
+            dev = info["dev"]
+
+            # 후보: 해당 그룹 & 미보유 & 시장 개장 종목
+            candidates = []
+            for ticker, state in all_states.items():
+                if not getattr(state, "is_ready", False):
+                    continue
+                if cls._get_sector_group(ticker) != grp:
+                    continue
+                if not cls._check_market_hours(ticker):
+                    continue
+
+                holding = holdings_map.get(ticker)
+                score, reasons = cls.calculate_score(
+                    ticker, state, holding, macro, user_state,
+                    total_assets, cash_balance,
+                    market_cash_ratio=target_cash_kr if ticker.isdigit() else target_cash_us,
+                )
+                candidates.append((ticker, state, holding, score, reasons))
+
+            # 점수 낮은 순 (매수 신호 강한 순)
+            candidates.sort(key=lambda x: x[3])
+
+            buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
+            for ticker, state, holding, score, reasons in candidates:
+                if score > buy_threshold + 10:   # 리밸런싱이므로 임계값 소폭 완화
+                    result["skipped"].append({"ticker": ticker, "reason": f"매수신호미달(score={score})"})
+                    continue
+
+                executed = cls._execute_trade_v2(
+                    ticker, "buy",
+                    f"섹터리밸런싱-부족({grp} {dev:+.1%})",
+                    0.0, False, score,
+                    getattr(state, "current_price", 0),
+                    total_assets, cash_balance, exchange_rate,
+                    holdings=holdings, user_id=user_id, holding=holding, macro=macro,
+                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+                )
+                if executed:
+                    buys_executed += 1
+                    result["bought"].append({
+                        "ticker": ticker, "group": grp,
+                        "dev": round(dev, 4), "score": score,
+                    })
+                    break  # 그룹당 1종목씩 매수
+
+        # ── 결과 요약 ────────────────────────────────────────────────────────
+        sw_after = cls._get_sector_group_weights(
+            PortfolioService.load_portfolio(user_id), exchange_rate
+        )
+        result["weights_after"] = sw_after["weights"]
+
+        summary = (
+            f"🔄 *주간 섹터 리밸런싱 완료*\n"
+            f"매도: {sells_executed}건  |  매수: {buys_executed}건\n"
+        )
+        if result["sold"]:
+            summary += "매도: " + ", ".join(f"{s['ticker']}({s['group']} {s['profit_pct']:+.1f}%)" for s in result["sold"]) + "\n"
+        if result["bought"]:
+            summary += "매수: " + ", ".join(f"{b['ticker']}({b['group']})" for b in result["bought"]) + "\n"
+        for grp in ["tech", "value", "financial"]:
+            bef = weights.get(grp, {}).get("weight", 0)
+            aft = sw_after["weights"].get(grp, {}).get("weight", 0)
+            tgt = cls.SECTOR_TARGET_WEIGHT.get(grp, 0)
+            summary += f"  {grp}: {bef:.1%} → {aft:.1%}  (목표 {tgt:.0%})\n"
+
+        try:
+            from services.notification.alert_service import AlertService
+            AlertService.send_slack_alert(summary)
+        except Exception:
+            pass
+
+        logger.info(summary)
+        result["summary"] = summary
+        return result

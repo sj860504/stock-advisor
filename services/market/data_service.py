@@ -10,6 +10,7 @@ from services.kis.fetch.kis_fetcher import KisFetcher
 from services.market.stock_meta_service import StockMetaService
 from services.analysis.indicator_service import IndicatorService
 from services.analysis.financial_service import FinancialService
+from services.analysis.dcf_service import DcfService
 from services.market.market_hour_service import MarketHourService
 
 logger = get_logger("data_service")
@@ -121,12 +122,12 @@ class DataService:
             response = KisFetcher.fetch_domestic_ranking(token)
             tickers = []
             if response.get("output"):
+                tr_id, path = StockMetaService.get_api_info("주식현재가_시세")
                 for item in response["output"]:
                     ticker = item.get("mksc_shrn_iscd")
                     name = item.get("hts_kor_isnm")
                     if ticker and (not cls._is_fund_like_security(ticker, name, "KR")):
                         tickers.append(ticker)
-                        tr_id, path = StockMetaService.get_api_info("주식현재가_시세")
                         StockMetaService.upsert_stock_meta(
                             ticker=ticker,
                             name_ko=name,
@@ -199,11 +200,11 @@ class DataService:
             combined.sort(key=lambda x: x['mcap'], reverse=True)
             
             tickers = []
+            tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
             for item in combined[:limit]:
                 ticker = item['ticker']
                 if ticker:
                     tickers.append(ticker)
-                    tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
                     StockMetaService.upsert_stock_meta(
                         ticker=ticker,
                         name_ko=item['name'],
@@ -215,7 +216,6 @@ class DataService:
                     )
             if len(tickers) < limit:
                 existing = set(tickers)
-                tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
                 for fallback_ticker, excd, ex_name in cls._build_us_fallback_data(limit=limit * 2):
                     if len(tickers) >= limit:
                         break
@@ -398,7 +398,7 @@ class DataService:
                 indicators = {}
                 if not hist.empty:
                     indicators = IndicatorService.get_latest_indicators(hist[COL_CLOSE])
-                dcf_data = FinancialService.get_dcf_data(ticker)
+                dcf_val = DcfService.calculate_dcf(ticker)
                 metrics = {
                     "current_price": price_info.get("price"),
                     "market_cap": price_info.get("market_cap"),
@@ -408,7 +408,7 @@ class DataService:
                     "bps": price_info.get("bps"),
                     "rsi": indicators.get("rsi"),
                     "ema": indicators.get("ema"),
-                    "dcf_value": None,
+                    "dcf_value": dcf_val,
                 }
                 StockMetaService.save_financials(ticker, metrics)
                 time.sleep(KIS_RATE_LIMIT_SLEEP_SEC)

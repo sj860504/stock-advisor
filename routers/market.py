@@ -88,6 +88,44 @@ def get_trading_signals() -> TradingSignalsResponse:
     return _build_trading_signals(data)
 
 
+@router.get("/macro", response_model=Dict[str, Any])
+def get_macro_data() -> Dict[str, Any]:
+    """거시경제 지표 및 시장 국면 분석 (100점 기준 레짐 점수 포함)."""
+    from services.market.macro_service import MacroService
+    return MacroService.get_macro_data()
+
+
+@router.get("/calendar/weekly", response_model=List[Dict[str, Any]])
+def get_weekly_economic_calendar(days: int = 7) -> List[Dict[str, Any]]:
+    """이번 주 경제지표 발표 일정 (ET·KST 시각 포함, 날짜순)."""
+    from services.market.economic_calendar_service import EconomicCalendarService
+    events = EconomicCalendarService.get_weekly_calendar(days=days)
+    # datetime 객체 → ISO string 직렬화
+    for ev in events:
+        for k in ('datetime_utc', 'datetime_kst'):
+            if k in ev and hasattr(ev[k], 'isoformat'):
+                ev[k] = ev[k].isoformat()
+    return events
+
+
+@router.get("/regime/history", response_model=List[Dict[str, Any]])
+def get_regime_history(days: int = 30) -> List[Dict[str, Any]]:
+    """최근 N일 시장 국면(regime) 이력 반환 (최신순)."""
+    from services.market.stock_meta_service import StockMetaService
+    return StockMetaService.get_market_regime_history(days)
+
+
+@router.get("/regime/{date}", response_model=Dict[str, Any])
+def get_regime_for_date(date: str) -> Dict[str, Any]:
+    """특정 날짜(YYYY-MM-DD)의 시장 국면 반환. DB에 없으면 역사적 데이터로 계산."""
+    from services.market.macro_service import MacroService
+    from services.market.stock_meta_service import StockMetaService
+    cached = StockMetaService.get_regime_for_date(date)
+    if cached:
+        return cached
+    return MacroService.calculate_historical_regime(date)
+
+
 @router.get("/watching", response_model=List[WatchItem])
 def get_watching_list() -> List[WatchItem]:
     """현재 감시 중인(실시간 데이터 수신 중인) 종목 목록을 반환합니다."""

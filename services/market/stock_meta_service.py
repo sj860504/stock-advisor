@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import OperationalError
 from datetime import datetime
-from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta, DcfOverride
+from models.stock_meta import Base, StockMeta, Financials, ApiTrMeta, DcfOverride, MarketRegimeHistory
 from models.portfolio import Portfolio, PortfolioHolding
 from models.trade_history import TradeHistory
 from models.settings import Settings
@@ -111,6 +111,20 @@ class StockMetaService:
             session.close()
 
     @classmethod
+    def get_stock_meta_bulk(cls, tickers: list) -> list:
+        """여러 종목 메타 정보 일괄 조회"""
+        if not tickers:
+            return []
+        session = cls.get_session()
+        try:
+            results = session.query(StockMeta).filter(StockMeta.ticker.in_(tickers)).all()
+            for r in results:
+                session.expunge(r)
+            return results
+        finally:
+            session.close()
+
+    @classmethod
     def save_financials(cls, ticker: str, metrics: dict, base_date: datetime = None):
         """재무 지표 저장 (최신 데이터 갱신 또는 이력 추가)"""
         if not metrics:
@@ -208,6 +222,54 @@ class StockMetaService:
             session.close()
 
     @classmethod
+    def get_all_latest_dcf(cls) -> list:
+        """전 종목 최신 DCF 값 및 관련 지표 일괄 조회 (dcf_overrides 병합 포함)."""
+        session = cls.get_session()
+        try:
+            from sqlalchemy import text
+            rows = session.execute(text("""
+                SELECT
+                    sm.ticker,
+                    sm.name_ko,
+                    sm.market_type,
+                    f.current_price,
+                    f.dcf_value,
+                    f.base_date,
+                    ov.fair_value     AS override_fair_value,
+                    ov.fcf_per_share  AS override_fcf_per_share
+                FROM financials f
+                JOIN stock_meta sm ON f.stock_id = sm.id
+                LEFT JOIN dcf_overrides ov ON ov.ticker = sm.ticker
+                WHERE f.base_date = (
+                    SELECT MAX(f2.base_date)
+                    FROM financials f2
+                    WHERE f2.stock_id = f.stock_id
+                )
+                ORDER BY sm.market_type, sm.ticker
+            """)).fetchall()
+            result = []
+            for r in rows:
+                # 오버라이드된 fair_value가 있으면 우선 사용
+                effective_dcf = float(r.override_fair_value) if r.override_fair_value else (
+                    float(r.dcf_value) if r.dcf_value else None
+                )
+                price = float(r.current_price) if r.current_price else None
+                upside = round((effective_dcf - price) / price * 100, 2) if (effective_dcf and price and price > 0) else None
+                result.append({
+                    "ticker": r.ticker,
+                    "name": r.name_ko,
+                    "market_type": r.market_type,
+                    "current_price": price,
+                    "dcf_value": effective_dcf,
+                    "upside_pct": upside,
+                    "is_override": r.override_fair_value is not None or r.override_fcf_per_share is not None,
+                    "base_date": str(r.base_date)[:10] if r.base_date else None,
+                })
+            return result
+        finally:
+            session.close()
+
+    @classmethod
     def get_financials_history(cls, ticker: str, limit: int = 2500):
         """종목 재무 지표 이력 조회 (최신순)"""
         session = cls.get_session()
@@ -288,21 +350,36 @@ class StockMetaService:
             session.close()
 
     @classmethod
-    def upsert_dcf_override(cls, ticker: str, fcf_per_share: float, beta: float, growth_rate: float):
-        """사용자 지정 DCF 입력값 저장/업데이트"""
+    def upsert_dcf_override(
+        cls,
+        ticker: str,
+        fcf_per_share: float = None,
+        beta: float = None,
+        growth_rate: float = None,
+        fair_value: float = None,
+    ):
+        """사용자 지정 DCF 입력값 저장/업데이트.
+        fair_value 를 지정하면 FCF 계산 없이 해당 값을 DCF 적정가로 직접 사용.
+        """
         session = cls.get_session()
         try:
             row = session.query(DcfOverride).filter_by(ticker=ticker).first()
             if not row:
                 row = DcfOverride(ticker=ticker)
                 session.add(row)
-            
-            row.fcf_per_share = fcf_per_share
-            row.beta = beta
-            row.growth_rate = growth_rate
+
+            if fcf_per_share is not None:
+                row.fcf_per_share = fcf_per_share
+            if beta is not None:
+                row.beta = beta
+            if growth_rate is not None:
+                row.growth_rate = growth_rate
+            if fair_value is not None:
+                row.fair_value = fair_value
             row.updated_at = datetime.now()
             session.commit()
             if row:
+                session.refresh(row)
                 session.expunge(row)
             return row
         except Exception as e:
@@ -396,3 +473,93 @@ class StockMetaService:
         """환경에 맞는 TR ID 조회 (하위 호환)"""
         tr_id, _ = cls.get_api_info(api_name, is_vts)
         return tr_id
+
+    # ── Market Regime History ──────────────────────────────────────────────
+
+    @classmethod
+    def save_market_regime(cls, date_str: str, regime_data: dict, vix: float, fear_greed: int) -> bool:
+        """일별 시장 국면 스냅샷을 DB에 저장 (이미 있으면 업데이트)."""
+        import json
+        session = cls.get_session()
+        try:
+            record = session.query(MarketRegimeHistory).filter_by(date=date_str).first()
+            if not record:
+                record = MarketRegimeHistory(date=date_str)
+                session.add(record)
+            record.status        = regime_data.get("status")
+            record.regime_score  = regime_data.get("regime_score")
+            record.vix           = vix
+            record.fear_greed    = fear_greed
+            record.us_10y_yield  = ((regime_data.get("components") or {}).get("other_detail") or {}).get("us_10y_yield")
+            record.spx_price     = regime_data.get("current")
+            record.spx_ma200     = regime_data.get("ma200")
+            record.spx_diff_pct  = regime_data.get("diff_pct")
+            record.components_json = json.dumps(regime_data.get("components", {}), ensure_ascii=False)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"save_market_regime error: {e}")
+            return False
+        finally:
+            session.close()
+
+    @classmethod
+    def get_market_regime_history(cls, days: int = 30) -> list:
+        """최근 N일 레짐 이력 반환 (최신순)."""
+        import json
+        session = cls.get_session()
+        try:
+            records = (
+                session.query(MarketRegimeHistory)
+                .order_by(MarketRegimeHistory.date.desc())
+                .limit(days)
+                .all()
+            )
+            result = []
+            for r in records:
+                result.append({
+                    "date":         r.date,
+                    "status":       r.status,
+                    "regime_score": r.regime_score,
+                    "vix":          r.vix,
+                    "fear_greed":   r.fear_greed,
+                    "us_10y_yield": r.us_10y_yield,
+                    "spx_price":    r.spx_price,
+                    "spx_ma200":    r.spx_ma200,
+                    "spx_diff_pct": r.spx_diff_pct,
+                    "components":   json.loads(r.components_json or "{}"),
+                })
+            return result
+        except Exception as e:
+            logger.error(f"get_market_regime_history error: {e}")
+            return []
+        finally:
+            session.close()
+
+    @classmethod
+    def get_regime_for_date(cls, date_str: str) -> dict | None:
+        """특정 날짜 레짐 반환."""
+        import json
+        session = cls.get_session()
+        try:
+            r = session.query(MarketRegimeHistory).filter_by(date=date_str).first()
+            if not r:
+                return None
+            return {
+                "date":         r.date,
+                "status":       r.status,
+                "regime_score": r.regime_score,
+                "vix":          r.vix,
+                "fear_greed":   r.fear_greed,
+                "us_10y_yield": r.us_10y_yield,
+                "spx_price":    r.spx_price,
+                "spx_ma200":    r.spx_ma200,
+                "spx_diff_pct": r.spx_diff_pct,
+                "components":   json.loads(r.components_json or "{}"),
+            }
+        except Exception as e:
+            logger.error(f"get_regime_for_date error: {e}")
+            return None
+        finally:
+            session.close()
