@@ -18,6 +18,12 @@ from utils.logger import get_logger
 
 logger = get_logger("scheduler")
 
+# WebSocket 실시간 구독 상한 (KIS 실전/모의 모두 40종목 제한, 시장별 20씩 배분)
+WS_HIGH_TIER_COUNT = 20
+# Tier LOW 폴링 주기 (분)
+LOW_TIER_POLL_MINUTES = 5
+
+
 class SchedulerService:
     _scheduler = None
     _ws_loop = None
@@ -52,6 +58,9 @@ class SchedulerService:
                                    day_of_week='mon', hour=9, minute=20,
                                    id='weekly_sector_rebalance')
             
+            # 5분 단위 Tier LOW 종목 가격 폴링 (WebSocket 미구독 종목)
+            cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
+
             # 10분 단위 포트폴리오 DB 동기화 (KIS 데이터 우선)
             cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
             
@@ -155,76 +164,96 @@ class SchedulerService:
 
     @classmethod
     async def manage_subscriptions_async(cls, force_refresh: bool = False):
-        """실제 비동기 구독 실행 로직"""
+        """실제 비동기 구독 실행 로직.
+
+        Tier HIGH (시장별 상위 WS_HIGH_TIER_COUNT + 보유 종목): WebSocket 실시간 구독
+        Tier LOW  (나머지 80종목): MarketDataService 등록만 (5분 폴링으로 가격 갱신)
+        """
         logger.info(f"🔄 Refreshing Market Subscriptions (Top 100 + Portfolio, force={force_refresh})...")
         try:
             def _norm_ticker(t):
                 t = str(t or "").strip().upper()
                 if not t:
                     return ""
-                # 국내 종목코드는 6자리로 정규화
                 if t.isdigit() and len(t) < 6:
                     t = t.zfill(6)
                 return t
 
-            # 1. 대상 티커 모두 수집
+            # ── 1. 전체 유니버스 수집 ─────────────────────────────────────
             kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
             us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
             portfolio = PortfolioService.load_portfolio('sean')
-            holdings = [_norm_ticker(getattr(h, "ticker", "") if not isinstance(h, dict) else h.get('ticker')) for h in portfolio]
-            
-            kr_holdings = [t for t in holdings if t and t.isdigit() and len(t) == 6]
-            us_holdings = [t for t in holdings if t and t.isalpha()]
+            holdings_raw = [
+                _norm_ticker(h.get('ticker') if isinstance(h, dict) else getattr(h, "ticker", ""))
+                for h in portfolio
+            ]
+            kr_holdings = {t for t in holdings_raw if t and t.isdigit() and len(t) == 6}
+            us_holdings = {t for t in holdings_raw if t and t.isalpha()}
 
-            all_kr = list(set([t for t in kr_tickers if t and t.isdigit() and len(t) == 6] + kr_holdings))
-            all_us = list(set([t for t in us_tickers if t and t.isalpha()] + us_holdings))
+            all_kr = list(dict.fromkeys(  # 순서 유지하면서 중복 제거 (시총 순위 보존)
+                [t for t in kr_tickers if t and t.isdigit() and len(t) == 6]
+                + list(kr_holdings)
+            ))
+            all_us = list(dict.fromkeys(
+                [t for t in us_tickers if t and t.isalpha()]
+                + list(us_holdings)
+            ))
             target_universe = set(all_kr + all_us)
-            
-            # 2. 기존 캐시에서 대상 유니버스 외 종목 제거 후 일괄 등록
+
+            # ── 2. 티어 분류 ──────────────────────────────────────────────
+            # 보유 종목은 항상 HIGH (실시간 필요)
+            kr_high = list(kr_holdings) + [t for t in all_kr if t not in kr_holdings][:WS_HIGH_TIER_COUNT]
+            us_high = list(us_holdings) + [t for t in all_us if t not in us_holdings][:WS_HIGH_TIER_COUNT]
+            # 중복 제거 후 최대 WS_HIGH_TIER_COUNT * 2 유지 (KR 20 + US 20)
+            kr_high_set = set(kr_high[:WS_HIGH_TIER_COUNT + len(kr_holdings)])
+            us_high_set = set(us_high[:WS_HIGH_TIER_COUNT + len(us_holdings)])
+            high_set = kr_high_set | us_high_set
+            low_set = target_universe - high_set
+            MarketDataService.set_tiers(high_set, low_set)
+
+            # ── 3. 기존 캐시 정리 후 전체 일괄 등록 ──────────────────────
             MarketDataService.prune_states(target_universe)
-            
-            # 시장 개장 여부에 따라 WATCH 대상 필터링
+
             from services.market.market_hour_service import MarketHourService
             allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
             is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-            
-            # 한국 시장 개장 중이면 미국 종목 제외, 미국 시장 개장 중이면 한국 종목 제외
-            watch_kr = not is_us_open  # 미국 시장이 닫혔을 때만 한국 종목 WATCH
-            watch_us = not is_kr_open  # 한국 시장이 닫혔을 때만 미국 종목 WATCH
-            
-            logger.info(f"📺 WATCH 필터: KR개장={is_kr_open}, US개장={is_us_open} → KR WATCH={watch_kr}, US WATCH={watch_us}")
-            
+            watch_kr = not is_us_open
+            watch_us = not is_kr_open
+
+            logger.info(
+                f"📺 KR 개장={is_kr_open}, US 개장={is_us_open} | "
+                f"HIGH {len(high_set)}종목 (WebSocket), LOW {len(low_set)}종목 (5분 폴링)"
+            )
+
             tickers_to_register = []
             if watch_kr:
                 tickers_to_register.extend(all_kr)
             if watch_us:
                 tickers_to_register.extend(all_us)
             MarketDataService.register_batch(tickers_to_register)
-            
-            # 3. 실시간 웹소켓 구독 (분석과 병렬로 수행)
-            # 국내 주식 구독
+
+            # ── 4. WebSocket 구독: HIGH 티어만 ────────────────────────────
             if watch_kr:
                 for ticker in all_kr:
-                    if len(ticker) == 6 and ticker.isdigit():
+                    if ticker in kr_high_set and len(ticker) == 6 and ticker.isdigit():
                         await kis_ws_service.subscribe(ticker, market="KRX")
                         await asyncio.sleep(0.05)
-            
-            # 미국 주식 구독
+
             if watch_us:
                 market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS", "NAS": "NAS", "NYS": "NYS", "AMS": "AMS"}
                 us_meta_map = {m.ticker: m for m in StockMetaService.get_stock_meta_bulk(all_us)} if all_us else {}
                 for ticker in all_us:
-                    if ticker.isalpha():
+                    if ticker in us_high_set and ticker.isalpha():
                         meta = us_meta_map.get(ticker)
                         raw_market = (meta.api_market_code if meta and meta.api_market_code else "NAS").upper()
                         ws_market = market_map_4to3.get(raw_market, "NAS")
                         await kis_ws_service.subscribe(ticker, market=ws_market)
-                        await asyncio.sleep(0.05) 
-            
+                        await asyncio.sleep(0.05)
+
             logger.info(
-                f"✅ Subscriptions managed: KR={len(kr_tickers)}, US={len(us_tickers)}, "
-                f"Holdings={len([t for t in holdings if t])}, Universe={len(target_universe)}"
+                f"✅ Subscriptions: WS HIGH {len(high_set)}종목, LOW poll {len(low_set)}종목 | "
+                f"KR={len(all_kr)}, US={len(all_us)}, Holdings={len(holdings_raw)}"
             )
         except Exception as e:
             logger.error(f"❌ Error in manage_subscriptions_async: {e}")
@@ -323,6 +352,71 @@ class SchedulerService:
             logger.info(f"✅ 섹터 리밸런싱 완료: 매도 {len(result.get('sold',[]))}건, 매수 {len(result.get('bought',[]))}건")
         except Exception as e:
             logger.error(f"❌ 섹터 리밸런싱 오류: {e}")
+
+    @classmethod
+    def _refresh_low_tier_prices(cls):
+        """Tier LOW 종목 현재가를 5분 주기로 KIS REST API 폴링하여 갱신합니다.
+        현재 개장된 시장의 종목만 갱신 (KR 또는 US, 동시 개장 시 해당 시장만).
+        """
+        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
+        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+        if not is_kr_open and not is_us_open:
+            return
+
+        low_tickers = MarketDataService.get_low_tier_tickers()
+        if not low_tickers:
+            return
+
+        # 개장 시장 기준으로 대상 필터링
+        active_tickers = []
+        for t in low_tickers:
+            is_kr = t.isdigit()
+            if is_kr and is_kr_open and not is_us_open:
+                active_tickers.append(t)
+            elif not is_kr and is_us_open and not is_kr_open:
+                active_tickers.append(t)
+            elif is_kr and is_kr_open:
+                active_tickers.append(t)
+            elif not is_kr and is_us_open:
+                active_tickers.append(t)
+
+        if not active_tickers:
+            return
+
+        logger.info(f"⏱️ Tier LOW 가격 갱신 시작: {len(active_tickers)}종목")
+        try:
+            from services.kis.kis_service import KisService
+            from services.kis.fetch.kis_fetcher import KisFetcher
+            token = KisService.get_access_token()
+            us_meta_map = {}
+            us_tickers_in_low = [t for t in active_tickers if not t.isdigit()]
+            if us_tickers_in_low:
+                us_meta_map = {
+                    m.ticker: m for m in StockMetaService.get_stock_meta_bulk(us_tickers_in_low)
+                }
+
+            success, fail = 0, 0
+            for ticker in active_tickers:
+                try:
+                    if ticker.isdigit():
+                        info = KisFetcher.fetch_domestic_price(token, ticker)
+                    else:
+                        meta_row = us_meta_map.get(ticker)
+                        meta = {"api_market_code": getattr(meta_row, "api_market_code", "NAS")} if meta_row else {}
+                        info = KisFetcher.fetch_overseas_price(token, ticker, meta=meta)
+                    price = float(info.get("price") or 0)
+                    change_rate = float(info.get("rate") or info.get("change_rate") or 0)
+                    if price > 0:
+                        MarketDataService.update_price_from_sync(ticker, price, change_rate)
+                        success += 1
+                except Exception as e:
+                    logger.debug(f"LOW tier poll 실패 {ticker}: {e}")
+                    fail += 1
+
+            logger.info(f"✅ Tier LOW 가격 갱신 완료: 성공 {success}, 실패 {fail}")
+        except Exception as e:
+            logger.error(f"❌ _refresh_low_tier_prices 오류: {e}")
 
     @classmethod
     def sync_portfolio_periodic(cls):
@@ -488,7 +582,9 @@ class SchedulerService:
 
     @classmethod
     def get_all_cached_prices(cls) -> dict:
-        """라우터에서 요구하는 포맷으로 모든 실시간 캐시 데이터를 반환합니다."""
+        """모니터링 중인 전체 종목 캐시 데이터 반환.
+        tier: 'high' = WebSocket 실시간, 'low' = 5분 폴링
+        """
         all_states = MarketDataService.get_all_states()
         result = {}
         for ticker, ticker_state in all_states.items():
@@ -508,5 +604,6 @@ class SchedulerService:
                 "ema60": ticker_state.ema.get(60),
                 "ema120": ticker_state.ema.get(120),
                 "ema200": ticker_state.ema.get(200),
+                "tier": MarketDataService.get_tier(ticker),
             }
         return result

@@ -11,13 +11,22 @@ router = APIRouter(
 )
 
 
-@router.get("/top20", response_model=Dict[str, Any])
-def get_top20_realtime() -> Dict[str, Any]:
-    """실시간으로 모니터링 중인 미국 주식 상위 20개 기업의 현재가를 반환합니다."""
+@router.get("/monitored", response_model=Dict[str, Any])
+def get_monitored_stocks() -> Dict[str, Any]:
+    """모니터링 중인 전체 종목 현재가 반환.
+    tier=high: WebSocket 실시간 (시장별 상위 20종목 + 보유 종목)
+    tier=low : 5분 폴링 (나머지 80종목)
+    """
     data = SchedulerService.get_all_cached_prices()
     if not data:
         return {"message": "Data collection is starting... please wait a moment."}
     return data
+
+
+@router.get("/top20", response_model=Dict[str, Any])
+def get_top20_realtime() -> Dict[str, Any]:
+    """(Deprecated) /api/market/monitored 로 대체됨."""
+    return get_monitored_stocks()
 
 
 @router.get("/", response_model=Dict[str, Any])

@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from models.ticker_state import TickerState
 from services.analysis.indicator_service import IndicatorService
@@ -16,11 +16,16 @@ DB_FRESH_HOURS = 24
 # Warm-up 동시 실행 수 (KIS TPS 준수)
 WARMUP_CONCURRENCY = 1
 
+# 모니터링 티어
+TIER_HIGH = "high"   # WebSocket 실시간 (시장별 상위 20종목)
+TIER_LOW  = "low"    # 5분 주기 REST 폴링 (나머지 80종목)
+
 
 class MarketDataService:
     """실시간 시장 데이터 및 종목별 TickerState 관리. Warm-up·실시간 수신·지표 업데이트."""
 
     _states: Dict[str, TickerState] = {}
+    _tiers: Dict[str, str] = {}          # ticker → TIER_HIGH | TIER_LOW
     _warmup_semaphore = None
 
     @classmethod
@@ -322,6 +327,28 @@ class MarketDataService:
     @classmethod
     def get_all_states(cls) -> Dict[str, TickerState]:
         return cls._states
+
+    @classmethod
+    def set_tiers(cls, high_tickers: set, low_tickers: set):
+        """티어 정보를 일괄 설정합니다."""
+        for t in high_tickers:
+            cls._tiers[t] = TIER_HIGH
+        for t in low_tickers:
+            cls._tiers[t] = TIER_LOW
+
+    @classmethod
+    def get_tier(cls, ticker: str) -> str:
+        return cls._tiers.get(ticker, TIER_LOW)
+
+    @classmethod
+    def get_low_tier_tickers(cls) -> List[str]:
+        """현재 LOW 티어 종목 목록을 반환합니다."""
+        return [t for t, tier in cls._tiers.items() if tier == TIER_LOW]
+
+    @classmethod
+    def get_high_tier_tickers(cls) -> List[str]:
+        """현재 HIGH 티어 종목 목록을 반환합니다."""
+        return [t for t, tier in cls._tiers.items() if tier == TIER_HIGH]
 
     @classmethod
     def build_trading_signals(cls, data: dict) -> dict:
