@@ -30,115 +30,86 @@ class SchedulerService:
     _ws_loop = None
 
     @classmethod
+    def _register_scheduled_jobs(cls):
+        """APScheduler 크론/인터벌 잡 일괄 등록."""
+        from zoneinfo import ZoneInfo
+        _ET = ZoneInfo("America/New_York")
+
+        # 일일 데이터 수집 (새벽 4시)
+        cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0)
+        # 구독 종목 갱신 (오전 8:30)
+        cls._scheduler.add_job(lambda: cls.manage_subscriptions(force_refresh=True), 'cron', hour=8, minute=30)
+        # 1분 매매 전략
+        cls._scheduler.add_job(cls.run_trading_strategy, 'interval', minutes=1)
+        # 1시간 포트폴리오 리포트
+        cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', hours=1)
+        # 일일 매매 내역 보고 (9:00)
+        cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
+        # 리밸런싱 (9:10)
+        cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
+        # 주간 섹터 리밸런싱 (월 9:20)
+        cls._scheduler.add_job(cls.run_sector_rebalance, 'cron', day_of_week='mon', hour=9, minute=20,
+                               id='weekly_sector_rebalance')
+        # Tier LOW 폴링 (5분)
+        cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
+        # 포트폴리오 DB 동기화 (10분)
+        cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
+        # 틱매매 현황 리포트 (10분)
+        cls._scheduler.add_job(cls.report_tick_trade_status, 'interval', minutes=10)
+
+        # 경제지표 발표 시각 감지 (ET 기준)
+        cls._scheduler.add_job(cls._check_economic_releases, 'cron',
+                               day_of_week='mon-fri', hour=8, minute=31, timezone=_ET, id='econ_0830')
+        cls._scheduler.add_job(cls._check_economic_releases, 'cron',
+                               day_of_week='mon-fri', hour=9, minute=16, timezone=_ET, id='econ_0915')
+        cls._scheduler.add_job(cls._check_economic_releases, 'cron',
+                               day_of_week='mon-fri', hour=10, minute=1, timezone=_ET, id='econ_1000')
+        # VIX 스파이크 감지 (30분, ET 9:00~15:30)
+        cls._scheduler.add_job(cls._check_vix_spike, 'cron',
+                               day_of_week='mon-fri', hour='9-15', minute='0,30', timezone=_ET, id='vix_spike_check')
+
+    @classmethod
+    def _start_websocket_thread(cls):
+        """KIS WebSocket 전용 데몬 스레드 시작."""
+        def _run():
+            try:
+                logger.info("🧵 WebSocket dedicated thread starting...")
+                cls._ws_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(cls._ws_loop)
+                cls._ws_loop.call_soon(lambda: asyncio.create_task(cls.manage_subscriptions_async()))
+                logger.info("🚀 Launching guaranteed WebSocket connection loop...")
+                cls._ws_loop.run_until_complete(kis_ws_service.connect())
+            except Exception as e:
+                logger.error(f"❌ Critical Error in WebSocket thread: {e}", exc_info=True)
+
+        threading.Thread(target=_run, name="KIS-WS-Thread", daemon=True).start()
+
+    @classmethod
     def start(cls):
         if cls._scheduler is None:
             cls._scheduler = BackgroundScheduler()
-            
-            # 1. 스케줄 등록
-            # 매일 새벽 4시 00분: 한/미 시총 100위 종목 시세 및 지표(RSI, EMA, DCF) 자동 수집 및 동기화
-            cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0)
-            
-            # 매일 오전 8시 30분: 실시간 웹소켓 구독 종목 갱신
-            cls._scheduler.add_job(lambda: cls.manage_subscriptions(force_refresh=True), 'cron', hour=8, minute=30)
-            
-            # 1분 단위 매매 전략 실행
-            cls._scheduler.add_job(cls.run_trading_strategy, 'interval', minutes=1)
-            
-            # 1시간 단위 포트폴리오 현황 체크 및 알림
-            cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', hours=1)
-            
-            # 매일 오전 9시 00분: 전일 매매 히스토리 Slack 보고
-            cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
 
-            # 매일 오전 9시 10분: 리밸런싱 실행 (국내장 개장 직후)
-            cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
+            # 1. 스케줄 잡 등록
+            cls._register_scheduled_jobs()
 
-            # 매주 월요일 오전 9시 20분: 섹터 비중 리밸런싱 (Tech 50% / Value 30% / Fin 20%)
-            # 편차 < 5% 자동 스킵, 5~10% 절반 실행, >10% 전체 실행
-            cls._scheduler.add_job(cls.run_sector_rebalance, 'cron',
-                                   day_of_week='mon', hour=9, minute=20,
-                                   id='weekly_sector_rebalance')
-            
-            # 5분 단위 Tier LOW 종목 가격 폴링 (WebSocket 미구독 종목)
-            cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
+            # 2. KIS WebSocket 서비스 시작 (전용 스레드)
+            cls._start_websocket_thread()
 
-            # 10분 단위 포트폴리오 DB 동기화 (KIS 데이터 우선)
-            cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
-            
-            # 10분 단위 틱매매 현황 리포트
-            cls._scheduler.add_job(cls.report_tick_trade_status, 'interval', minutes=10)
-
-            # 미국 경제지표 주요 발표 시각에 신규 발표 감지 & regime 갱신
-            # APScheduler timezone 파라미터로 ET(미동부) 기준 cron 등록
-            from zoneinfo import ZoneInfo
-            _ET = ZoneInfo("America/New_York")
-            # 08:31 ET (월~금): CPI/PPI/NFP/실업수당 등 대부분 지표 (8:30 발표)
-            cls._scheduler.add_job(
-                cls._check_economic_releases, 'cron',
-                day_of_week='mon-fri', hour=8, minute=31,
-                timezone=_ET, id='econ_0830',
-            )
-            # 09:16 ET (월~금): 산업생산/설비가동률 (9:15 발표)
-            cls._scheduler.add_job(
-                cls._check_economic_releases, 'cron',
-                day_of_week='mon-fri', hour=9, minute=16,
-                timezone=_ET, id='econ_0915',
-            )
-            # 10:01 ET (월~금): 소비자신뢰지수-미시간 (10:00 발표)
-            cls._scheduler.add_job(
-                cls._check_economic_releases, 'cron',
-                day_of_week='mon-fri', hour=10, minute=1,
-                timezone=_ET, id='econ_1000',
-            )
-
-            # 미국장 시간 중 30분마다 VIX 스파이크 감지 (ET 09:30~16:00)
-            cls._scheduler.add_job(
-                cls._check_vix_spike, 'cron',
-                day_of_week='mon-fri', hour='9-15', minute='0,30',
-                timezone=_ET, id='vix_spike_check',
-            )
-
-            # 2. KIS WebSocket 서비스 시작 (완전 분리된 전용 스레드)
-            def start_ws_thread():
-                """웹소켓 전용 이벤트 루프를 생성하고 무한 연결 루프를 실행"""
-                try:
-                    logger.info("🧵 WebSocket dedicated thread starting...")
-                    cls._ws_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(cls._ws_loop)
-                    
-                    # 1. 초기 구독 관리 태스크 등록
-                    logger.info("📡 Scheduling initial market subscriptions...")
-                    cls._ws_loop.call_soon(lambda: asyncio.create_task(cls.manage_subscriptions_async()))
-                    
-                    # 2. 웹소켓 무한 연결 루프 실행 (핸드쉐이크 보장 로직 포함)
-                    logger.info("🚀 Launching guaranteed WebSocket connection loop...")
-                    cls._ws_loop.run_until_complete(kis_ws_service.connect())
-                except Exception as e:
-                    logger.error(f"❌ Critical Error in WebSocket thread: {e}", exc_info=True)
-            
-            # 독립된 데몬 쓰레드로 실행
-            ws_thread = threading.Thread(target=start_ws_thread, name="KIS-WS-Thread", daemon=True)
-            ws_thread.start()
-            
             cls._scheduler.start()
             logger.info("✅ Scheduler and Real-time WebSocket Service Started.")
 
-            # 3. 서버 기동 직후: FRED 최신 관측일 초기화 (기준점 설정)
+            # 3. FRED 최신 관측일 초기화 (기준점 설정)
             try:
                 cls._init_economic_baselines()
             except Exception as e:
                 logger.warning(f"⚠️ 경제지표 기준점 초기화 실패 (무시): {e}")
 
-            # 4. 자동 매매 시작 여부 문의
-
-            # 5. 앱 기동 직후 KIS 잔고 동기화
+            # 4. 기동 시 KIS 잔고 동기화 + Slack 알림
             try:
-                # 이전 세션의 전략 활성화 상태 복원 (재시작 시 자동 재개)
                 TradingStrategyService._restore_enabled_state()
                 PortfolioService.sync_with_kis("sean")
                 logger.info("✅ Portfolio synced with KIS on startup.")
                 cls._send_start_inquiry()
-
             except Exception as e:
                 logger.error(f"❌ Failed to sync portfolio with KIS on startup: {e}")
 

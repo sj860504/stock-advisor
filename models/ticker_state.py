@@ -33,11 +33,11 @@ class TickerState:
     # 실제로는 일봉 데이터 로딩 후, 실시간 가격이 변할 때 '오늘의 종가(현재가)'로 가정하고 EMA를 재계산하는 방식이 일반적
     # 또는 분봉 기준이라면 분봉 완성 시점에 확정. 여기서는 '일봉 기준 실시간 EMA'를 추정한다고 가정.
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # field(default_factory=dict) 를 사용하므로 명시적 초기화 불필요
         pass
 
-    def update_from_socket(self, data_dict: dict):
+    def update_from_socket(self, data_dict: dict) -> None:
         """
         WebSocket 수신 데이터로 상태 업데이트
         data_dict: KIS Websocket H0STCNT0 포맷 파싱 결과
@@ -71,7 +71,7 @@ class TickerState:
         except Exception as e:
             logger.error(f"Error updating ticker state: {e}")
 
-    def recalculate_indicators(self):
+    def recalculate_indicators(self) -> None:
         """현재가를 기준으로 실시간 지표(EMA 등) 재계산"""
         if not self.ema or self.current_price <= 0:
             return
@@ -87,7 +87,7 @@ class TickerState:
             except (ValueError, TypeError):
                 continue
             
-    def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None):
+    def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None) -> None:
         """외부에서 계산된 지표 주입 (Warm-up 또는 정기 갱신)"""
         if emas:
             # 모든 키를 정수로 변환하여 저장

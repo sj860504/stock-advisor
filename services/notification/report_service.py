@@ -220,29 +220,53 @@ class ReportService:
             kis_color = "🔴" if account_eval_profit > 0 else ("🔵" if account_eval_profit < 0 else "⚪")
             lines.append(f"- 계좌 평가손익(KIS): {kis_color} {account_eval_profit:,.0f}원")
 
-        # ── 원화 자산 ──────────────────────────────
-        kr_profit_color = "🔴" if kr_profit > 0 else ("🔵" if kr_profit < 0 else "⚪")
-        lines.append("")
-        lines.append(f"🇰🇷 **원화 자산** — {kr_total_krw:,.0f}원 ({kr_ratio:.1f}%)")
-        lines.append(f"  현금: {cash_krw:,.0f}원")
-        lines.append(f"  주식 평가: {kr_stock_val:,.0f}원 (투자 {kr_invested:,.0f}원 │ {kr_profit_color}{kr_profit:+,.0f}원 / {kr_profit_pct:+.2f}%)")
+        lines.extend(ReportService._format_kr_section(
+            kr_holdings, kr_stock_val, kr_invested, kr_profit, kr_profit_pct, cash_krw, kr_total_krw, kr_ratio, states
+        ))
+        lines.extend(ReportService._format_us_section(
+            us_holdings, us_stock_usd, us_invested_usd, us_profit_usd, us_profit_pct,
+            usd_cash, usd_cash_krw, us_total_usd, us_total_krw, us_ratio, exchange_rate, states
+        ))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_kr_section(
+        kr_holdings: list, kr_stock_val: float, kr_invested: float,
+        kr_profit: float, kr_profit_pct: float, cash_krw: float,
+        kr_total_krw: float, kr_ratio: float, states: dict,
+    ) -> list:
+        """원화 자산 섹션 lines 반환."""
+        color = "🔴" if kr_profit > 0 else ("🔵" if kr_profit < 0 else "⚪")
+        lines = [
+            "",
+            f"🇰🇷 **원화 자산** — {kr_total_krw:,.0f}원 ({kr_ratio:.1f}%)",
+            f"  현금: {cash_krw:,.0f}원",
+            f"  주식 평가: {kr_stock_val:,.0f}원 (투자 {kr_invested:,.0f}원 │ {color}{kr_profit:+,.0f}원 / {kr_profit_pct:+.2f}%)",
+        ]
         if kr_holdings:
             lines.append("")
-            for h in kr_holdings:
-                lines.append(ReportService._format_kr_holding_line(h, states))
+            lines.extend(ReportService._format_kr_holding_line(h, states) for h in kr_holdings)
+        return lines
 
-        # ── 외화 자산 ──────────────────────────────
-        us_profit_color = "🔴" if us_profit_usd > 0 else ("🔵" if us_profit_usd < 0 else "⚪")
-        lines.append("")
-        lines.append(f"🇺🇸 **외화 자산** — ${us_total_usd:,.2f} ({us_total_krw:,.0f}원 / {us_ratio:.1f}%)")
-        lines.append(f"  현금: ${usd_cash:,.2f} ({usd_cash_krw:,.0f}원)")
-        lines.append(f"  주식 평가: ${us_stock_usd:,.2f} (투자 ${us_invested_usd:,.2f} │ {us_profit_color}${us_profit_usd:+,.2f} / {us_profit_pct:+.2f}%)")
+    @staticmethod
+    def _format_us_section(
+        us_holdings: list, us_stock_usd: float, us_invested_usd: float,
+        us_profit_usd: float, us_profit_pct: float, usd_cash: float,
+        usd_cash_krw: float, us_total_usd: float, us_total_krw: float,
+        us_ratio: float, exchange_rate: float, states: dict,
+    ) -> list:
+        """외화 자산 섹션 lines 반환."""
+        color = "🔴" if us_profit_usd > 0 else ("🔵" if us_profit_usd < 0 else "⚪")
+        lines = [
+            "",
+            f"🇺🇸 **외화 자산** — ${us_total_usd:,.2f} ({us_total_krw:,.0f}원 / {us_ratio:.1f}%)",
+            f"  현금: ${usd_cash:,.2f} ({usd_cash_krw:,.0f}원)",
+            f"  주식 평가: ${us_stock_usd:,.2f} (투자 ${us_invested_usd:,.2f} │ {color}${us_profit_usd:+,.2f} / {us_profit_pct:+.2f}%)",
+        ]
         if us_holdings:
             lines.append("")
-            for h in us_holdings:
-                lines.append(ReportService._format_us_holding_line(h, states, exchange_rate))
-
-        return "\n".join(lines)
+            lines.extend(ReportService._format_us_holding_line(h, states, exchange_rate) for h in us_holdings)
+        return lines
 
     @staticmethod
     def format_daily_trade_history(trades: list, start_dt: datetime, end_dt: datetime) -> str:

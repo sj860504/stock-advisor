@@ -113,12 +113,95 @@ class FinancialService:
         )
 
     @classmethod
+    def _dcf_from_eps_history(cls, ticker: str) -> Optional[DcfInputData]:
+        """1. 재무 이력 5년 EPS → CAGR + 할인율 → DcfInputData (없으면 None)"""
+        yearly_eps_points = cls._build_yearly_eps_as_cashflow(ticker, years=5)
+        if len(yearly_eps_points) < 5:
+            return None
+        cashflow_series = [p["cashflow"] for p in yearly_eps_points]
+        return DcfInputData(
+            fcf_per_share=cashflow_series[-1],
+            beta=1.0,
+            growth_rate=cls._calc_cagr(cashflow_series),
+            discount_rate=cls._calc_discount_rate_from_volatility(cashflow_series),
+            timestamp=time.time(),
+            source="five_year_cashflow",
+            years_used=[p["year"] for p in yearly_eps_points],
+        )
+
+    @classmethod
+    def _dcf_from_yfinance(cls, ticker: str) -> Optional[DcfInputData]:
+        """2. yfinance FCF → DcfInputData (없으면 None)"""
+        market_type = "KR" if is_kr(ticker) else "US"
+        yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
+        if not (yf_data and yf_data.fcf_per_share and yf_data.fcf_per_share > 0):
+            return None
+        return DcfInputData(
+            fcf_per_share=yf_data.fcf_per_share,
+            beta=yf_data.beta,
+            growth_rate=yf_data.growth_rate,
+            discount_rate=None,
+            timestamp=time.time(),
+            source="yfinance",
+        )
+
+    @classmethod
+    def _dcf_from_eps_per_fallback(cls, ticker: str) -> Optional[DcfInputData]:
+        """3. DB 최신 EPS * PER → fallback_fair_value (없으면 None)"""
+        latest = StockMetaService.get_latest_financials(ticker)
+        if not (latest and latest.eps and latest.per and latest.eps > 0 and latest.per > 0):
+            return None
+        return DcfInputData(
+            fcf_per_share=None,
+            beta=1.0,
+            growth_rate=0.0,
+            discount_rate=None,
+            fallback_fair_value=round(float(latest.eps) * float(latest.per), 2),
+            timestamp=latest.base_date.timestamp() if latest.base_date else time.time(),
+            source="eps_per_fallback",
+        )
+
+    @classmethod
+    def _dcf_from_kis_api(cls, ticker: str) -> DcfInputData:
+        """4. KIS API 원시 조회 → DcfInputData (최후 폴백, 항상 반환)"""
+        if is_kr(ticker):
+            kis_payload = KisService.get_financials(ticker)
+            inputs = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
+        else:
+            kis_payload = KisService.get_overseas_financials(ticker)
+            inputs = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=kis_payload)
+
+        eps_ttm = float(inputs.get("fcf_per_share") or 0)
+        per_ttm = 0.0
+        current_metrics = cls.get_metrics(ticker)
+        if current_metrics:
+            per_ttm = current_metrics.per
+
+        if eps_ttm > 0 and per_ttm > 0:
+            return DcfInputData(
+                fcf_per_share=None,
+                beta=inputs.get("beta", 1.0),
+                growth_rate=0.0,
+                discount_rate=None,
+                fallback_fair_value=round(eps_ttm * per_ttm, 2),
+                timestamp=time.time(),
+                source="eps_per_fallback_api",
+            )
+        return DcfInputData(
+            fcf_per_share=inputs.get("fcf_per_share"),
+            beta=inputs.get("beta", 1.0),
+            growth_rate=inputs.get("growth_rate", 0.05),
+            discount_rate=None,
+            timestamp=time.time(),
+            source="kis",
+        )
+
+    @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
-        """DCF 계산에 필요한 입력 데이터 반환.
-        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER 폴백 → KIS API."""
+        """DCF 계산 입력 데이터 반환.
+        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER → KIS API."""
         user_override = StockMetaService.get_dcf_override(ticker)
         if user_override:
-            # fair_value 직접 지정 시 FCF 계산 없이 바로 반환
             fv = getattr(user_override, "fair_value", None)
             dcf_input = DcfInputData(
                 fcf_per_share=user_override.fcf_per_share,
@@ -137,102 +220,19 @@ class FinancialService:
                 return cls._dict_to_dcf_input(cached)
 
         try:
-            # 1. 재무 이력에서 연도별 EPS로 5년 시계열 구성 후 CAGR·할인율 계산
-            yearly_eps_points = cls._build_yearly_eps_as_cashflow(ticker, years=5)
-            if len(yearly_eps_points) >= 5:
-                cashflow_series = [p["cashflow"] for p in yearly_eps_points]
-                growth_rate = cls._calc_cagr(cashflow_series)
-                discount_rate = cls._calc_discount_rate_from_volatility(cashflow_series)
-                dcf_input = DcfInputData(
-                    fcf_per_share=cashflow_series[-1],
-                    beta=1.0,
-                    growth_rate=growth_rate,
-                    discount_rate=discount_rate,
-                    timestamp=time.time(),
-                    source="five_year_cashflow",
-                    years_used=[p["year"] for p in yearly_eps_points],
-                )
-                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-                return dcf_input
-
-            # 2. yfinance 에서 실제 FCF 데이터 조회 (EPS*PER 동어반복 방지)
-            market_type = "KR" if is_kr(ticker) else "US"
-            yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
-            if yf_data and yf_data.fcf_per_share and yf_data.fcf_per_share > 0:
-                dcf_input = DcfInputData(
-                    fcf_per_share=yf_data.fcf_per_share,
-                    beta=yf_data.beta,
-                    growth_rate=yf_data.growth_rate,
-                    discount_rate=None,
-                    timestamp=time.time(),
-                    source="yfinance",
-                )
-                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-                return dcf_input
-
-            # 3. 5년 데이터 부족 + yfinance FCF 없을 시: DB 최신 EPS·PER로 적정가 추정
-            latest_financials = StockMetaService.get_latest_financials(ticker)
-            if (
-                latest_financials
-                and latest_financials.eps
-                and latest_financials.per
-                and latest_financials.eps > 0
-                and latest_financials.per > 0
+            for method in (
+                cls._dcf_from_eps_history,
+                cls._dcf_from_yfinance,
+                cls._dcf_from_eps_per_fallback,
+                cls._dcf_from_kis_api,
             ):
-                fair_value_eps_per = float(latest_financials.eps) * float(latest_financials.per)
-                dcf_input = DcfInputData(
-                    fcf_per_share=None,
-                    beta=1.0,
-                    growth_rate=0.0,
-                    discount_rate=None,
-                    fallback_fair_value=round(fair_value_eps_per, 2),
-                    timestamp=latest_financials.base_date.timestamp() if latest_financials.base_date else time.time(),
-                    source="eps_per_fallback",
-                )
-                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-                return dcf_input
-
-            # 4. KIS API로 원시 데이터 조회 후 DCF 입력 추출
-            if is_kr(ticker):
-                kis_payload = KisService.get_financials(ticker)
-                dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
-            else:
-                kis_payload = KisService.get_overseas_financials(ticker)
-                dcf_inputs_from_analyzer = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=kis_payload)
-
-            eps_ttm = float(dcf_inputs_from_analyzer.get("fcf_per_share") or 0)
-            per_ttm = 0.0
-            current_metrics = cls.get_metrics(ticker)
-            if current_metrics:
-                per_ttm = current_metrics.per
-
-            if eps_ttm > 0 and per_ttm > 0:
-                fair_value_eps_per = eps_ttm * per_ttm
-                dcf_input = DcfInputData(
-                    fcf_per_share=None,
-                    beta=dcf_inputs_from_analyzer.get("beta", 1.0),
-                    growth_rate=0.0,
-                    discount_rate=None,
-                    fallback_fair_value=round(fair_value_eps_per, 2),
-                    timestamp=time.time(),
-                    source="eps_per_fallback_api",
-                )
-                cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-                return dcf_input
-
-            dcf_input = DcfInputData(
-                fcf_per_share=dcf_inputs_from_analyzer.get("fcf_per_share"),
-                beta=dcf_inputs_from_analyzer.get("beta", 1.0),
-                growth_rate=dcf_inputs_from_analyzer.get("growth_rate", 0.05),
-                discount_rate=None,
-                timestamp=time.time(),
-                source="kis",
-            )
-            cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-            return dcf_input
+                dcf_input = method(ticker)
+                if dcf_input is not None:
+                    cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+                    return dcf_input
         except Exception as e:
             logger.error(f"Error getting DCF data for {ticker}: {e}")
-            return None
+        return None
 
     @staticmethod
     def _dict_to_dcf_input(data: dict) -> DcfInputData:

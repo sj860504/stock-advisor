@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Query
 from services.kis.kis_service import KisService
 from services.strategy.trading_strategy_service import TradingStrategyService
 from services.trading.order_service import OrderService
@@ -77,7 +77,7 @@ async def get_waiting_list() -> Dict[str, Any]:
 
 @router.get("/history", response_model=List[TradeRecordDto])
 async def get_trade_history(
-    limit: int = 50,
+    limit: int = Query(default=50, le=200),
     market: Optional[str] = None,
     date: Optional[str] = None,
 ) -> List[TradeRecordDto]:

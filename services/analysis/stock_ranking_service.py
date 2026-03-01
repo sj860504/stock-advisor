@@ -27,14 +27,13 @@ class StockRankingService:
                     continue
                 output = response.get("output", [])
                 count = 0
+                # TR ID/Path는 루프 밖에서 1회만 조회 (N+1 방지)
+                tr_id, api_path = StockMetaService.get_api_info("해외주식_상세시세")
                 for row in output:
                     ticker = row.get("symb")
                     name_en = row.get("name")
-                    
+
                     if not ticker: continue
-                    
-                    # StockMeta 저장 — TR ID/Path는 환경(VTS/실전)에 맞게 DB에서 조회
-                    tr_id, api_path = StockMetaService.get_api_info("해외주식_상세시세")
                     StockMetaService.upsert_stock_meta(
                         ticker=ticker,
                         name_en=name_en,

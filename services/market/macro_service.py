@@ -250,6 +250,217 @@ class MacroService:
             pass
         return 20.0
 
+    # ── 점수 계산 헬퍼 (현재/과거 공용) ──────────────────────────────────────
+
+    @staticmethod
+    def _to_20(raw: int | float, max_val: int | float) -> int:
+        """±max_val 범위의 raw 점수를 0~20으로 정규화 (중립=10)."""
+        return max(0, min(20, round((raw + max_val) / (2 * max_val) * 20)))
+
+    @classmethod
+    def _calc_technical_20(cls, close: pd.Series, ndx_1m_hist=None) -> tuple:
+        """EMA 배열 + SPX/NDX/2주 모멘텀 + ATH드로다운 → (technical_20: 0~20, detail, ema_map)."""
+        current_price = float(close.iloc[-1])
+        ema_periods = [5, 20, 60, 120, 200]
+        ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in ema_periods}
+
+        tech_raw = 0
+        price_weights = {5: 12, 20: 16, 60: 16, 120: 20, 200: 24}
+        for p, w in price_weights.items():
+            tech_raw += w if current_price >= ema_map[p] else -w
+
+        ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in ema_periods)
+        if ema5 > ema20 > ema60 > ema120 > ema200:
+            tech_raw += 12
+        elif ema5 < ema20 < ema60 < ema120 < ema200:
+            tech_raw -= 12
+        for p in [20, 60, 120]:
+            ema_series = close.ewm(span=p, adjust=False).mean()
+            slope_up = len(ema_series) >= 2 and float(ema_series.iloc[-1]) > float(ema_series.iloc[-2])
+            tech_raw += 4 if slope_up else -4
+
+        spx_1m_ret = None
+        if len(close) >= 21:
+            spx_1m_ret = round((float(close.iloc[-1]) / float(close.iloc[-21]) - 1) * 100, 2)
+            if spx_1m_ret > 3:    tech_raw += 10
+            elif spx_1m_ret > 1:  tech_raw += 5
+            elif spx_1m_ret < -3: tech_raw -= 10
+            elif spx_1m_ret < -1: tech_raw -= 5
+
+        ndx_1m_ret = None
+        if ndx_1m_hist is not None and len(ndx_1m_hist) >= 5:
+            ndx_1m_ret = round(
+                (float(ndx_1m_hist["Close"].iloc[-1]) / float(ndx_1m_hist["Close"].iloc[0]) - 1) * 100, 2
+            )
+            if ndx_1m_ret > 3:    tech_raw += 5
+            elif ndx_1m_ret > 1:  tech_raw += 2
+            elif ndx_1m_ret < -3: tech_raw -= 5
+            elif ndx_1m_ret < -1: tech_raw -= 2
+
+        spx_2w_ret = None
+        if len(close) >= 11:
+            spx_2w_ret = round((float(close.iloc[-1]) / float(close.iloc[-11]) - 1) * 100, 2)
+            if spx_2w_ret > 2:      tech_raw += 6
+            elif spx_2w_ret > 0.5:  tech_raw += 3
+            elif spx_2w_ret < -2:   tech_raw -= 6
+            elif spx_2w_ret < -0.5: tech_raw -= 3
+
+        spx_from_ath = None
+        if len(close) >= 252:
+            ath_52w = float(close.iloc[-252:].max())
+            if ath_52w > 0:
+                spx_from_ath = round((current_price / ath_52w - 1) * 100, 2)
+                if spx_from_ath < -20:   tech_raw -= 8
+                elif spx_from_ath < -10: tech_raw -= 4
+                elif spx_from_ath < -5:  tech_raw -= 2
+
+        max_abs_tech = sum(price_weights.values()) + 12 + (4 * 3) + 10 + 5 + 6 + 8
+        technical_score = max(-30, min(30, int(round((tech_raw / max_abs_tech) * 30))))
+        technical_20 = cls._to_20(technical_score, 30)
+
+        return technical_20, {
+            "spx_1m_ret": spx_1m_ret,
+            "ndx_1m_ret": ndx_1m_ret,
+            "spx_2w_ret": spx_2w_ret,
+            "spx_from_ath_pct": spx_from_ath,
+        }, ema_map
+
+    @classmethod
+    def _calc_vix_20(cls, vix: float, vix_1m_chg: float | None) -> int:
+        """VIX 레벨(±8) + 속도(±4) → 0~20."""
+        vix_score = 0
+        if vix >= 30:    vix_score = -8
+        elif vix >= 25:  vix_score = -5
+        elif vix >= 22:  vix_score = -2
+        elif vix <= 13:  vix_score = +8
+        elif vix <= 18:  vix_score = +4
+
+        vix_speed = 0
+        if vix_1m_chg is not None:
+            if vix_1m_chg > 30:    vix_speed = -4
+            elif vix_1m_chg > 15:  vix_speed = -2
+            elif vix_1m_chg < -25: vix_speed = +2
+            elif vix_1m_chg < -10: vix_speed = +1
+        return cls._to_20(max(-12, min(12, vix_score + vix_speed)), 12)
+
+    @staticmethod
+    def _calc_fng_20(fear_greed: int) -> int:
+        """Fear&Greed 6단계 → 0~20."""
+        fng_score = 0
+        if fear_greed <= 20:    fng_score = -10
+        elif fear_greed <= 35:  fng_score = -6
+        elif fear_greed <= 45:  fng_score = -2
+        elif fear_greed >= 80:  fng_score = +10
+        elif fear_greed >= 65:  fng_score = +6
+        elif fear_greed >= 55:  fng_score = +2
+        return MacroService._to_20(fng_score, 10)
+
+    @staticmethod
+    def _calc_econ_20(economic_indicators: dict) -> int:
+        """FRED 경제지표 가중 점수 합산 → 0~20."""
+        econ_summary = (economic_indicators or {}).get("summary", {})
+        econ_total   = float(econ_summary.get("total_score", 0) or 0)
+        econ_max_val = float(econ_summary.get("max_score", 0) or 0)
+        econ_score   = int(round((econ_total / econ_max_val) * 10)) if econ_max_val > 0 else 0
+        return MacroService._to_20(max(-10, min(10, econ_score)), 10)
+
+    @staticmethod
+    def _calc_composite_20(
+        us_10y_yield: float,
+        yield_spread: float | None,
+        btc_ret: float | None,
+        dxy_ret: float | None,
+        gold_ret: float | None,
+    ) -> tuple:
+        """금리레벨(±8)+수익률곡선(±6)+DXY(±4)+BTC(±3)+Gold(±4) → (other_20: 0~20, score_detail)."""
+        yield_score = 0
+        if us_10y_yield <= 3.5:    yield_score = +8
+        elif us_10y_yield <= 4.0:  yield_score = +4
+        elif us_10y_yield <= 4.5:  yield_score = 0
+        elif us_10y_yield <= 5.0:  yield_score = -4
+        else:                       yield_score = -8
+
+        curve_score = 0
+        if yield_spread is not None:
+            if yield_spread > 1.0:    curve_score = +6
+            elif yield_spread > 0.3:  curve_score = +3
+            elif yield_spread < -1.0: curve_score = -6
+            elif yield_spread < -0.3: curve_score = -3
+
+        btc_score = 0
+        if btc_ret is not None:
+            if btc_ret > 20:    btc_score = +3
+            elif btc_ret > 10:  btc_score = +1
+            elif btc_ret < -25: btc_score = -3
+            elif btc_ret < -12: btc_score = -1
+
+        dxy_score = 0
+        if dxy_ret is not None:
+            if dxy_ret > 3:     dxy_score = -4
+            elif dxy_ret > 1:   dxy_score = -2
+            elif dxy_ret < -3:  dxy_score = +4
+            elif dxy_ret < -1:  dxy_score = +2
+
+        gold_score = 0
+        if gold_ret is not None:
+            if gold_ret > 5:    gold_score = -4
+            elif gold_ret > 2:  gold_score = -2
+            elif gold_ret < -5: gold_score = +4
+            elif gold_ret < -2: gold_score = +2
+
+        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score
+        other_20  = MacroService._to_20(other_raw, 26)
+        return other_20, {
+            "yield_score": yield_score, "curve_score": curve_score,
+            "dxy_score": dxy_score, "btc_score": btc_score, "gold_score": gold_score,
+        }
+
+    @classmethod
+    def _fetch_composite_assets(cls, us_10y_yield: float) -> tuple:
+        """수익률 곡선 스프레드 + BTC/DXY/Gold 1M 수익률 조회 → (yield_spread, btc_ret, dxy_ret, gold_ret)."""
+        yield_spread = None
+        try:
+            y2_val, _ = cls._get_fred_latest_pair("DGS2")
+            if y2_val is not None:
+                yield_spread = round(us_10y_yield - y2_val, 3)
+        except Exception:
+            pass
+
+        btc_ret = dxy_ret = gold_ret = None
+        try:
+            import yfinance as yf
+            for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold")]:
+                try:
+                    h = yf.Ticker(sym).history(period="1mo")
+                    if len(h) >= 5:
+                        ret = round((float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100, 2)
+                        if key == "btc":    btc_ret  = ret
+                        elif key == "dxy":  dxy_ret  = ret
+                        elif key == "gold": gold_ret = ret
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return yield_spread, btc_ret, dxy_ret, gold_ret
+
+    @classmethod
+    def _get_bear_threshold(cls) -> int:
+        """Bear 지속성에 따른 동적 임계값 (기본 40, 1개월 Bear→44, 2개월 Bear→48)."""
+        bear_threshold = 40
+        try:
+            from services.market.stock_meta_service import StockMetaService
+            recent = StockMetaService.get_market_regime_history(days=70)
+            if recent and len(recent) >= 1:
+                recent_statuses = [r.get("status") for r in recent[:2]]
+                bear_months = sum(1 for s in recent_statuses if s == "Bear")
+                if bear_months >= 2:
+                    bear_threshold = 48
+                elif bear_months >= 1:
+                    bear_threshold = 44
+        except Exception:
+            pass
+        return bear_threshold
+
     @classmethod
     def _get_market_regime(
         cls,
@@ -258,7 +469,7 @@ class MacroService:
         economic_indicators: dict | None = None,
         us_10y_yield: float | None = None,
     ) -> dict:
-        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산
+        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산.
 
         배점 구조 (각 20점, 합계 0~100, 중립=50):
           - 기술 (EMA 배열): 20점
@@ -267,11 +478,7 @@ class MacroService:
           - 경제지표(FRED): 20점
           - 기타(금리+BTC+Gold): 20점
         """
-        def _to_20(raw: int | float, max_val: int | float) -> int:
-            """±max_val 범위의 raw 점수를 0~20으로 정규화 (중립=10)."""
-            return max(0, min(20, round((raw + max_val) / (2 * max_val) * 20)))
-
-        # ── 1. 기술 점수 (EMA 배열, ±30 raw → 0~20) ──────────────────────────
+        # ── SPX 2년치 조회 ──────────────────────────────────────────────────
         hist = pd.DataFrame()
         try:
             import yfinance as yf
@@ -288,87 +495,20 @@ class MacroService:
         if close.empty:
             return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 50}
 
-        current_price = float(close.iloc[-1])
-        ema_periods = [5, 20, 60, 120, 200]
-        ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in ema_periods}
-
-        tech_raw = 0
-        # 단기 EMA 가중치 상향 (단기 흐름 민감도 강화)
-        price_weights = {5: 12, 20: 16, 60: 16, 120: 20, 200: 24}
-        for p, w in price_weights.items():
-            tech_raw += w if current_price >= ema_map[p] else -w
-
-        ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in ema_periods)
-        if ema5 > ema20 > ema60 > ema120 > ema200:
-            tech_raw += 12
-        elif ema5 < ema20 < ema60 < ema120 < ema200:
-            tech_raw -= 12
-        for p in [20, 60, 120]:
-            ema_series = close.ewm(span=p, adjust=False).mean()
-            slope_up = len(ema_series) >= 2 and float(ema_series.iloc[-1]) > float(ema_series.iloc[-2])
-            tech_raw += 4 if slope_up else -4
-
-        # SPX 1개월 모멘텀 (threshold ±1%/±3%로 세분화)
-        spx_1m_ret = None
-        if len(close) >= 21:
-            spx_1m_ret = round((float(close.iloc[-1]) / float(close.iloc[-21]) - 1) * 100, 2)
-            if spx_1m_ret > 3:    tech_raw += 10
-            elif spx_1m_ret > 1:  tech_raw += 5
-            elif spx_1m_ret < -3: tech_raw -= 10
-            elif spx_1m_ret < -1: tech_raw -= 5
-
-        # NDX 1개월 모멘텀 (Nasdaq 기술주 흐름 반영): ±5 가산
-        ndx_1m_ret = None
+        # ── NDX 1개월 히스토리 ──────────────────────────────────────────────
+        ndx_1m_hist = None
         try:
             import yfinance as yf
-            ndx_h = yf.Ticker("^NDX").history(period="1mo")
-            if len(ndx_h) >= 5:
-                ndx_1m_ret = round((float(ndx_h["Close"].iloc[-1]) / float(ndx_h["Close"].iloc[0]) - 1) * 100, 2)
-                if ndx_1m_ret > 3:    tech_raw += 5
-                elif ndx_1m_ret > 1:  tech_raw += 2
-                elif ndx_1m_ret < -3: tech_raw -= 5
-                elif ndx_1m_ret < -1: tech_raw -= 2
+            ndx_1m_hist = yf.Ticker("^NDX").history(period="1mo")
         except Exception:
             pass
 
-        # SPX 2주(10거래일) 단기 모멘텀 — 방향 전환 조기 감지 (±6)
-        spx_2w_ret = None
-        if len(close) >= 11:
-            spx_2w_ret = round((float(close.iloc[-1]) / float(close.iloc[-11]) - 1) * 100, 2)
-            if spx_2w_ret > 2:      tech_raw += 6
-            elif spx_2w_ret > 0.5:  tech_raw += 3
-            elif spx_2w_ret < -2:   tech_raw -= 6
-            elif spx_2w_ret < -0.5: tech_raw -= 3
+        # ── 1. 기술 점수 ─────────────────────────────────────────────────────
+        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
-        # 52주 신고점 대비 낙폭(ATH 드로다운) 패널티 (최대 -8)
-        spx_from_ath = None
-        if len(close) >= 252:
-            ath_52w = float(close.iloc[-252:].max())
-            if ath_52w > 0:
-                spx_from_ath = round((current_price / ath_52w - 1) * 100, 2)
-                if spx_from_ath < -20:   tech_raw -= 8
-                elif spx_from_ath < -10: tech_raw -= 4
-                elif spx_from_ath < -5:  tech_raw -= 2
-
-        max_abs_tech = sum(price_weights.values()) + 12 + (4 * 3) + 10 + 5 + 6 + 8  # EMA + SPX모멘텀 + NDX모멘텀 + 2w + ATH
-        technical_score = int(round((tech_raw / max_abs_tech) * 30))
-        technical_score = max(-30, min(30, technical_score))
-        technical_20 = _to_20(technical_score, 30)
-
-        # ── 2. VIX 점수 (레벨±8 + 속도±4 = ±12 → 0~20) ─────────────────────
+        # ── 2. VIX 점수 ──────────────────────────────────────────────────────
         if vix is None:
             vix = cls._get_vix()
-        # VIX 레벨: 22 경계 추가, "저VIX=호재" 기준 강화(≤18)
-        vix_score = 0
-        if vix >= 30:    vix_score = -8
-        elif vix >= 25:  vix_score = -5
-        elif vix >= 22:  vix_score = -2
-        elif vix <= 13:  vix_score = +8
-        elif vix <= 18:  vix_score = +4
-
-        # VIX 1개월 급등 속도 보정 (±4): 빠른 급등은 레벨보다 위험
-        # threshold 50%→30%, 25%→15%로 낮춰 조기 경계
-        vix_speed = 0
         vix_1m_chg = None
         try:
             import yfinance as yf
@@ -377,135 +517,29 @@ class MacroService:
                 vix_prev = float(vix_h["Close"].iloc[0])
                 if vix_prev > 0:
                     vix_1m_chg = round((vix - vix_prev) / vix_prev * 100, 1)
-                    if vix_1m_chg > 30:    vix_speed = -4   # VIX 30%+ 급등 → 강한 경계
-                    elif vix_1m_chg > 15:  vix_speed = -2   # VIX 15%+ 상승 → 경계
-                    elif vix_1m_chg < -25: vix_speed = +2   # VIX 급락 → 시장 안정
-                    elif vix_1m_chg < -10: vix_speed = +1
         except Exception:
             pass
+        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
 
-        _VIX_MAX = 8 + 4  # 12
-        vix_score = max(-_VIX_MAX, min(_VIX_MAX, vix_score + vix_speed))
-        vix_20 = _to_20(vix_score, _VIX_MAX)
-
-        # ── 3. Fear&Greed 점수 (6단계, ±10 raw → 0~20) ────────────────────────
-        # 기존 4단계(±8)에서 6단계(±10)로 세분화: 극단값에 더 민감하게 반응
+        # ── 3. Fear&Greed 점수 ───────────────────────────────────────────────
         if fear_greed is None:
             fear_greed = cls._get_fear_greed_index()
-        fng_score = 0
-        if fear_greed <= 20:    fng_score = -10  # 극도의 공포
-        elif fear_greed <= 35:  fng_score = -6   # 공포
-        elif fear_greed <= 45:  fng_score = -2   # 약한 공포
-        elif fear_greed >= 80:  fng_score = +10  # 극도의 탐욕
-        elif fear_greed >= 65:  fng_score = +6   # 탐욕
-        elif fear_greed >= 55:  fng_score = +2   # 약한 탐욕
-        # 45~55: 0 (중립)
-        fng_20 = _to_20(fng_score, 10)
+        fng_20 = cls._calc_fng_20(fear_greed)
 
-        # ── 4. 경제지표 점수 (FRED 14개, ±10 raw → 0~20) ─────────────────────
+        # ── 4. 경제지표 점수 ─────────────────────────────────────────────────
         if economic_indicators is None:
             economic_indicators = cls._get_economic_indicators()
-        econ_summary = (economic_indicators or {}).get("summary", {})
-        econ_total = float(econ_summary.get("total_score", 0) or 0)
-        econ_max_val = float(econ_summary.get("max_score", 0) or 0)
-        econ_score = int(round((econ_total / econ_max_val) * 10)) if econ_max_val > 0 else 0
-        econ_score = max(-10, min(10, econ_score))
-        econ_20 = _to_20(econ_score, 10)
+        econ_20 = cls._calc_econ_20(economic_indicators)
 
-        # ── 5. 기타 복합 지표 → 0~20 ─────────────────────────────────────────
-        # 금리 레벨(±8) + 수익률 곡선(±6) + DXY(±4) + BTC(±4) + Gold(±4) = ±26
+        # ── 5. 기타 복합 지표 ────────────────────────────────────────────────
         if us_10y_yield is None:
             us_10y_yield = cls._get_us_10y_yield()
+        yield_spread, btc_ret, dxy_ret, gold_ret = cls._fetch_composite_assets(us_10y_yield)
+        other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
 
-        # 5a. 금리 레벨 (±8): 저금리 = 주식 호재
-        yield_score = 0
-        if us_10y_yield <= 3.5:    yield_score = +8
-        elif us_10y_yield <= 4.0:  yield_score = +4
-        elif us_10y_yield <= 4.5:  yield_score = 0
-        elif us_10y_yield <= 5.0:  yield_score = -4
-        else:                       yield_score = -8
-
-        # 5b. 수익률 곡선 10Y-2Y spread (±6): 역전 = 경기침체 신호
-        curve_score = 0
-        yield_spread = None
-        try:
-            y2_val, _ = cls._get_fred_latest_pair("DGS2")
-            if y2_val is not None:
-                yield_spread = round(us_10y_yield - y2_val, 3)
-                if yield_spread > 1.0:    curve_score = +6
-                elif yield_spread > 0.3:  curve_score = +3
-                elif yield_spread < -1.0: curve_score = -6
-                elif yield_spread < -0.3: curve_score = -3
-        except Exception:
-            pass
-
-        # 5c-e. yfinance 기반 1개월 수익률
-        btc_score = dxy_score = gold_score = 0
-        btc_ret = dxy_ret = gold_ret = None
-        try:
-            import yfinance as yf
-            _month_tickers = {
-                "BTC-USD": None,   # 위험선호 지표 (상승 = 호재)
-                "DX-Y.NYB": None,  # 달러 강세 지표 (상승 = 악재)
-                "GC=F": None,      # 금 = 위험회피 (상승 = 악재)
-            }
-            for sym in _month_tickers:
-                try:
-                    h = yf.Ticker(sym).history(period="1mo")
-                    if len(h) >= 5:
-                        _month_tickers[sym] = round(
-                            (float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100, 2
-                        )
-                except Exception:
-                    pass
-
-            btc_ret = _month_tickers["BTC-USD"]
-            if btc_ret is not None:
-                # 암호화폐 자체 이슈(규제·해킹 등)에 의한 노이즈 감소를 위해
-                # 임계값을 상향하고 최대 영향도를 ±4→±3으로 축소
-                if btc_ret > 20:    btc_score = +3
-                elif btc_ret > 10:  btc_score = +1
-                elif btc_ret < -25: btc_score = -3
-                elif btc_ret < -12: btc_score = -1
-
-            dxy_ret = _month_tickers["DX-Y.NYB"]
-            if dxy_ret is not None:
-                if dxy_ret > 3:     dxy_score = -4   # 달러 강세 → 주식 악재
-                elif dxy_ret > 1:   dxy_score = -2
-                elif dxy_ret < -3:  dxy_score = +4   # 달러 약세 → 주식 호재
-                elif dxy_ret < -1:  dxy_score = +2
-
-            gold_ret = _month_tickers["GC=F"]
-            if gold_ret is not None:
-                if gold_ret > 5:    gold_score = -4   # 금 급등 → 불안감 → 악재
-                elif gold_ret > 2:  gold_score = -2
-                elif gold_ret < -5: gold_score = +4
-                elif gold_ret < -2: gold_score = +2
-        except Exception:
-            pass
-
-        _OTHER_MAX = 8 + 6 + 4 + 4 + 4  # 26
-        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score
-        other_20 = _to_20(other_raw, _OTHER_MAX)
-
-        # ── 합산 (0~100, 중립=50) ────────────────────────────────────────────
-        regime_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
-        regime_score = max(0, min(100, regime_score))
-
-        # Bear 지속성: 최근 2개월 연속 Bear 시 임계값 확장 (40→48)
-        bear_threshold = 40
-        try:
-            from services.market.stock_meta_service import StockMetaService
-            recent = StockMetaService.get_market_regime_history(days=70)
-            if recent and len(recent) >= 1:
-                recent_statuses = [r.get("status") for r in recent[:2]]
-                bear_months = sum(1 for s in recent_statuses if s == "Bear")
-                if bear_months >= 2:
-                    bear_threshold = 48
-                elif bear_months >= 1:
-                    bear_threshold = 44
-        except Exception:
-            pass
+        # ── 합산 + Bear 지속성 ───────────────────────────────────────────────
+        regime_score  = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
+        bear_threshold = cls._get_bear_threshold()
 
         if regime_score >= 65:
             status = "Bull"
@@ -514,7 +548,9 @@ class MacroService:
         else:
             status = "Neutral"
 
-        ma200 = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
+        current_price = float(close.iloc[-1])
+        ema200 = ema_map[200]
+        ma200  = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
         diff_pct = (current_price - ma200) / ma200 * 100 if ma200 else 0
 
         return {
@@ -522,21 +558,16 @@ class MacroService:
             "current": round(current_price, 2),
             "ma200": round(float(ma200 or 0), 2),
             "diff_pct": round(float(diff_pct), 2),
-            "regime_score": regime_score,  # 0~100 (50=중립, ≥65=Bull, ≤40=Bear)
-            "bear_threshold": bear_threshold,  # 동적 Bear 임계값 (40/44/48)
+            "regime_score": regime_score,
+            "bear_threshold": bear_threshold,
             "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
             "components": {
-                "technical": technical_20,   # 0~20 (EMA배열 + 1개월모멘텀)
-                "technical_detail": {
-                    "spx_1m_ret": spx_1m_ret,
-                    "ndx_1m_ret": ndx_1m_ret,
-                    "spx_2w_ret": spx_2w_ret,
-                    "spx_from_ath_pct": spx_from_ath,
-                },
-                "vix": vix_20,               # 0~20 (레벨 + 속도)
-                "fear_greed": fng_20,        # 0~20
-                "economic": econ_20,         # 0~20
-                "other": other_20,           # 0~20 (금리+BTC+Gold)
+                "technical": technical_20,
+                "technical_detail": tech_detail,
+                "vix": vix_20,
+                "fear_greed": fng_20,
+                "economic": econ_20,
+                "other": other_20,
                 "other_detail": {
                     "us_10y_yield": round(us_10y_yield, 3),
                     "yield_spread_10y2y": yield_spread,
@@ -544,11 +575,7 @@ class MacroService:
                     "btc_1m_ret": btc_ret,
                     "dxy_1m_ret": dxy_ret,
                     "gold_1m_ret": gold_ret,
-                    "yield_score": yield_score,
-                    "curve_score": curve_score,
-                    "dxy_score": dxy_score,
-                    "btc_score": btc_score,
-                    "gold_score": gold_score,
+                    **other_scores,
                 },
             },
         }
@@ -680,12 +707,9 @@ class MacroService:
         """
         import yfinance as yf
         from datetime import datetime, timedelta
-        import pandas as pd
 
         target_dt = datetime.strptime(date_str, "%Y-%m-%d")
         today_dt  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # yfinance 종료일은 target+1일 (exclusive)
         end_date  = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
         start_2y  = (target_dt - timedelta(days=730)).strftime("%Y-%m-%d")
         start_1m  = (target_dt - timedelta(days=32)).strftime("%Y-%m-%d")
@@ -703,72 +727,18 @@ class MacroService:
             return {"error": f"SPX 데이터 없음 for {date_str}"}
 
         close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
-        current_price = float(close.iloc[-1])
-        ema_periods   = [5, 20, 60, 120, 200]
-        ema_map       = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in ema_periods}
 
-        # 기술 점수 (메인 로직과 동일)
-        def _to_20(raw_v, max_val):
-            return max(0, min(20, round((raw_v + max_val) / (2 * max_val) * 20)))
-
-        tech_raw = 0
-        price_weights = {5: 12, 20: 16, 60: 16, 120: 20, 200: 24}
-        for p, w in price_weights.items():
-            tech_raw += w if current_price >= ema_map[p] else -w
-
-        ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in ema_periods)
-        if ema5 > ema20 > ema60 > ema120 > ema200:
-            tech_raw += 12
-        elif ema5 < ema20 < ema60 < ema120 < ema200:
-            tech_raw -= 12
-        for p in [20, 60, 120]:
-            ema_s = close.ewm(span=p, adjust=False).mean()
-            tech_raw += 4 if (len(ema_s) >= 2 and float(ema_s.iloc[-1]) > float(ema_s.iloc[-2])) else -4
-
-        spx_1m_ret = None
-        if len(close) >= 21:
-            spx_1m_ret = round((float(close.iloc[-1]) / float(close.iloc[-21]) - 1) * 100, 2)
-            if spx_1m_ret > 3:    tech_raw += 10
-            elif spx_1m_ret > 1:  tech_raw += 5
-            elif spx_1m_ret < -3: tech_raw -= 10
-            elif spx_1m_ret < -1: tech_raw -= 5
-
-        ndx_1m_ret = None
+        # ── NDX 1개월 히스토리 ────────────────────────────────────────────
+        ndx_1m_hist = None
         try:
-            ndx_h = yf.Ticker("^NDX").history(start=start_1m, end=end_date)
-            if len(ndx_h) >= 5:
-                ndx_1m_ret = round((float(ndx_h["Close"].iloc[-1]) / float(ndx_h["Close"].iloc[0]) - 1) * 100, 2)
-                if ndx_1m_ret > 3:    tech_raw += 5
-                elif ndx_1m_ret > 1:  tech_raw += 2
-                elif ndx_1m_ret < -3: tech_raw -= 5
-                elif ndx_1m_ret < -1: tech_raw -= 2
+            ndx_1m_hist = yf.Ticker("^NDX").history(start=start_1m, end=end_date)
         except Exception:
             pass
 
-        # SPX 2주(10거래일) 단기 모멘텀 — 방향 전환 조기 감지 (±6)
-        spx_2w_ret = None
-        if len(close) >= 11:
-            spx_2w_ret = round((float(close.iloc[-1]) / float(close.iloc[-11]) - 1) * 100, 2)
-            if spx_2w_ret > 2:      tech_raw += 6
-            elif spx_2w_ret > 0.5:  tech_raw += 3
-            elif spx_2w_ret < -2:   tech_raw -= 6
-            elif spx_2w_ret < -0.5: tech_raw -= 3
+        # ── 1. 기술 점수 ─────────────────────────────────────────────────
+        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
-        # 52주 신고점 대비 낙폭(ATH 드로다운) 패널티 (최대 -8)
-        spx_from_ath = None
-        if len(close) >= 252:
-            ath_52w = float(close.iloc[-252:].max())
-            if ath_52w > 0:
-                spx_from_ath = round((current_price / ath_52w - 1) * 100, 2)
-                if spx_from_ath < -20:   tech_raw -= 8
-                elif spx_from_ath < -10: tech_raw -= 4
-                elif spx_from_ath < -5:  tech_raw -= 2
-
-        max_abs_tech  = sum(price_weights.values()) + 12 + (4 * 3) + 10 + 5 + 6 + 8  # EMA + SPX모멘텀 + NDX모멘텀 + 2w + ATH
-        technical_score = max(-30, min(30, int(round((tech_raw / max_abs_tech) * 30))))
-        technical_20    = _to_20(technical_score, 30)
-
-        # ── VIX ────────────────────────────────────────────────────────────
+        # ── 2. VIX 점수 ──────────────────────────────────────────────────
         vix = 20.0
         vix_1m_chg = None
         try:
@@ -781,110 +751,50 @@ class MacroService:
                         vix_1m_chg = round((vix - vix_prev) / vix_prev * 100, 1)
         except Exception:
             pass
+        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
 
-        vix_score = 0
-        if vix >= 30:    vix_score = -8
-        elif vix >= 25:  vix_score = -5
-        elif vix >= 22:  vix_score = -2
-        elif vix <= 13:  vix_score = +8
-        elif vix <= 18:  vix_score = +4
+        # ── 3. Fear&Greed 점수 ─────────────────────────────────────────
+        days_diff  = (today_dt - target_dt).days
+        fear_greed = cls._get_fear_greed_index() if days_diff <= 7 else 50
+        fng_20     = cls._calc_fng_20(fear_greed)
 
-        vix_speed = 0
-        if vix_1m_chg is not None:
-            if vix_1m_chg > 30:    vix_speed = -4
-            elif vix_1m_chg > 15:  vix_speed = -2
-            elif vix_1m_chg < -25: vix_speed = +2
-            elif vix_1m_chg < -10: vix_speed = +1
-
-        vix_score = max(-12, min(12, vix_score + vix_speed))
-        vix_20    = _to_20(vix_score, 12)
-
-        # ── Fear&Greed ─────────────────────────────────────────────────────
-        days_diff   = (today_dt - target_dt).days
-        fear_greed  = cls._get_fear_greed_index() if days_diff <= 7 else 50
-        fng_score = 0
-        if fear_greed <= 20:    fng_score = -10
-        elif fear_greed <= 35:  fng_score = -6
-        elif fear_greed <= 45:  fng_score = -2
-        elif fear_greed >= 80:  fng_score = +10
-        elif fear_greed >= 65:  fng_score = +6
-        elif fear_greed >= 55:  fng_score = +2
-        fng_20 = _to_20(fng_score, 10)
-
-        # ── 경제지표 (FRED) ────────────────────────────────────────────────
+        # ── 4. 경제지표 점수 (FRED 월별, 현재값 사용) ────────────────────
         economic_indicators = cls._get_economic_indicators()
-        econ_summary  = (economic_indicators or {}).get("summary", {})
-        econ_total    = float(econ_summary.get("total_score", 0) or 0)
-        econ_max_val  = float(econ_summary.get("max_score", 0) or 0)
-        econ_score    = max(-10, min(10, int(round((econ_total / econ_max_val) * 10)) if econ_max_val > 0 else 0))
-        econ_20       = _to_20(econ_score, 10)
+        econ_20 = cls._calc_econ_20(economic_indicators)
 
-        # ── 기타 (금리 + 곡선 + DXY + BTC + Gold) ─────────────────────────
+        # ── 5. 기타 복합 지표 ────────────────────────────────────────────
         us_10y_yield = cls._get_us_10y_yield()
-        yield_score  = 0
-        if us_10y_yield <= 3.5:    yield_score = +8
-        elif us_10y_yield <= 4.0:  yield_score = +4
-        elif us_10y_yield <= 4.5:  yield_score = 0
-        elif us_10y_yield <= 5.0:  yield_score = -4
-        else:                       yield_score = -8
-
-        curve_score  = 0
         yield_spread = None
         try:
             y2_val, _ = cls._get_fred_latest_pair("DGS2")
             if y2_val is not None:
                 yield_spread = round(us_10y_yield - y2_val, 3)
-                if yield_spread > 1.0:    curve_score = +6
-                elif yield_spread > 0.3:  curve_score = +3
-                elif yield_spread < -1.0: curve_score = -6
-                elif yield_spread < -0.3: curve_score = -3
         except Exception:
             pass
 
-        btc_score = dxy_score = gold_score = 0
-        btc_ret   = dxy_ret   = gold_ret   = None
+        btc_ret = dxy_ret = gold_ret = None
         try:
             for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold")]:
                 try:
                     h = yf.Ticker(sym).history(start=start_1m, end=end_date)
                     if len(h) >= 5:
                         ret = round((float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100, 2)
-                        if key == "btc":
-                            btc_ret = ret
-                            if ret > 20:    btc_score = +3
-                            elif ret > 10:  btc_score = +1
-                            elif ret < -25: btc_score = -3
-                            elif ret < -12: btc_score = -1
-                        elif key == "dxy":
-                            dxy_ret = ret
-                            if ret > 3:     dxy_score = -4
-                            elif ret > 1:   dxy_score = -2
-                            elif ret < -3:  dxy_score = +4
-                            elif ret < -1:  dxy_score = +2
-                        elif key == "gold":
-                            gold_ret = ret
-                            if ret > 5:    gold_score = -4
-                            elif ret > 2:  gold_score = -2
-                            elif ret < -5: gold_score = +4
-                            elif ret < -2: gold_score = +2
+                        if key == "btc":    btc_ret  = ret
+                        elif key == "dxy":  dxy_ret  = ret
+                        elif key == "gold": gold_ret = ret
                 except Exception:
                     pass
         except Exception:
             pass
 
-        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score
-        other_20  = _to_20(other_raw, 26)
+        other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
 
-        regime_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
-        regime_score = max(0, min(100, regime_score))
+        # ── 합산 ──────────────────────────────────────────────────────────
+        regime_score  = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
+        status = "Bull" if regime_score >= 65 else "Bear" if regime_score <= 40 else "Neutral"
 
-        if regime_score >= 65:
-            status = "Bull"
-        elif regime_score <= 40:
-            status = "Bear"
-        else:
-            status = "Neutral"
-
+        current_price = float(close.iloc[-1])
+        ema200   = ema_map[200]
         ma200    = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
         diff_pct = round((current_price - ma200) / ma200 * 100, 2) if ma200 else 0
 
@@ -897,12 +807,7 @@ class MacroService:
             "ema":          {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
             "components": {
                 "technical":        technical_20,
-                "technical_detail": {
-                    "spx_1m_ret": spx_1m_ret,
-                    "ndx_1m_ret": ndx_1m_ret,
-                    "spx_2w_ret": spx_2w_ret,
-                    "spx_from_ath_pct": spx_from_ath,
-                },
+                "technical_detail": tech_detail,
                 "vix":              vix_20,
                 "fear_greed":       fng_20,
                 "economic":         econ_20,
@@ -914,16 +819,11 @@ class MacroService:
                     "btc_1m_ret":         btc_ret,
                     "dxy_1m_ret":         dxy_ret,
                     "gold_1m_ret":        gold_ret,
-                    "yield_score":        yield_score,
-                    "curve_score":        curve_score,
-                    "dxy_score":          dxy_score,
-                    "btc_score":          btc_score,
-                    "gold_score":         gold_score,
+                    **other_scores,
                 },
             },
         }
 
-        # DB 저장
         try:
             from services.market.stock_meta_service import StockMetaService
             StockMetaService.save_market_regime(date_str, regime_data, vix, fear_greed)
@@ -931,10 +831,10 @@ class MacroService:
             pass
 
         return {
-            "date":        date_str,
-            "vix":         vix,
-            "fear_greed":  fear_greed,
-            "us_10y_yield": us_10y_yield,
+            "date":          date_str,
+            "vix":           vix,
+            "fear_greed":    fear_greed,
+            "us_10y_yield":  us_10y_yield,
             "market_regime": regime_data,
         }
 
