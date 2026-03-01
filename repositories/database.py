@@ -6,8 +6,9 @@ session_ro() 를 통해 SQLAlchemy 세션을 획득합니다.
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, scoped_session
+from typing import Generator
+from sqlalchemy import create_engine, Engine
+from sqlalchemy.orm import sessionmaker, scoped_session, Session
 from sqlalchemy.exc import OperationalError
 from utils.logger import get_logger
 
@@ -18,11 +19,11 @@ DB_PATH = os.path.join(
     "data", "stock_advisor.db",
 )
 
-_engine = None
-_Session = None
+_engine: Engine | None = None
+_Session: scoped_session | None = None
 
 
-def _create_engine_and_session():
+def _create_engine_and_session() -> None:
     global _engine, _Session
     _engine = create_engine(
         f"sqlite:///{DB_PATH}",
@@ -35,7 +36,7 @@ def _create_engine_and_session():
     _Session = scoped_session(sessionmaker(bind=_engine))
 
 
-def init_db():
+def init_db() -> None:
     """테이블 생성 및 엔진/세션 초기화 (멱등)."""
     global _engine, _Session
     if _engine:
@@ -74,20 +75,20 @@ def init_db():
             raise
 
 
-def get_engine():
+def get_engine() -> Engine:
     if _engine is None:
         init_db()
     return _engine
 
 
-def get_session():
+def get_session() -> Session:
     if _Session is None:
         init_db()
     return _Session()
 
 
 @contextmanager
-def session_scope():
+def session_scope() -> Generator[Session, None, None]:
     """쓰기 세션 — commit / rollback / close 자동 관리."""
     session = get_session()
     try:
@@ -101,7 +102,7 @@ def session_scope():
 
 
 @contextmanager
-def session_ro():
+def session_ro() -> Generator[Session, None, None]:
     """읽기 전용 세션 — close 자동 관리."""
     session = get_session()
     try:

@@ -77,7 +77,7 @@ async def get_waiting_list() -> Dict[str, Any]:
 
 @router.get("/history", response_model=List[TradeRecordDto])
 async def get_trade_history(
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=50, ge=1, le=1000),
     market: Optional[str] = None,
     date: Optional[str] = None,
 ) -> List[TradeRecordDto]:

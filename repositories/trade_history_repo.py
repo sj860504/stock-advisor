@@ -77,7 +77,7 @@ class TradeHistoryRepo:
             session.close()
 
     @classmethod
-    def get_holdings_map(cls, tickers: list) -> dict:
+    def get_holdings_map(cls, tickers: list[str]) -> dict[str, PortfolioHolding]:
         """{ticker: PortfolioHolding} 맵 반환."""
         if not tickers:
             return {}
@@ -94,6 +94,7 @@ class TradeHistoryRepo:
 
     @staticmethod
     def _apply_filters(query, market: Optional[str], date: Optional[str]):
+        """market/date 필터 적용 후 query 반환."""
         if market == "kr":
             query = query.filter(TradeHistory.ticker.op("GLOB")("[0-9]*"))
         elif market == "us":

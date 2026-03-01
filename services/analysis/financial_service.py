@@ -30,6 +30,45 @@ class FinancialService:
     _dcf_overrides_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "dcf_settings.json")
 
     @classmethod
+    def _fetch_and_analyze_kis_financials(
+        cls, ticker: str, kis_request_meta: "KisFinancialsMeta"
+    ) -> Optional[AnalyzedFinancialMetrics]:
+        """KIS API 호출 → KisFinancialsResponse → FinancialAnalyzer 분석 결과 반환."""
+        if is_kr(ticker):
+            kis_payload = KisService.get_financials(ticker, meta=kis_request_meta)
+            response = KisFinancialsResponse(
+                output=kis_payload.get("raw") or kis_payload.get("output") or {}
+            )
+            return FinancialAnalyzer.analyze_domestic_metrics(response)
+        kis_payload = KisService.get_overseas_financials(ticker, meta=kis_request_meta)
+        response = KisFinancialsResponse(
+            output=kis_payload.get("raw") or kis_payload.get("output") or {}
+        )
+        return FinancialAnalyzer.analyze_overseas_metrics(response)
+
+    @classmethod
+    def _build_analyzed_metrics(
+        cls,
+        ticker: str,
+        financials,
+        stock_meta,
+    ) -> Optional[AnalyzedFinancialMetrics]:
+        """KIS API 원시 데이터 수집 → 분석 → DB 저장 → 캐시 후 AnalyzedFinancialMetrics 반환."""
+        kis_request_meta = KisFinancialsMeta(
+            api_path=stock_meta.api_path or "",
+            api_tr_id=stock_meta.api_tr_id or "",
+            api_market_code=stock_meta.api_market_code or "",
+        )
+        analyzed_metrics = cls._fetch_and_analyze_kis_financials(ticker, kis_request_meta)
+        if not analyzed_metrics:
+            return cls._financials_row_to_metrics(financials) if financials else None
+        metrics_snapshot = analyzed_metrics.model_dump()
+        StockMetaService.save_financials(ticker, metrics_snapshot)
+        metrics_snapshot["_timestamp"] = time.time()
+        cls._recent_metrics_by_ticker[ticker] = metrics_snapshot
+        return analyzed_metrics
+
+    @classmethod
     def get_metrics(cls, ticker: str) -> Optional[AnalyzedFinancialMetrics]:
         """종목별 핵심 재무 지표 반환 (KIS API 기반). DB·메모리 캐시 우선, 없으면 KIS 조회 후 분석·저장."""
         if ticker in cls._recent_metrics_by_ticker:
@@ -43,42 +82,12 @@ class FinancialService:
             if latest_financials and (datetime.now() - latest_financials.base_date).total_seconds() < 86400:
                 return cls._financials_row_to_metrics(latest_financials)
 
-            # 2. 종목 메타 조회 후 KIS 요청용 메타 DTO 생성
+            # 2. 종목 메타 조회 후 KIS API 원시 수집 → 분석 → 저장
             stock_meta = StockMetaService.get_stock_meta(ticker)
             if not stock_meta:
                 stock_meta = StockMetaService.initialize_default_meta(ticker)
 
-            kis_request_meta = KisFinancialsMeta(
-                api_path=stock_meta.api_path or "",
-                api_tr_id=stock_meta.api_tr_id or "",
-                api_market_code=stock_meta.api_market_code or "",
-            )
-
-            # 3. KIS 원시 데이터 수집 → 응답 DTO로 수신 후 분석
-            if is_kr(ticker):
-                kis_payload = KisService.get_financials(ticker, meta=kis_request_meta)
-                kis_financials_response = KisFinancialsResponse(
-                    output=kis_payload.get("raw") or kis_payload.get("output") or {}
-                )
-                analyzed_metrics = FinancialAnalyzer.analyze_domestic_metrics(kis_financials_response)
-            else:
-                kis_payload = KisService.get_overseas_financials(ticker, meta=kis_request_meta)
-                kis_financials_response = KisFinancialsResponse(
-                    output=kis_payload.get("raw") or kis_payload.get("output") or {}
-                )
-                analyzed_metrics = FinancialAnalyzer.analyze_overseas_metrics(kis_financials_response)
-
-            if not analyzed_metrics:
-                if latest_financials:
-                    return cls._financials_row_to_metrics(latest_financials)
-                return None
-
-            # 4. DB 저장 및 캐시( dict ) 후 모델 반환
-            metrics_snapshot = analyzed_metrics.model_dump()
-            StockMetaService.save_financials(ticker, metrics_snapshot)
-            metrics_snapshot["_timestamp"] = time.time()
-            cls._recent_metrics_by_ticker[ticker] = metrics_snapshot
-            return analyzed_metrics
+            return cls._build_analyzed_metrics(ticker, latest_financials, stock_meta)
 
         except Exception as e:
             logger.error(f"Error getting metrics for {ticker}: {e}")
@@ -162,15 +171,8 @@ class FinancialService:
         )
 
     @classmethod
-    def _dcf_from_kis_api(cls, ticker: str) -> DcfInputData:
-        """4. KIS API 원시 조회 → DcfInputData (최후 폴백, 항상 반환)"""
-        if is_kr(ticker):
-            kis_payload = KisService.get_financials(ticker)
-            inputs = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
-        else:
-            kis_payload = KisService.get_overseas_financials(ticker)
-            inputs = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=kis_payload)
-
+    def _parse_kis_dcf_response(cls, ticker: str, inputs: dict) -> DcfInputData:
+        """KIS 분석 결과(inputs dict) + 현재 PER → DcfInputData 변환."""
         eps_ttm = float(inputs.get("fcf_per_share") or 0)
         per_ttm = 0.0
         current_metrics = cls.get_metrics(ticker)
@@ -197,27 +199,55 @@ class FinancialService:
         )
 
     @classmethod
-    def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
-        """DCF 계산 입력 데이터 반환.
-        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER → KIS API."""
-        user_override = StockMetaService.get_dcf_override(ticker)
-        if user_override:
-            fv = getattr(user_override, "fair_value", None)
-            dcf_input = DcfInputData(
-                fcf_per_share=user_override.fcf_per_share,
-                beta=user_override.beta or 1.0,
-                growth_rate=user_override.growth_rate or 0.0,
-                fallback_fair_value=float(fv) if fv else None,
-                timestamp=user_override.updated_at.timestamp() if user_override.updated_at else time.time(),
-                source="override",
-            )
-            cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
-            return dcf_input
+    def _dcf_from_kis_api(cls, ticker: str) -> DcfInputData:
+        """4. KIS API 원시 조회 → DcfInputData (최후 폴백, 항상 반환)"""
+        if is_kr(ticker):
+            kis_payload = KisService.get_financials(ticker)
+            inputs = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
+        else:
+            kis_payload = KisService.get_overseas_financials(ticker)
+            inputs = FinancialAnalyzer.analyze_dcf_inputs(overseas_data=kis_payload)
 
+        return cls._parse_kis_dcf_response(ticker, inputs)
+
+    @classmethod
+    def _get_dcf_from_cache(cls, ticker: str) -> Optional[DcfInputData]:
+        """메모리 캐시에서 DCF 데이터 반환 (30분 이내 유효). 없거나 만료 시 None."""
         if ticker in cls._dcf_input_by_ticker:
             cached = cls._dcf_input_by_ticker[ticker]
             if time.time() - cached.get("timestamp", 0) < 1800:
                 return cls._dict_to_dcf_input(cached)
+        return None
+
+    @classmethod
+    def _get_dcf_from_override(cls, ticker: str) -> Optional[DcfInputData]:
+        """사용자 오버라이드가 존재하면 DcfInputData로 변환·캐시 후 반환. 없으면 None."""
+        user_override = StockMetaService.get_dcf_override(ticker)
+        if not user_override:
+            return None
+        fv = getattr(user_override, "fair_value", None)
+        dcf_input = DcfInputData(
+            fcf_per_share=user_override.fcf_per_share,
+            beta=user_override.beta or 1.0,
+            growth_rate=user_override.growth_rate or 0.0,
+            fallback_fair_value=float(fv) if fv else None,
+            timestamp=user_override.updated_at.timestamp() if user_override.updated_at else time.time(),
+            source="override",
+        )
+        cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
+        return dcf_input
+
+    @classmethod
+    def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
+        """DCF 계산 입력 데이터 반환.
+        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER → KIS API."""
+        override_dcf = cls._get_dcf_from_override(ticker)
+        if override_dcf is not None:
+            return override_dcf
+
+        cached_dcf = cls._get_dcf_from_cache(ticker)
+        if cached_dcf is not None:
+            return cached_dcf
 
         try:
             for method in (
@@ -301,21 +331,7 @@ class FinancialService:
     @classmethod
     def get_overrides(cls) -> dict:
         """DB에 저장된 종목별 DCF 사용자 오버라이드 설정을 ticker → 설정 dict 로 반환."""
-        try:
-            from models.stock_meta import DcfOverride
-            with StockMetaService.session_ro() as session:
-                override_records = session.query(DcfOverride).all()
-                return {
-                    record.ticker: {
-                        "fcf_per_share": record.fcf_per_share,
-                        "beta": record.beta,
-                        "growth_rate": record.growth_rate,
-                        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-                    }
-                    for record in override_records
-                }
-        except Exception:
-            return {}
+        return StockMetaService.get_all_dcf_overrides(limit=1000)
 
     @classmethod
     def save_override(cls, ticker: str, override_params: dict) -> dict:

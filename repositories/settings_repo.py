@@ -50,7 +50,7 @@ class SettingsRepo:
             session.close()
 
     @classmethod
-    def upsert_many(cls, items: dict):
+    def upsert_many(cls, items: dict[str, tuple[str, str]]) -> None:
         """items: {key: (value, description)} — 없는 것만 삽입."""
         try:
             with session_scope() as session:
