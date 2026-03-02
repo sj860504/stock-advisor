@@ -208,9 +208,9 @@
                 <table>
                     <thead><tr>
                         <th>종목</th><th>현재가</th><th>등락</th><th>매수가</th><th>수량</th>
-                        <th>수익률</th><th>평가금액</th><th>EMA200</th><th>RSI</th><th>DCF</th><th></th>
+                        <th>수익률</th><th>평가금액</th><th>EMA200</th><th>RSI</th><th>DCF</th>
                     </tr></thead>
-                    <tbody id="dash-tbody"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
+                    <tbody id="dash-tbody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -303,29 +303,34 @@
      3. MARKET WATCH
 ═══════════════════════════════════════════════════════ -->
 <div id="market" class="page-section">
-    <div class="grid-2" style="margin-bottom:16px">
+    <!-- 시장 필터 -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+        <span style="font-size:.85rem;color:var(--sub)">시장 필터:</span>
+        <button id="mf-all" class="btn btn-primary btn-sm" onclick="setMarketFilter('all')">전체</button>
+        <button id="mf-us"  class="btn btn-outline btn-sm" onclick="setMarketFilter('us')">🇺🇸 미국</button>
+        <button id="mf-kr"  class="btn btn-outline btn-sm" onclick="setMarketFilter('kr')">🇰🇷 한국</button>
+    </div>
+    <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px">
         <div class="card">
             <div class="card-title">📈 Top 20 실시간
                 <button class="btn btn-outline btn-sm" onclick="fetchTop20()">🔄</button>
             </div>
-            <div class="tbl-wrap" style="max-height:500px;overflow-y:auto">
-                <table>
+            <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
+                <table style="width:100%">
                     <thead><tr><th>종목</th><th>현재가</th><th>등락</th><th>RSI</th><th>신호</th></tr></thead>
                     <tbody id="top20-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
-        <div class="card">
-            <div class="card-title">⚡ 매매 신호</div>
-            <div id="signals-content">
-                <div class="section-title" style="margin-top:0">과매도 (RSI &lt; 30)</div>
-                <div id="sig-oversold" class="empty">-</div>
-                <div class="section-title mt">과매수 (RSI &gt; 70)</div>
-                <div id="sig-overbought" class="empty">-</div>
-                <div class="section-title mt">저평가 (현가 &lt; DCF×0.8)</div>
-                <div id="sig-undervalued" class="empty">-</div>
-                <div class="section-title mt">EMA200 지지</div>
-                <div id="sig-ema200" class="empty">-</div>
+        <div class="card" style="overflow:hidden">
+            <div class="card-title">⚡ 매매 신호
+                <button class="btn btn-outline btn-sm" onclick="fetchSignals()">🔄</button>
+            </div>
+            <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
+                <table style="width:100%">
+                    <thead><tr><th>유형</th><th>종목</th><th>지표</th><th>현재가</th></tr></thead>
+                    <tbody id="signals-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -570,6 +575,29 @@
     </div>
 </div>
 
+<!-- DCF Override Modal -->
+<div id="dcfOverrideModal" class="modal-backdrop">
+    <div class="modal-box">
+        <div class="modal-title">DCF 적정가 수동 설정</div>
+        <input type="hidden" id="dcf-override-ticker">
+        <div class="form-group">
+            <label id="dcf-override-ticker-label">티커</label>
+        </div>
+        <div class="form-group">
+            <label>적정가 <span id="dcf-override-sym"></span></label>
+            <input type="number" id="dcf-override-val" step="any" placeholder="0">
+        </div>
+        <div class="form-group">
+            <label>성장률 (%)</label>
+            <input type="number" id="dcf-override-growth" step="0.1" placeholder="예: 10">
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+            <button class="btn btn-outline" onclick="closeModal('dcfOverrideModal')">취소</button>
+            <button class="btn btn-primary" onclick="saveDcfOverride()">저장</button>
+        </div>
+    </div>
+</div>
+
 <!-- Setting Edit Modal -->
 <div id="settingModal" class="modal-backdrop">
     <div class="modal-box">
@@ -662,6 +690,9 @@ const fmtCurr = (v, sym='$') => v == null ? '-' : sym + Number(v).toLocaleString
 const fmtPct  = (v, sign=true) => v == null ? '-' : (sign && v > 0 ? '+' : '') + fmt(v) + '%';
 const cls = (v) => v >= 0 ? 'up' : 'down';
 const badge = (v) => v >= 0 ? '<span class="badge b-up">' + fmtPct(v) + '</span>' : '<span class="badge b-down">' + fmtPct(v) + '</span>';
+const isKr = (d) => (d.market === 'kr') || /^\d{6}$/.test(String(d.ticker||''));
+const getSym = (d) => isKr(d) ? '₩' : '$';
+const fmtKrw = (v) => v == null ? '-' : '₩' + Math.round(Number(v)).toLocaleString();
 
 async function apiFetch(path, opts={}) {
     const token = getToken();
@@ -748,7 +779,7 @@ async function syncPortfolio() {
 
 function renderDashTable(data) {
     const tbody = document.getElementById('dash-tbody');
-    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="11" class="empty">보유 종목 없음</td></tr>'; return; }
+    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">보유 종목 없음</td></tr>'; return; }
     tbody.innerHTML = data.map(d => {
         const ret = d.return_pct ?? d.profit_pct;
         const rsi = d.rsi;
@@ -756,18 +787,18 @@ function renderDashTable(data) {
         const ema200 = d.ema200 ?? d.ema?.['200'];
         const price = d.price ?? d.current_price ?? 0;
         const changeRate = d.change_rate ?? d.change_pct ?? 0;
+        const s = getSym(d);
         return `<tr>
             <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name||''}</span></td>
-            <td><b>${fmtCurr(price, d.market==='kr'?'₩':'$')}</b></td>
+            <td><b>${fmtCurr(price, s)}</b></td>
             <td class="${cls(changeRate)}">${fmtPct(changeRate)}</td>
-            <td>${fmtCurr(d.buy_price??d.avg_price, d.market==='kr'?'₩':'$')}</td>
+            <td>${fmtCurr(d.buy_price??d.avg_price, s)}</td>
             <td>${fmt(d.quantity,0)}</td>
             <td>${badge(ret)}</td>
-            <td>${fmtCurr(d.current_value, d.market==='kr'?'₩':'$')}</td>
-            <td style="color:var(--sub);font-size:.8rem">${fmtCurr(ema200, d.market==='kr'?'₩':'$')}</td>
+            <td>${fmtCurr(d.current_value, s)}</td>
+            <td style="color:var(--sub);font-size:.8rem">${fmtCurr(ema200, s)}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
-            <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair,'$') : '-'}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="openTradeFor('${d.ticker}')">매매</button></td>
+            <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) : '-'}</td>
         </tr>`;
     }).join('');
 }
@@ -779,17 +810,20 @@ function renderPortfolioTable(data) {
         const ret = d.return_pct ?? d.profit_pct;
         const rsi = d.rsi;
         const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
-        const sym = d.market === 'kr' ? '₩' : '$';
+        const s = getSym(d);
         return `<tr>
             <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name||''}</span></td>
-            <td>${fmtCurr(d.buy_price??d.avg_price, sym)}</td>
-            <td>${fmtCurr(d.price??d.current_price, sym)}</td>
+            <td>${fmtCurr(d.buy_price??d.avg_price, s)}</td>
+            <td>${fmtCurr(d.price??d.current_price, s)}</td>
             <td>${fmt(d.quantity,0)}</td>
-            <td>${fmtCurr(d.current_value, sym)}</td>
+            <td>${fmtCurr(d.current_value, s)}</td>
             <td>${badge(ret)}</td>
-            <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair,'$') + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
+            <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
-            <td><button class="btn btn-outline btn-sm" style="color:var(--down);border-color:var(--down)" onclick="deleteHolding('${d.ticker}')">삭제</button></td>
+            <td style="white-space:nowrap">
+                <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}', '${s}')">DCF설정</button>
+                <button class="btn btn-outline btn-sm" style="color:var(--down);border-color:var(--down)" onclick="deleteHolding('${d.ticker}')">삭제</button>
+            </td>
         </tr>`;
     }).join('');
 }
@@ -836,14 +870,47 @@ async function fetchBalance() {
     el.textContent = '조회 중...';
     try {
         const data = await apiFetch('/trading/balance');
-        const rows = [];
-        if (data.total_eval) rows.push(['총 평가금액', fmtCurr(data.total_eval,'₩')]);
-        if (data.cash_kr)    rows.push(['KR 현금', fmtCurr(data.cash_kr,'₩')]);
-        if (data.cash_us)    rows.push(['US 현금', fmtCurr(data.cash_us,'$')]);
-        if (data.profit_loss) rows.push(['손익', fmtCurr(data.profit_loss,'₩')]);
-        el.innerHTML = rows.length
-            ? rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="color:var(--sub)">${r[0]}</span><b>${r[1]}</b></div>`).join('')
-            : `<pre style="font-size:.75rem;color:var(--sub);white-space:pre-wrap">${JSON.stringify(data,null,2)}</pre>`;
+        const summaryRows = [];
+        if (data.total_eval)  summaryRows.push(['총 평가금액', '₩' + Math.round(data.total_eval).toLocaleString()]);
+        if (data.cash_kr)     summaryRows.push(['KR 현금', '₩' + Math.round(data.cash_kr).toLocaleString()]);
+        if (data.cash_us)     summaryRows.push(['US 현금', fmtCurr(data.cash_us,'$')]);
+        if (data.profit_loss) summaryRows.push(['손익', '₩' + Math.round(data.profit_loss).toLocaleString()]);
+        const summaryHtml = summaryRows.map(r =>
+            `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="color:var(--sub)">${r[0]}</span><b>${r[1]}</b></div>`
+        ).join('');
+
+        // KIS raw holdings 배열 처리
+        const holdings = data.holdings ?? data.output1 ?? [];
+        if (Array.isArray(holdings) && holdings.length) {
+            const holdingTable = `<div style="overflow-x:auto;margin-top:10px"><table style="font-size:.8rem">
+                <thead><tr>
+                    <th>종목</th><th>수량</th><th>평균매수가</th><th>현재가</th><th>평가금액</th><th>손익</th><th>수익률</th>
+                </tr></thead>
+                <tbody>
+                    ${holdings.map(h => {
+                        const pfls = parseFloat(h.evlu_pfls_rt ?? h.evlu_erng_rt ?? 0);
+                        const prc  = parseInt(h.prpr ?? 0);
+                        const avg  = parseFloat(h.pchs_avg_pric ?? 0);
+                        const evlu = parseInt(h.evlu_amt ?? 0);
+                        const plAmt= parseInt(h.evlu_pfls_amt ?? 0);
+                        const qty  = parseInt(h.hldg_qty ?? 0);
+                        return `<tr>
+                            <td><b>${h.pdno}</b><span class="sub-text">${h.prdt_name||''}</span></td>
+                            <td>${qty.toLocaleString()}</td>
+                            <td>₩${Math.round(avg).toLocaleString()}</td>
+                            <td>₩${prc.toLocaleString()}</td>
+                            <td>₩${evlu.toLocaleString()}</td>
+                            <td class="${pfls>=0?'up':'down'}">₩${plAmt.toLocaleString()}</td>
+                            <td class="${pfls>=0?'up':'down'}">${pfls.toFixed(2)}%</td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table></div>`;
+            el.innerHTML = summaryHtml + holdingTable;
+        } else {
+            el.innerHTML = summaryRows.length ? summaryHtml
+                : `<div style="color:var(--sub);font-size:.82rem">잔고 정보 없음</div>`;
+        }
     } catch(e) { el.textContent = '조회 실패: ' + e.message; }
 }
 
@@ -896,6 +963,8 @@ function renderSectorMini(data) {
     }).join('');
 }
 
+let sectorTargetOverrides = {};  // 로컬에서 수정한 목표 비중
+
 function renderSectorWeightsFull(data) {
     const weights = data?.weights || {};
     const underweight = data?.underweight || [];
@@ -905,12 +974,11 @@ function renderSectorWeightsFull(data) {
     const weightRows = groups.map(g => {
         const w = weights[g] || {};
         const cur = (w.weight ?? w.current ?? 0) * 100;
-        const tgt = (w.target ?? 0) * 100;
-        const dev = (w.dev ?? 0) * 100;
+        const tgt = sectorTargetOverrides[g] != null ? sectorTargetOverrides[g] : (w.target ?? 0) * 100;
+        const dev = cur - tgt;
         const devAbs = Math.abs(dev);
         const isOk = devAbs < 5;
         const isOver = dev > 5;
-        const isUnder = dev < -5;
         const barColor = isOk ? 'var(--up)' : isOver ? 'var(--down)' : 'var(--warn)';
         const devBadge = isOk
             ? `<span class="badge b-up">적정</span>`
@@ -922,12 +990,20 @@ function renderSectorWeightsFull(data) {
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
                 <div>
                     <span style="font-weight:700;font-size:.95rem">${SECTOR_ICONS[g]} ${SECTOR_LABELS[g]}</span>
-                    <span style="color:var(--sub);font-size:.78rem;margin-left:8px">목표 ${tgt.toFixed(0)}%</span>
+                    <span style="color:var(--sub);font-size:.78rem;margin-left:8px">현재 <b>${cur.toFixed(1)}%</b></span>
                 </div>
                 <div style="display:flex;align-items:center;gap:10px">
                     ${devBadge}
                     <span style="font-size:1rem;font-weight:800;color:${barColor}">${cur.toFixed(1)}%</span>
                 </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span style="font-size:.78rem;color:var(--sub);white-space:nowrap">목표:</span>
+                <input type="range" min="0" max="100" step="1" value="${Math.round(tgt)}"
+                    style="flex:1;height:6px;cursor:pointer;accent-color:var(--accent)"
+                    oninput="updateSectorTarget('${g}', this.value)"
+                    id="sector-slider-${g}">
+                <span id="sector-tgt-val-${g}" style="font-size:.85rem;font-weight:700;min-width:36px;text-align:right">${Math.round(tgt)}%</span>
             </div>
             <div class="sector-bar-outer">
                 <div class="sector-bar-fill2" style="width:${Math.min(cur,100)}%;background:${barColor}"></div>
@@ -946,6 +1022,10 @@ function renderSectorWeightsFull(data) {
     return `
         ${totalLabel ? `<div style="font-size:.8rem;color:var(--sub);margin-bottom:12px">${totalLabel}</div>` : ''}
         ${weightRows}
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn btn-outline btn-sm" onclick="resetSectorTargets()">초기화</button>
+            <button class="btn btn-primary btn-sm" onclick="saveSectorTargets()">목표 저장</button>
+        </div>
         <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div>
                 <div class="section-title" style="margin-bottom:6px">📈 매수 우선 (부족 섹터)</div>
@@ -956,6 +1036,35 @@ function renderSectorWeightsFull(data) {
                 <div>${renderHoldingList(overweight)}</div>
             </div>
         </div>`;
+}
+
+function updateSectorTarget(group, val) {
+    sectorTargetOverrides[group] = parseInt(val);
+    const lbl = document.getElementById('sector-tgt-val-' + group);
+    if (lbl) lbl.textContent = val + '%';
+}
+
+function resetSectorTargets() {
+    sectorTargetOverrides = {};
+    fetchSectorWeights();
+}
+
+async function saveSectorTargets() {
+    if (!Object.keys(sectorTargetOverrides).length) { showToast('변경된 목표 없음', false); return; }
+    try {
+        // settings 형태로 저장: sector_target_tech, sector_target_value, sector_target_financial
+        const promises = Object.entries(sectorTargetOverrides).map(([g, v]) =>
+            apiFetch('/trading/settings', {
+                method: 'PUT',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({key: 'sector_target_' + g, value: String(v / 100)}),
+            })
+        );
+        await Promise.all(promises);
+        showToast('✅ 섹터 목표 비중 저장됨');
+        sectorTargetOverrides = {};
+        fetchSectorWeights();
+    } catch(e) { showToast('❌ ' + e.message, false); }
 }
 
 // ─── Economic Calendar ──────────────────────────────────────────
@@ -1199,39 +1308,108 @@ function renderEconTable(econ) {
 }
 
 // ─── Market Watch ──────────────────────────────────────────────
+let marketFilter = 'all';
+let top20Cache = null;
+
+function setMarketFilter(f) {
+    marketFilter = f;
+    ['all','us','kr'].forEach(id => {
+        const btn = document.getElementById('mf-' + id);
+        if (btn) { btn.className = id===f ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm'; }
+    });
+    renderTop20Filtered();
+    renderSignalsFiltered();
+}
+
+function renderTop20Filtered() {
+    const tbody = document.getElementById('top20-tbody');
+    if (!top20Cache) return;
+    let entries = Object.entries(top20Cache).filter(([k]) => !k.startsWith('message'));
+    if (marketFilter === 'us') entries = entries.filter(([t]) => !/^\d{6}$/.test(t));
+    if (marketFilter === 'kr') entries = entries.filter(([t]) => /^\d{6}$/.test(t));
+    if (!entries.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">수집 중...</td></tr>'; return; }
+    tbody.innerHTML = entries.map(([ticker, info]) => {
+        const rsi = info.rsi;
+        const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
+        const sig = rsi < 30 ? '<span class="badge b-up">BUY</span>' : rsi > 70 ? '<span class="badge b-down">SELL</span>' : '-';
+        const krStock = /^\d{6}$/.test(ticker);
+        const priceStr = krStock ? '₩' + Math.round(info.price||0).toLocaleString() : '$' + fmt(info.price);
+        return `<tr>
+            <td class="ticker-cell">${ticker}</td>
+            <td>${priceStr}</td>
+            <td class="${cls(info.change_rate||0)}">${fmtPct(info.change_rate)}</td>
+            <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
+            <td>${sig}</td>
+        </tr>`;
+    }).join('');
+}
+
 async function fetchTop20() {
     try {
-        const data = await apiFetch('/market/top20');
-        const tbody = document.getElementById('top20-tbody');
-        const entries = Object.entries(data).filter(([k]) => !k.startsWith('message'));
-        if (!entries.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">수집 중...</td></tr>'; return; }
-        tbody.innerHTML = entries.map(([ticker, info]) => {
-            const rsi = info.rsi;
-            const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
-            const sig = rsi < 30 ? '<span class="badge b-up">BUY</span>' : rsi > 70 ? '<span class="badge b-down">SELL</span>' : '-';
-            return `<tr>
-                <td class="ticker-cell">${ticker}</td>
-                <td>$${fmt(info.price)}</td>
-                <td class="${cls(info.change_rate||0)}">${fmtPct(info.change_rate)}</td>
-                <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
-                <td>${sig}</td>
-            </tr>`;
-        }).join('');
+        top20Cache = await apiFetch('/market/top20');
+        renderTop20Filtered();
     } catch(e) { console.error(e); }
+}
+
+let signalsCache = null;
+
+function renderSignalsFiltered() {
+    const tbody = document.getElementById('signals-tbody');
+    if (!signalsCache) return;
+    const data = signalsCache;
+
+    const filterTicker = (t) => {
+        const kr = /^\d{6}$/.test(String(t));
+        if (marketFilter === 'us') return !kr;
+        if (marketFilter === 'kr') return kr;
+        return true;
+    };
+    const fmtSigPrice = (t, p) => {
+        if (p == null || p === 0) return '-';
+        return /^\d{6}$/.test(String(t)) ? '₩' + Math.round(p).toLocaleString() : '$' + fmt(p);
+    };
+
+    const rows = [];
+    (data.oversold||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+        rows.push(`<tr>
+            <td><span class="badge b-up" style="white-space:nowrap">과매도</span></td>
+            <td class="ticker-cell">${i.ticker}</td>
+            <td>RSI <b class="up">${fmt(i.rsi,1)}</b></td>
+            <td>${fmtSigPrice(i.ticker, i.price)}</td>
+        </tr>`);
+    });
+    (data.overbought||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+        rows.push(`<tr>
+            <td><span class="badge b-down" style="white-space:nowrap">과매수</span></td>
+            <td class="ticker-cell">${i.ticker}</td>
+            <td>RSI <b class="down">${fmt(i.rsi,1)}</b></td>
+            <td>${fmtSigPrice(i.ticker, i.price)}</td>
+        </tr>`);
+    });
+    (data.undervalued||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+        rows.push(`<tr>
+            <td><span class="badge b-warn" style="white-space:nowrap">저평가</span></td>
+            <td class="ticker-cell">${i.ticker}</td>
+            <td>여유 <b class="up">+${fmt(i.upside_pct,1)}%</b></td>
+            <td>${fmtSigPrice(i.ticker, i.price)}</td>
+        </tr>`);
+    });
+    (data.ema200_support||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+        rows.push(`<tr>
+            <td><span class="badge b-gray" style="white-space:nowrap">EMA200</span></td>
+            <td class="ticker-cell">${i.ticker}</td>
+            <td style="font-size:.78rem;color:var(--sub)">EMA ${fmtSigPrice(i.ticker, i.ema200)}</td>
+            <td>${fmtSigPrice(i.ticker, i.price)}</td>
+        </tr>`);
+    });
+
+    tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="empty">신호 없음</td></tr>';
 }
 
 async function fetchSignals() {
     try {
-        const data = await apiFetch('/market/signals');
-        const render = (items, fields) => items?.length
-            ? items.map(i => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:.85rem">
-                <b>${i.ticker}</b> — ${fields.map(f=>`${f}: ${i[f]??'-'}`).join(' | ')}
-              </div>`).join('')
-            : '<div class="empty">없음</div>';
-        document.getElementById('sig-oversold').innerHTML   = render(data.oversold,   ['rsi','price']);
-        document.getElementById('sig-overbought').innerHTML = render(data.overbought,  ['rsi','price']);
-        document.getElementById('sig-undervalued').innerHTML= render(data.undervalued, ['price','dcf','upside_pct']);
-        document.getElementById('sig-ema200').innerHTML     = render(data.ema200_support, ['price','ema200']);
+        signalsCache = await apiFetch('/market/signals');
+        renderSignalsFiltered();
     } catch(e) { console.error(e); }
 }
 
@@ -1393,6 +1571,37 @@ async function calcDcf() {
         el.style.display = 'block';
         document.getElementById('dcf-result-val').textContent = '$' + (data.fair_value ?? data.dcf_value ?? 0).toFixed(2);
         document.getElementById('dcf-result-note').textContent = `성장률 ${(growth*100).toFixed(0)}% / WACC ${(discount*100).toFixed(1)}% / 터미널 ${(terminal*100).toFixed(1)}%`;
+    } catch(e) { showToast('❌ ' + e.message, false); }
+}
+
+// ─── DCF Override ──────────────────────────────────────────────
+function openDcfSetModal(ticker, symStr) {
+    document.getElementById('dcf-override-ticker').value = ticker;
+    document.getElementById('dcf-override-ticker-label').textContent = ticker;
+    document.getElementById('dcf-override-sym').textContent = symStr || '';
+    document.getElementById('dcf-override-val').value = '';
+    document.getElementById('dcf-override-growth').value = '';
+    openModal('dcfOverrideModal');
+}
+
+async function saveDcfOverride() {
+    const ticker = document.getElementById('dcf-override-ticker').value;
+    const fairVal = parseFloat(document.getElementById('dcf-override-val').value) || null;
+    const growth  = parseFloat(document.getElementById('dcf-override-growth').value);
+    if (!ticker) return;
+    if (!fairVal && !growth) { showToast('적정가 또는 성장률을 입력하세요', false); return; }
+    try {
+        const payload = { ticker };
+        if (fairVal) payload.fair_value = fairVal;
+        if (growth)  payload.growth_rate = growth / 100;
+        await apiFetch('/analysis/dcf-override', {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload),
+        });
+        showToast('✅ DCF 설정 저장됨');
+        closeModal('dcfOverrideModal');
+        fetchPortfolioFull(true);
     } catch(e) { showToast('❌ ' + e.message, false); }
 }
 
