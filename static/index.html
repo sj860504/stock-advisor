@@ -312,7 +312,7 @@
     </div>
     <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px">
         <div class="card">
-            <div class="card-title">📈 Top 20 실시간
+            <div class="card-title">📈 Top 100 실시간
                 <button class="btn btn-outline btn-sm" onclick="fetchTop20()">🔄</button>
             </div>
             <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
@@ -1346,7 +1346,7 @@ function renderTop20Filtered() {
 
 async function fetchTop20() {
     try {
-        top20Cache = await apiFetch('/market/top20');
+        top20Cache = await apiFetch('/market/monitored');
         renderTop20Filtered();
     } catch(e) { console.error(e); }
 }
