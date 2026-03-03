@@ -29,7 +29,7 @@ SERIES_META: dict[str, dict] = {
     "UNRATE":        {"release_id": "50",  "name": "실업률",                 "time_et": "08:30", "weight": 3, "freq": "monthly"},
     "CES0500000003": {"release_id": "50",  "name": "시간당평균임금",          "time_et": "08:30", "weight": 1, "freq": "monthly"},
     "UMCSENT":       {"release_id": "290", "name": "소비자신뢰지수(미시간)", "time_et": "10:00", "weight": 2, "freq": "monthly"},
-    "IPMAN":         {"release_id": "13",  "name": "제조업생산(PMI)",        "time_et": "09:15", "weight": 2, "freq": "monthly"},
+    "IPMAN":         {"release_id": "13",  "name": "제조업생산지수(산업생산)",  "time_et": "09:15", "weight": 2, "freq": "monthly"},
     "RSXFS":         {"release_id": "84",  "name": "소매판매",               "time_et": "08:30", "weight": 2, "freq": "monthly"},
     "INDPRO":        {"release_id": "13",  "name": "산업생산지수",            "time_et": "09:15", "weight": 1, "freq": "monthly"},
     "TCU":           {"release_id": "13",  "name": "설비가동률",             "time_et": "09:15", "weight": 1, "freq": "monthly"},

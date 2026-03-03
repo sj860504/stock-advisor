@@ -44,7 +44,7 @@ class MacroService:
         "cpi":                   {"higher_is_good": False, "name": "소비자 물가 지수(CPI)",   "weight": 3},
         "unemployment_rate":     {"higher_is_good": False, "name": "실업률",                  "weight": 3},
         "nonfarm_payrolls":      {"higher_is_good": True,  "name": "비농업 고용(NFP)",         "weight": 3},
-        "pmi":                   {"higher_is_good": True,  "name": "제조업 생산 지수(PMI)",    "weight": 2},
+        "pmi":                   {"higher_is_good": True,  "name": "제조업 생산 지수(IPMAN)", "weight": 2},
         "consumer_confidence":   {"higher_is_good": True,  "name": "소비자 신뢰 지수",         "weight": 2},
         "ppi":                   {"higher_is_good": False, "name": "생산자 물가 지수(PPI)",    "weight": 2},
         "retail_sales":          {"higher_is_good": True,  "name": "소매 판매",                "weight": 2},

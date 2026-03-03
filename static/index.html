@@ -822,6 +822,7 @@ function renderPortfolioTable(data) {
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
             <td style="white-space:nowrap">
                 <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}', '${s}')">DCF설정</button>
+                <button class="btn btn-danger btn-sm" style="margin-right:4px" onclick="openSellModal('${d.ticker}')">매도</button>
                 <button class="btn btn-outline btn-sm" style="color:var(--down);border-color:var(--down)" onclick="deleteHolding('${d.ticker}')">삭제</button>
             </td>
         </tr>`;
@@ -971,6 +972,18 @@ function renderSectorWeightsFull(data) {
     const overweight  = data?.overweight  || [];
     const groups = ['tech', 'value', 'financial'];
 
+    // 미분류(other) 비중 표시
+    const otherW = weights['other'] || {};
+    const otherCur = (otherW.weight ?? otherW.current ?? 0) * 100;
+    const otherValKrw = otherW.value_krw ?? 0;
+    const otherWarning = otherCur > 10
+        ? `<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:.82rem">
+            ⚠️ <b style="color:var(--warn)">${otherCur.toFixed(1)}%</b> 가 <b>미분류(기타)</b>로 집계되어 섹터 비중이 부정확합니다.<br>
+            <span style="color:var(--sub)">종목의 섹터 정보가 없거나 분류되지 않은 종목이 있습니다. (평가액 ₩${Math.round(otherValKrw).toLocaleString()})</span>
+           </div>`
+        : '';
+
+
     const weightRows = groups.map(g => {
         const w = weights[g] || {};
         const cur = (w.weight ?? w.current ?? 0) * 100;
@@ -1021,6 +1034,7 @@ function renderSectorWeightsFull(data) {
 
     return `
         ${totalLabel ? `<div style="font-size:.8rem;color:var(--sub);margin-bottom:12px">${totalLabel}</div>` : ''}
+        ${otherWarning}
         ${weightRows}
         <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-outline btn-sm" onclick="resetSectorTargets()">초기화</button>
@@ -1615,6 +1629,11 @@ async function saveDcfOverride() {
 // ─── Trade Modal ───────────────────────────────────────────────
 function openTradeModal() { openModal('tradeModal'); setTradeMode('buy'); }
 function openTradeFor(ticker) { openTradeModal(); document.getElementById('tx-ticker').value = ticker; }
+function openSellModal(ticker) {
+    openModal('tradeModal');
+    setTradeMode('sell');
+    document.getElementById('tx-ticker').value = ticker;
+}
 function closeTradeModal() { closeModal('tradeModal'); }
 
 function setTradeMode(mode) {
