@@ -23,6 +23,17 @@ class OrderService:
         from services.kis.kis_service import KisService
         is_us = not is_kr(ticker)
         if is_us:
+            # 지정가 주문 직전 실시간 가격 재조회 (메모리 가격 지연 방지)
+            try:
+                from services.kis.fetch.kis_fetcher import KisFetcher
+                token = KisService.get_access_token()
+                fresh = KisFetcher.fetch_overseas_price(token, ticker)
+                fresh_price = fresh.get("price", 0)
+                if fresh_price > 0:
+                    logger.info(f"🔄 {ticker} 매도 전 가격 재조회: ${fresh_price:.2f} (기존: ${current_price:.2f})")
+                    current_price = fresh_price
+            except Exception as e:
+                logger.warning(f"⚠️ {ticker} 가격 재조회 실패, 기존 가격 사용: {e}")
             if current_price <= 0:
                 return False, f"{ticker} 현재가 정보 없음"
             res = KisService.send_overseas_order(

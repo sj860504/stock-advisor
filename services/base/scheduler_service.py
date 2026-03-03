@@ -631,6 +631,7 @@ class SchedulerService:
                 "ema120": ticker_state.ema.get(120),
                 "ema200": ticker_state.ema.get(200),
                 "tier": tiers.get(ticker, "low"),
+                "last_updated": ticker_state.last_updated.isoformat() if ticker_state.last_updated else None,
             }
         return result
 

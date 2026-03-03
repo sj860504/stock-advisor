@@ -328,8 +328,8 @@
             </div>
             <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
                 <table style="width:100%">
-                    <thead><tr><th>종목</th><th>현재가</th><th>등락</th><th>RSI</th><th>신호</th></tr></thead>
-                    <tbody id="top20-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+                    <thead><tr><th>종목</th><th>이름</th><th>현재가</th><th>등락</th><th>RSI</th><th>신호</th><th>갱신</th></tr></thead>
+                    <tbody id="top20-tbody"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -1461,7 +1461,7 @@ function renderTop20Filtered() {
     if (marketFilter === 'kr') entries = entries.filter(([t]) => /^\d{6}$/.test(t));
     if (!entries.length) {
         const msg = marketFilter === 'all' ? '수집 중...' : '해당 시장 종목 없음';
-        tbody.innerHTML = `<tr><td colspan="5" class="empty">${msg}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="empty">${msg}</td></tr>`;
         return;
     }
     tbody.innerHTML = entries.map(([ticker, info]) => {
@@ -1470,12 +1470,17 @@ function renderTop20Filtered() {
         const sig = rsi < 30 ? '<span class="badge b-up">BUY</span>' : rsi > 70 ? '<span class="badge b-down">SELL</span>' : '-';
         const krStock = /^\d{6}$/.test(ticker);
         const priceStr = krStock ? '₩' + Math.round(info.price||0).toLocaleString() : '$' + fmt(info.price);
+        const updatedStr = info.last_updated
+            ? new Date(info.last_updated).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', second:'2-digit'})
+            : '-';
         return `<tr>
             <td class="ticker-cell">${ticker}</td>
+            <td class="sub-text">${info.name||''}</td>
             <td>${priceStr}</td>
             <td class="${cls(info.change_pct||0)}">${fmtPct(info.change_pct)}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
             <td>${sig}</td>
+            <td class="sub-text">${updatedStr}</td>
         </tr>`;
     }).join('');
 }

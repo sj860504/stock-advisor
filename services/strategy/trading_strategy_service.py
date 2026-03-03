@@ -1498,6 +1498,22 @@ class TradingStrategyService:
         return is_kr_flag, holdings, kr_assets, us_assets_krw
 
     @classmethod
+    def _fetch_fresh_us_price(cls, ticker: str, fallback: float) -> float:
+        """US 주문 직전 실시간 가격 재조회. 실패 시 fallback 반환."""
+        try:
+            from services.kis.kis_service import KisService
+            from services.kis.fetch.kis_fetcher import KisFetcher
+            token = KisService.get_access_token()
+            fresh = KisFetcher.fetch_overseas_price(token, ticker)
+            price = fresh.get("price", 0)
+            if price > 0:
+                logger.info(f"🔄 {ticker} 주문 전 가격 재조회: ${price:.2f} (기존: ${fallback:.2f})")
+                return price
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} 가격 재조회 실패, 기존 가격 사용: {e}")
+        return fallback
+
+    @classmethod
     def _execute_buy_order(
         cls, ticker: str, score: int, profit_pct: float, is_holding: bool,
         current_price: float, total_assets: float, cash_balance: float,
@@ -1522,6 +1538,8 @@ class TradingStrategyService:
             logger.info(f"⏭️ {ticker} 비중 제한 매수 스킵: {', '.join(limit_reasons)}")
             return False, 0
         logger.info(f"⚖️ {ticker} 분할 매수 예정 ({quantity}주)")
+        if not is_kr_flag:
+            current_price = cls._fetch_fresh_us_price(ticker, current_price)
         order_result = KisService.send_order(ticker, quantity, 0, "buy") if is_kr_flag else KisService.send_overseas_order(ticker, quantity, round(float(current_price), 2), "buy")
         if order_result.get("status") == "success":
             OrderService.record_trade(ticker, "buy", quantity, final_price, "Strategy execution", "v3_strategy")
@@ -1546,6 +1564,8 @@ class TradingStrategyService:
         else:
             sell_qty, msg = max(1, int(holding_qty / split_count)), "분할 매도(익절)"
         buy_price_val = float(current_holding.get("buy_price") or 0) or None
+        if not is_kr(ticker):
+            current_price = cls._fetch_fresh_us_price(ticker, current_price)
         order_result = KisService.send_order(ticker, sell_qty, 0, "sell") if is_kr(ticker) else KisService.send_overseas_order(ticker, sell_qty, round(float(current_price), 2), "sell")
         if order_result.get("status") == "success":
             OrderService.record_trade(ticker, "sell", sell_qty, current_price, msg, "v3_strategy", buy_price=buy_price_val)

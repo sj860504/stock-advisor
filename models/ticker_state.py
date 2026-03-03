@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque
+from datetime import datetime
 import logging
 
 from utils.logger import get_logger
@@ -28,6 +29,9 @@ class TickerState:
     # 전략 타겟가
     target_buy_price: float = 0.0  # 목표 진입가
     target_sell_price: float = 0.0 # 목표 매도가
+
+    # 가격 최신화 시각
+    last_updated: Optional[datetime] = None
     
     # 데이터 버퍼 (최근 N개의 종가, 실시간 EMA 계산용)
     # 실제로는 일봉 데이터 로딩 후, 실시간 가격이 변할 때 '오늘의 종가(현재가)'로 가정하고 EMA를 재계산하는 방식이 일반적

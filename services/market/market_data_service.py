@@ -289,6 +289,7 @@ class MarketDataService:
     @classmethod
     def on_realtime_data(cls, ticker: str, data: dict):
         """WebSocket 실시간 데이터 수신 시 호출."""
+        from datetime import datetime
         if ticker not in cls._states:
             cls.register_ticker(ticker)
         state = cls._states[ticker]
@@ -298,14 +299,17 @@ class MarketDataService:
         state.low_price     = float(data.get("low",   state.low_price))
         state.change_rate   = float(data.get("rate",  state.change_rate))
         state.volume        = int(data.get("volume",  state.volume))
+        state.last_updated  = datetime.now()
         state.recalculate_indicators()
 
     @classmethod
     def update_price_from_sync(cls, ticker: str, price: float, change_rate: float = None):
         """포트폴리오 동기화·REST 폴링 시 현재가만 갱신 (EMA 재계산 없음)."""
+        from datetime import datetime
         state = cls._states.get(ticker)
         if state and price > 0:
             state.current_price = price
+            state.last_updated  = datetime.now()
             if change_rate is not None:
                 state.change_rate = change_rate
 
