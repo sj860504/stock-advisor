@@ -822,7 +822,16 @@ class TradingStrategyService:
                 return
                 
             states = MarketDataService.get_all_states()
-            msg = ReportService.format_portfolio_report(latest_holdings, latest_cash, states, summary)
+            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+            is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
+            is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+            if is_kr_open and not is_us_open:
+                report_holdings = filter_kr(latest_holdings)
+            elif is_us_open and not is_kr_open:
+                report_holdings = filter_us(latest_holdings)
+            else:
+                report_holdings = latest_holdings  # 동시 개장 또는 둘 다 마감 시 전체 표시
+            msg = ReportService.format_portfolio_report(report_holdings, latest_cash, states, summary)
             AlertService.send_slack_alert(msg)
         except Exception as e:
             logger.warning(f"⚠️ 포트폴리오 리포트 전송 실패: {e}")
