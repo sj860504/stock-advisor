@@ -213,8 +213,7 @@ class SchedulerService:
                 f"📺 KR 개장={is_kr_open}, US 개장={is_us_open} | "
                 f"HIGH {len(high_set)}종목 (WebSocket), LOW {len(low_set)}종목 (5분 폴링)"
             )
-            tickers_to_register = (all_kr if watch_kr else []) + (all_us if watch_us else [])
-            MarketDataService.register_batch(tickers_to_register)
+            MarketDataService.register_batch(all_kr + all_us)  # UI 표시용 전체 등록
             if watch_kr:
                 await cls._subscribe_kr_tickers(all_kr, kr_high_set)
             if watch_us:

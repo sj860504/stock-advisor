@@ -220,20 +220,28 @@ class MarketDataService:
         logger.info(f"🆕 Batch registering {len(filtered)} tickers (KR={is_kr_open}, US={is_us_open})...")
 
         from services.market.stock_meta_service import StockMetaService
-        financials_map      = StockMetaService.get_batch_latest_financials(filtered)
+        # new_tickers 전체 DB 로드 (비활성 시장 종목도 UI 표시용으로 등록)
+        financials_map = StockMetaService.get_batch_latest_financials(new_tickers)
         tickers_needing_warmup = []
 
-        for ticker in filtered:
+        for ticker in new_tickers:
             state = TickerState(ticker=ticker)
             cls._states[ticker] = state
             financials = financials_map.get(ticker)
             if financials and cls._load_indicators_from_db(financials, state):
                 logger.debug(f"✅ Batch DB load: {ticker}")
             else:
-                if financials:
-                    logger.info(f"🔄 DB data incomplete for {ticker}, scheduling warm-up.")
-                tickers_needing_warmup.append(ticker)
+                # warm-up은 현재 활성 시장 종목만 (API 부하 방지)
+                is_active = (is_kr(ticker) and analyze_kr) or (not is_kr(ticker) and analyze_us)
+                if is_active:
+                    if financials:
+                        logger.info(f"🔄 DB data incomplete for {ticker}, scheduling warm-up.")
+                    tickers_needing_warmup.append(ticker)
 
+        logger.info(
+            f"🆕 Batch registered {len(new_tickers)} tickers "
+            f"(warm-up {len(tickers_needing_warmup)}, KR={is_kr_open}, US={is_us_open})"
+        )
         if tickers_needing_warmup:
             threading.Thread(
                 target=cls._warm_up_batch,

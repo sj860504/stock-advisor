@@ -1369,7 +1369,11 @@ function renderTop20Filtered() {
     let entries = Object.entries(top20Cache).filter(([k]) => !k.startsWith('message'));
     if (marketFilter === 'us') entries = entries.filter(([t]) => !/^\d{6}$/.test(t));
     if (marketFilter === 'kr') entries = entries.filter(([t]) => /^\d{6}$/.test(t));
-    if (!entries.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">수집 중...</td></tr>'; return; }
+    if (!entries.length) {
+        const msg = marketFilter === 'all' ? '수집 중...' : '해당 시장 종목 없음';
+        tbody.innerHTML = `<tr><td colspan="5" class="empty">${msg}</td></tr>`;
+        return;
+    }
     tbody.innerHTML = entries.map(([ticker, info]) => {
         const rsi = info.rsi;
         const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
@@ -1379,7 +1383,7 @@ function renderTop20Filtered() {
         return `<tr>
             <td class="ticker-cell">${ticker}</td>
             <td>${priceStr}</td>
-            <td class="${cls(info.change_rate||0)}">${fmtPct(info.change_rate)}</td>
+            <td class="${cls(info.change_pct||0)}">${fmtPct(info.change_pct)}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
             <td>${sig}</td>
         </tr>`;
