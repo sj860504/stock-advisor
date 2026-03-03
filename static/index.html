@@ -804,28 +804,10 @@ function renderDashTable(data) {
 }
 
 const SECTOR_OPTIONS = [
-    // 그룹: 미분류
-    {value:'Others',                  label:'── 미분류 ──',              group:''},
-    // 그룹: 기술주 (tech)
-    {value:'Technology',              label:'[기술] 기술',               group:'tech'},
-    {value:'Information Technology',  label:'[기술] IT',                 group:'tech'},
-    {value:'Communication Services',  label:'[기술] 통신서비스',          group:'tech'},
-    // 그룹: 가치주 (value)
-    {value:'Consumer Staples',        label:'[가치] 필수소비재',          group:'value'},
-    {value:'Consumer Discretionary',  label:'[가치] 임의소비재',          group:'value'},
-    {value:'Consumer Cyclical',       label:'[가치] 소비재(경기순환)',     group:'value'},
-    {value:'Healthcare',              label:'[가치] 헬스케어',            group:'value'},
-    {value:'Utilities',               label:'[가치] 유틸리티',            group:'value'},
-    {value:'Energy',                  label:'[가치] 에너지',              group:'value'},
-    {value:'Industrials',             label:'[가치] 산업재',              group:'value'},
-    {value:'Materials',               label:'[가치] 소재',                group:'value'},
-    {value:'Real Estate',             label:'[가치] 리츠/부동산',         group:'value'},
-    // 그룹: 금융주 (financial)
-    {value:'Financials',              label:'[금융] 금융',               group:'financial'},
-    {value:'Financial Services',      label:'[금융] 금융서비스',          group:'financial'},
-    {value:'Insurance',               label:'[금융] 보험',               group:'financial'},
-    // ETF
-    {value:'ETF',                     label:'[ETF] ETF/인덱스펀드',      group:''},
+    {value:'other',    label:'── 미분류/ETF ──', group:''},
+    {value:'tech',     label:'💻 기술주',         group:'tech'},
+    {value:'value',    label:'🏥 가치주',         group:'value'},
+    {value:'financial',label:'🏦 금융주',         group:'financial'},
 ];
 
 function renderPortfolioTable(data) {
