@@ -70,15 +70,20 @@ class OrderService:
         price: float,
         result_msg: str,
         strategy_name: str = "manual",
+        buy_price: Optional[float] = None,
     ):
         """매매 내역을 DB에 기록합니다. 성공 시 TradeHistory 엔티티, 실패 시 None 반환."""
-        return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name)
+        return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price=buy_price)
 
     @classmethod
     def _to_dto(cls, record, holdings_map: dict) -> TradeRecordDto:
         """TradeHistory 엔티티를 TradeRecordDto로 변환합니다."""
         holding = holdings_map.get(record.ticker)
-        buy_price = holding.buy_price if holding and holding.buy_price else None
+        # 매매 시점 평균 매수가: DB 저장값 우선, 없으면 현재 보유 데이터 폴백
+        buy_price = (
+            record.buy_price_at_trade
+            or (holding.buy_price if holding and holding.buy_price else None)
+        )
         profit = None
         profit_pct = None
         if buy_price and record.order_type == "sell":

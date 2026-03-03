@@ -22,6 +22,7 @@ class TradeHistoryRepo:
         price: float,
         result_msg: str,
         strategy_name: str = "manual",
+        buy_price: Optional[float] = None,
     ) -> Optional[TradeHistory]:
         """매매 내역 DB 기록. 성공 시 detached TradeHistory, 실패 시 None."""
         try:
@@ -31,6 +32,7 @@ class TradeHistoryRepo:
                     order_type=order_type,
                     quantity=quantity,
                     price=price,
+                    buy_price_at_trade=buy_price,
                     result_msg=result_msg,
                     timestamp=datetime.now(),
                     strategy_name=strategy_name,

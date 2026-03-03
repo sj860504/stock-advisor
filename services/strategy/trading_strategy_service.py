@@ -1545,9 +1545,10 @@ class TradingStrategyService:
             sell_qty, msg = holding_qty, "전량 매도(손절)"
         else:
             sell_qty, msg = max(1, int(holding_qty / split_count)), "분할 매도(익절)"
+        buy_price_val = float(current_holding.get("buy_price") or 0) or None
         order_result = KisService.send_order(ticker, sell_qty, 0, "sell") if is_kr(ticker) else KisService.send_overseas_order(ticker, sell_qty, round(float(current_price), 2), "sell")
         if order_result.get("status") == "success":
-            OrderService.record_trade(ticker, "sell", sell_qty, current_price, msg, "v3_strategy")
+            OrderService.record_trade(ticker, "sell", sell_qty, current_price, msg, "v3_strategy", buy_price=buy_price_val)
             return True, sell_qty
         logger.error(f"주문 실패: {order_result}")
         return False, 0

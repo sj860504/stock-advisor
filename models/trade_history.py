@@ -13,6 +13,7 @@ class TradeHistory(Base):
     order_type = Column(String(10), nullable=False)  # 'buy' or 'sell'
     quantity = Column(Integer, nullable=False)
     price = Column(Float, nullable=False)
+    buy_price_at_trade = Column(Float, nullable=True)  # 매매 시점 평균 매수가 (수익률 계산용)
     result_msg = Column(String(255))
     timestamp = Column(DateTime, default=datetime.now)
     strategy_name = Column(String(50), default="manual")  # 'manual', 'rsi_strategy', etc.
