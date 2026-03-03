@@ -16,20 +16,21 @@ class MarketHourService:
     def is_kr_market_open(allow_extended: bool = False) -> bool:
         """한국 시장 운영 여부 (평일)
         - 정규장: 09:00 ~ 15:30
-        - 시간외 포함: 09:00 ~ 18:00 (실전)
-        - 모의투자(VTS): 시간외 미지원으로 정규장만 허용
+        - 시간외 포함: 09:00 ~ 18:00 (실전 또는 실전 크레덴셜 보유 시)
+        - 모의투자(VTS) 전용(실전 크레덴셜 없음): 시간외 미지원으로 정규장만 허용
         """
         tz = pytz.timezone('Asia/Seoul')
         now = datetime.now(tz)
-        
+
         # 주말(토=5, 일=6) 제외
         if now.weekday() >= 5:
             return False
-            
+
         start_time = time(9, 0)
-        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        # 실전 크레덴셜이 있으면(split mode 포함) 시간외 허용
+        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS or Config.has_real_credentials())
         end_time = time(18, 0) if kr_allow_extended else time(15, 30)
-        
+
         return start_time <= now.time() <= end_time
 
     @staticmethod
@@ -46,27 +47,28 @@ class MarketHourService:
         """
         미국 시장 운영 여부 (EST 기준)
         정규장: 09:30 ~ 16:00
-        프리/애프터 포함 시: 04:00 ~ 20:00
-        모의투자(VTS): 미국 시간외 주문 미지원으로 정규장만 허용
+        프리/애프터 포함 시: 04:00 ~ 20:00 (실전 또는 실전 크레덴셜 보유 시)
+        모의투자(VTS) 전용(실전 크레덴셜 없음): 정규장만 허용
         """
         tz = pytz.timezone('America/New_York')
         now = datetime.now(tz)
-        
+
         # 주말 제외
         if now.weekday() >= 5:
             return False
         # 미국 공휴일(뉴욕증시 휴장일) 제외
         if MarketHourService._is_us_market_holiday(now.date()):
             return False
-            
-        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+
+        # 실전 크레덴셜이 있으면(split mode 포함) 프리/애프터 허용
+        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS or Config.has_real_credentials())
         if us_allow_extended:
             start_time = time(4, 0)
             end_time = time(20, 0)
         else:
             start_time = time(9, 30)
             end_time = time(16, 0)
-        
+
         return start_time <= now.time() <= end_time
 
     @staticmethod
@@ -157,15 +159,15 @@ class MarketHourService:
             return False
 
         # KR window: 08:00 ~ 정규장/시간외 종료
-        # 모의투자(VTS)는 시간외 주문이 불가하여 KR 확장시간을 적용하지 않음
+        # 실전 크레덴셜 보유 시(split mode 포함) 시간외 허용
         kr_start = (datetime.combine(now_kr.date(), time(9, 0)) - timedelta(minutes=pre_open_lead_minutes)).time()
-        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        kr_allow_extended = allow_extended and (not Config.KIS_IS_VTS or Config.has_real_credentials())
         kr_end = time(18, 0) if kr_allow_extended else time(15, 30)
         kr_open = now_kr.weekday() < 5 and cls._is_time_between(now_kr.time(), kr_start, kr_end)
 
         # US window
-        # 모의투자(VTS)는 미국 시간외 주문이 불가하여 정규장 기준으로 제한
-        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS)
+        # 실전 크레덴셜 보유 시(split mode 포함) 프리/애프터 허용
+        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS or Config.has_real_credentials())
         if us_allow_extended:
             us_market_start = time(4, 0)   # 프리장 시작
             us_market_end = time(20, 0)    # 애프터 종료

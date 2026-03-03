@@ -287,9 +287,10 @@ class KisFetcher:
 
     @classmethod
     def fetch_domestic_ranking(cls, token: str, mrkt_div: str = "0000") -> dict:
-        """국내 주식 시가총액 순위 조회 (VTS 환경 + 실전 크레덴셜 없을 때 폴백)"""
-        # 실전 크레덴셜이 없는 VTS 환경에서는 마스터 파일 기반 폴백 사용
-        if Config.KIS_IS_VTS and not Config.has_real_credentials():
+        """국내 주식 시가총액 순위 조회 (VTS 환경에서는 마스터 파일 기반 폴백 사용)"""
+        # VTS 모드이면 실전 크레덴셜 유무와 무관하게 항상 마스터 파일 기반 폴백 사용
+        # (실전 서버 URL + VTS 파라미터 혼용 시 ERROR INPUT FIELD NOT FOUND 발생)
+        if Config.KIS_IS_VTS:
             from services.market.master_data_service import MasterDataService
             top_stocks = MasterDataService.get_top_market_cap_tickers(100)
             if top_stocks:
@@ -415,6 +416,27 @@ class KisFetcher:
             response_data = response.json()
             if response_data.get("output2") and not response_data.get("output"):
                 response_data["output"] = response_data["output2"]
+
+            # NAS/NYS 잘못된 경우 자동 폴백 (KIS의 거래소 코드가 실제 상장 거래소와 다를 수 있음)
+            if tr_id != "FHKST03030100" and not response_data.get("output") and "EXCD" in params:
+                alt_excd = "NYS" if params["EXCD"] == "NAS" else ("NAS" if params["EXCD"] == "NYS" else None)
+                if alt_excd:
+                    logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} 폴백 조회 (빈 응답)")
+                    alt_params = {**params, "EXCD": alt_excd}
+                    alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
+                    if alt_response and alt_response.status_code == 200:
+                        alt_data = alt_response.json()
+                        if alt_data.get("output2"):
+                            alt_data["output"] = alt_data["output2"]
+                            # DB api_market_code 자동 업데이트
+                            try:
+                                from services.market.stock_meta_service import StockMetaService
+                                StockMetaService.update_market_code(ticker, alt_excd)
+                                logger.info(f"✅ {ticker} api_market_code 자동 수정: {params['EXCD']} → {alt_excd}")
+                            except Exception:
+                                pass
+                            return alt_data
+
             return response_data
         except Exception as e:
             logger.error(f"Error fetching overseas daily price for {ticker}: {e}")

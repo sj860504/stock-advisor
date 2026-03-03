@@ -75,25 +75,25 @@ class DataService:
         "JPM", "V", "LLY", "XOM", "UNH"
     ]
     _US_FALLBACK_EXTENDED = [
-        "GOOG", "BRK", "WMT", "MA", "ORCL", "HD", "BAC", "PG", "JNJ", "ABBV",
+        "GOOG", "BRK/B", "WMT", "MA", "ORCL", "HD", "BAC", "PG", "JNJ", "ABBV",
         "KO", "PEP", "MRK", "CVX", "AMD", "ADBE", "CRM", "CSCO", "INTC", "T",
         "VZ", "PFE", "ABT", "CMCSA", "QCOM", "MCD", "NKE", "TXN", "DHR", "WFC",
         "DIS", "AMGN", "UNP", "LOW", "NEE", "IBM", "PM", "RTX", "SPGI", "CAT",
         "GS", "HON", "INTU", "BKNG", "BLK", "AXP", "PLD", "LMT", "TMO", "MDT",
-        "SYK", "DE", "TJX", "GILD", "ADP", "ISRG", "C", "SCHW", "MMC", "CB",
+        "SYK", "DE", "TJX", "GILD", "ADP", "ISRG", "C", "SCHW", "CB",
         "ETN", "SO", "CI", "DUK", "PGR", "ELV", "ZTS", "BDX", "MU", "KLAC",
         "SNPS", "PANW", "AMAT", "LRCX", "MELI", "SBUX", "REGN", "VRTX", "NOW", "UBER",
-        "SHOP", "CRWD", "DASH", "PYPL", "SQ", "TTD", "ROKU", "BIDU", "PDD", "NTES",
+        "SHOP", "CRWD", "DASH", "PYPL", "XYZ", "TTD", "ROKU", "BIDU", "PDD", "NTES",
         "ASML", "TMUS", "NDAQ", "EA", "ADSK", "ORLY", "MAR", "CEG", "FANG", "CSX",
         "AEP", "MNST", "MRVL", "NXPI", "IDXX", "FTNT", "ABNB", "WBD", "CME", "PCAR",
         "XEL", "MCHP", "CTAS", "FAST", "ARGX", "ALNY", "STX", "HOOD", "SNY", "ARM"
     ]
     _US_NYSE_SYMBOLS = {
-        "JPM", "V", "LLY", "XOM", "UNH", "BRK", "WMT", "MA", "HD", "BAC", "PG", "JNJ",
+        "JPM", "V", "LLY", "XOM", "UNH", "BRK/B", "WMT", "MA", "HD", "BAC", "PG", "JNJ",
         "ABBV", "KO", "PEP", "MRK", "CVX", "T", "VZ", "PFE", "ABT", "MCD", "NKE", "DHR",
         "WFC", "DIS", "AMGN", "UNP", "LOW", "NEE", "IBM", "PM", "RTX", "SPGI", "CAT",
         "GS", "HON", "BLK", "AXP", "PLD", "LMT", "TMO", "MDT", "SYK", "DE", "TJX",
-        "GILD", "C", "SCHW", "MMC", "CB", "ETN", "SO", "CI", "DUK", "PGR", "ELV",
+        "GILD", "C", "SCHW", "CB", "ETN", "SO", "CI", "DUK", "PGR", "ELV",
         "ZTS", "BDX", "UBER", "TMUS", "NDAQ", "CME", "PCAR", "XEL", "CEG", "FANG", "CSX", "AEP"
     }
 

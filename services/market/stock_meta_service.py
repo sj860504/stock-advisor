@@ -189,6 +189,12 @@ class StockMetaService:
         return tr_id
 
     @classmethod
+    def update_market_code(cls, ticker: str, market_code: str) -> None:
+        """stock_meta의 api_market_code를 업데이트합니다."""
+        from repositories.stock_meta_repo import StockMetaRepo
+        StockMetaRepo.upsert_stock_meta(ticker, api_market_code=market_code)
+
+    @classmethod
     def upsert_dcf_override(
         cls,
         ticker: str,

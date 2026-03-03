@@ -36,12 +36,10 @@ class AlertService:
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
         """슬랙으로 실제 알림을 전송합니다."""
-        # 개발 모드: 매수/매도 실행 알림은 로그로만 출력
+        # 개발 모드: 모든 Slack 발송 차단 (거래 및 리포트 포함)
         if Config.DEV_MODE:
-            is_trade_alert = any(kw in message for kw in cls._DEV_BLOCK_KEYWORDS)
-            if is_trade_alert:
-                logger.info(f"[DEV MODE] Slack 매수/매도 알림 차단 → {message[:80]}...")
-                return False
+            logger.info(f"[DEV MODE] Slack 발송 차단 → {message[:80]}...")
+            return False
 
         webhook_url = cls._webhook_url or Config.SLACK_WEBHOOK_URL
         if not webhook_url:
@@ -50,8 +48,6 @@ class AlertService:
 
         try:
             payload = {"text": message}
-            if Config.DEV_MODE:
-                payload["text"] = f"[DEV] {message}"
             response = requests.post(webhook_url, json=payload, timeout=5)
             response.raise_for_status()
             logger.info(f"✅ Slack message sent successfully.")
