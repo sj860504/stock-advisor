@@ -328,8 +328,8 @@
             </div>
             <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
                 <table style="width:100%">
-                    <thead><tr><th>유형</th><th>종목</th><th>지표</th><th>현재가</th></tr></thead>
-                    <tbody id="signals-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+                    <thead><tr><th>유형</th><th>종목</th><th>이름</th><th>지표</th><th>현재가</th></tr></thead>
+                    <tbody id="signals-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -1368,42 +1368,49 @@ function renderSignalsFiltered() {
         if (p == null || p === 0) return '-';
         return /^\d{6}$/.test(String(t)) ? '₩' + Math.round(p).toLocaleString() : '$' + fmt(p);
     };
+    // top20Cache 또는 monitored 데이터에서 종목명 조회
+    const getName = (t) => top20Cache?.[t]?.name || top20Cache?.[t]?.prdt_name || '';
 
     const rows = [];
-    (data.oversold||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+    // RSI=0 (데이터 없음) 제외, 유효한 과매도만 표시
+    (data.oversold||[]).filter(i => filterTicker(i.ticker) && (i.rsi||0) > 0).forEach(i => {
         rows.push(`<tr>
             <td><span class="badge b-up" style="white-space:nowrap">과매도</span></td>
             <td class="ticker-cell">${i.ticker}</td>
+            <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
             <td>RSI <b class="up">${fmt(i.rsi,1)}</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
     });
-    (data.overbought||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+    (data.overbought||[]).filter(i => filterTicker(i.ticker) && (i.rsi||0) > 0).forEach(i => {
         rows.push(`<tr>
             <td><span class="badge b-down" style="white-space:nowrap">과매수</span></td>
             <td class="ticker-cell">${i.ticker}</td>
+            <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
             <td>RSI <b class="down">${fmt(i.rsi,1)}</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
     });
-    (data.undervalued||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+    (data.undervalued||[]).filter(i => filterTicker(i.ticker) && (i.price||0) > 0).forEach(i => {
         rows.push(`<tr>
             <td><span class="badge b-warn" style="white-space:nowrap">저평가</span></td>
             <td class="ticker-cell">${i.ticker}</td>
+            <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
             <td>여유 <b class="up">+${fmt(i.upside_pct,1)}%</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
     });
-    (data.ema200_support||[]).filter(i=>filterTicker(i.ticker)).forEach(i => {
+    (data.ema200_support||[]).filter(i => filterTicker(i.ticker) && (i.price||0) > 0).forEach(i => {
         rows.push(`<tr>
             <td><span class="badge b-gray" style="white-space:nowrap">EMA200</span></td>
             <td class="ticker-cell">${i.ticker}</td>
+            <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
             <td style="font-size:.78rem;color:var(--sub)">EMA ${fmtSigPrice(i.ticker, i.ema200)}</td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
     });
 
-    tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="empty">신호 없음</td></tr>';
+    tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="5" class="empty">신호 없음</td></tr>';
 }
 
 async function fetchSignals() {
