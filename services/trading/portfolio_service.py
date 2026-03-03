@@ -354,12 +354,15 @@ class PortfolioService:
         profit_pct = ((price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
         dcf = cached.get("fair_value_dcf")
         upside = ((dcf - price) / price) * 100 if (dcf and price) else 0
+        ticker = holding.get("ticker") or ""
+        market = "kr" if (ticker.isdigit() and len(ticker) == 6) else "us"
         return {
-            "ticker": holding.get("ticker"),
+            "ticker": ticker,
             "name": holding.get("name"),
             "quantity": holding.get("quantity"),
             "buy_price": holding.get("buy_price"),
             "sector": holding.get("sector") or "Others",
+            "market": market,
             "price": price,
             "change": cached.get("change", 0),
             "change_pct": cached.get("change_pct", 0),

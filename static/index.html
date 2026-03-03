@@ -690,7 +690,7 @@ const fmtCurr = (v, sym='$') => v == null ? '-' : sym + Number(v).toLocaleString
 const fmtPct  = (v, sign=true) => v == null ? '-' : (sign && v > 0 ? '+' : '') + fmt(v) + '%';
 const cls = (v) => v >= 0 ? 'up' : 'down';
 const badge = (v) => v >= 0 ? '<span class="badge b-up">' + fmtPct(v) + '</span>' : '<span class="badge b-down">' + fmtPct(v) + '</span>';
-const isKr = (d) => (d.market === 'kr') || /^\d{6}$/.test(String(d.ticker||''));
+const isKr = (d) => (d.market === 'kr') || (!d.market && /^\d{6}$/.test(String(d.ticker||'')));
 const getSym = (d) => isKr(d) ? '₩' : '$';
 const fmtKrw = (v) => v == null ? '-' : '₩' + Math.round(Number(v)).toLocaleString();
 
@@ -884,9 +884,9 @@ async function fetchHistory() {
                 <td style="font-size:.8rem;white-space:nowrap">${(d.created_at||d.date||'').slice(0,16)}</td>
                 <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name||''}</span></td>
                 <td><span class="badge ${isBuy?'b-up':'b-down'}">${isBuy?'BUY':'SELL'}</span></td>
-                <td>${fmtCurr(d.price, d.market==='kr'?'₩':'$')}</td>
+                <td>${fmtCurr(d.price, isKr(d)?'₩':'$')}</td>
                 <td>${fmt(d.quantity,0)}</td>
-                <td>${fmtCurr(d.amount??((d.price||0)*(d.quantity||0)), d.market==='kr'?'₩':'$')}</td>
+                <td>${fmtCurr(d.amount??((d.price||0)*(d.quantity||0)), isKr(d)?'₩':'$')}</td>
                 <td>${retBadge}</td>
             </tr>`;
         }).join('');
