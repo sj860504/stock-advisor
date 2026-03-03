@@ -178,6 +178,7 @@
         <div class="nav-item" data-tab="trading"    onclick="switchTab(this,'trading')">Trading</div>
         <div class="nav-item" data-tab="macro"      onclick="switchTab(this,'macro')">Macro</div>
         <div class="nav-item" data-tab="settings"   onclick="switchTab(this,'settings')">Settings</div>
+        <div class="nav-item" data-tab="logs"       onclick="switchTab(this,'logs')">Logs</div>
     </div>
     <div style="display:flex;align-items:center;gap:12px">
         <span id="strategy-chip" class="status-chip chip-off">전략 OFF</span>
@@ -544,6 +545,38 @@
     </div>
 </div>
 
+<!-- Logs Section -->
+<div id="logs" class="page-section">
+    <div class="card">
+        <div class="card-title">📋 서버 로그
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input id="log-search" type="text" placeholder="검색..." style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:#fff;font-size:.85rem;width:160px" oninput="fetchLogs()">
+                <select id="log-level" onchange="fetchLogs()" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:#fff;font-size:.85rem">
+                    <option value="">전체</option>
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                </select>
+                <select id="log-lines" onchange="fetchLogs()" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:#fff;font-size:.85rem">
+                    <option value="100">100줄</option>
+                    <option value="200" selected>200줄</option>
+                    <option value="500">500줄</option>
+                    <option value="1000">1000줄</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:4px;font-size:.85rem;color:var(--sub);cursor:pointer">
+                    <input type="checkbox" id="log-auto-refresh" onchange="toggleLogAutoRefresh()"> 자동갱신(5s)
+                </label>
+                <button class="btn btn-outline btn-sm" onclick="fetchLogs()">🔄</button>
+                <button class="btn btn-outline btn-sm" onclick="scrollLogToBottom()">⬇ 최신</button>
+            </div>
+        </div>
+        <div id="log-output" style="background:#0d0d0d;border-radius:8px;padding:12px;font-family:monospace;font-size:.78rem;line-height:1.6;max-height:70vh;overflow-y:auto;white-space:pre-wrap;word-break:break-all">
+            <span style="color:var(--sub)">로그를 불러오는 중...</span>
+        </div>
+    </div>
+</div>
+
 </div><!-- /main-container -->
 
 <!-- Trade Modal -->
@@ -680,6 +713,7 @@ function switchTab(el, tabId) {
         trading:   () => { fetchWaitingList(); fetchStrategyStatus(); },
         macro:     () => { fetchMacro(); fetchEconCalendar(); },
         settings:  () => { fetchSettings(); fetchAlerts(); },
+        logs:      () => { fetchLogs(); },
     };
     loaders[tabId]?.();
 }
@@ -1604,6 +1638,43 @@ async function addAlert() {
         showToast('✅ 알림 설정됨');
         fetchAlerts();
     } catch(e) { showToast('❌ ' + e.message, false); }
+}
+
+// ─── Logs ──────────────────────────────────────────────────────
+let _logAutoRefreshTimer = null;
+
+async function fetchLogs() {
+    const search = encodeURIComponent(document.getElementById('log-search')?.value || '');
+    const level  = encodeURIComponent(document.getElementById('log-level')?.value || '');
+    const lines  = document.getElementById('log-lines')?.value || '200';
+    const el = document.getElementById('log-output');
+    if (!el) return;
+    try {
+        const data = await apiFetch(`/logs?lines=${lines}&level=${level}&search=${search}`);
+        const levelColor = { DEBUG:'#888', INFO:'#7ec8e3', WARNING:'#f5c842', ERROR:'#ff6b6b' };
+        el.innerHTML = data.length === 0
+            ? '<span style="color:var(--sub)">로그 없음</span>'
+            : data.map(line => {
+                const lv = ['ERROR','WARNING','INFO','DEBUG'].find(l => line.includes(` - ${l} - `));
+                const color = levelColor[lv] || '#ccc';
+                const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                return `<span style="color:${color}">${escaped}</span>`;
+            }).join('\n');
+        scrollLogToBottom();
+    } catch(e) {
+        el.innerHTML = `<span style="color:#ff6b6b">로그 조회 실패: ${e.message}</span>`;
+    }
+}
+
+function scrollLogToBottom() {
+    const el = document.getElementById('log-output');
+    if (el) el.scrollTop = el.scrollHeight;
+}
+
+function toggleLogAutoRefresh() {
+    const checked = document.getElementById('log-auto-refresh')?.checked;
+    if (_logAutoRefreshTimer) { clearInterval(_logAutoRefreshTimer); _logAutoRefreshTimer = null; }
+    if (checked) _logAutoRefreshTimer = setInterval(fetchLogs, 5000);
 }
 
 // ─── DCF ───────────────────────────────────────────────────────

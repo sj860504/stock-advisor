@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 from services.base.scheduler_service import SchedulerService
 from services.kis.kis_ws_service import kis_ws_service
-from routers import analysis, market, alerts, portfolio, reports, trading, auth as auth_router
+from routers import analysis, market, alerts, portfolio, reports, trading, auth as auth_router, logs as logs_router
 from routers.auth import verify_token
 import os
 import asyncio
@@ -91,6 +91,7 @@ app.include_router(alerts.router, prefix="/api")
 app.include_router(portfolio.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(trading.router, prefix="/api")
+app.include_router(logs_router.router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
