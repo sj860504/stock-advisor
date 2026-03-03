@@ -101,6 +101,11 @@ class PortfolioService:
         overseas_balance = KisService.get_overseas_balance()
 
         existing_holdings = cls.load_portfolio(user_id)  # List[dict]
+        # 기존 섹터 맵 — KIS 동기화 시 섹터 덮어쓰기 방지
+        existing_sector_map = {
+            h["ticker"]: h.get("sector") or DEFAULT_SECTOR
+            for h in existing_holdings
+        }
         existing_us_map = {
             h["ticker"]: HoldingSchema(**h)
             for h in existing_holdings
@@ -125,7 +130,7 @@ class PortfolioService:
                 quantity=qty,
                 buy_price=float(item.get('pchs_avg_pric') or item.get('pavg_unit_amt') or 0),
                 current_price=float(item.get('prpr') or item.get('ovrs_now_pric') or item.get('now_pric') or 0),
-                sector=DEFAULT_SECTOR,
+                sector=existing_sector_map.get(ticker, DEFAULT_SECTOR),
             )
             if is_kr_ticker:
                 holdings.append(parsed)
@@ -155,7 +160,7 @@ class PortfolioService:
                     quantity=qty,
                     buy_price=float(item.get("pchs_avg_pric") or item.get("avg_unpr") or item.get("pavg_unit_amt") or 0),
                     current_price=current_price,
-                    sector=DEFAULT_SECTOR,
+                    sector=existing_sector_map.get(ticker, DEFAULT_SECTOR),
                 )
 
         if us_holdings_by_ticker:

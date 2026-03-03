@@ -74,6 +74,8 @@ class TradingStrategyService:
         "Financials": "financial", "Financial": "financial",
         "Financial Services": "financial", "금융": "financial", "은행": "financial",
         "Insurance": "financial", "보험": "financial",
+        # ETF (섹터 비중 산정 제외 → other 그룹)
+        "ETF": "other", "인덱스펀드": "other",
     }
     # 그룹별 목표 비중 (합계 = 1.0, 주식 자산 대비)
     SECTOR_TARGET_WEIGHT: dict = {"tech": 0.50, "value": 0.30, "financial": 0.20}

@@ -813,6 +813,7 @@ const SECTOR_OPTIONS = [
     // 그룹: 가치주 (value)
     {value:'Consumer Staples',        label:'[가치] 필수소비재',          group:'value'},
     {value:'Consumer Discretionary',  label:'[가치] 임의소비재',          group:'value'},
+    {value:'Consumer Cyclical',       label:'[가치] 소비재(경기순환)',     group:'value'},
     {value:'Healthcare',              label:'[가치] 헬스케어',            group:'value'},
     {value:'Utilities',               label:'[가치] 유틸리티',            group:'value'},
     {value:'Energy',                  label:'[가치] 에너지',              group:'value'},
@@ -823,6 +824,8 @@ const SECTOR_OPTIONS = [
     {value:'Financials',              label:'[금융] 금융',               group:'financial'},
     {value:'Financial Services',      label:'[금융] 금융서비스',          group:'financial'},
     {value:'Insurance',               label:'[금융] 보험',               group:'financial'},
+    // ETF
+    {value:'ETF',                     label:'[ETF] ETF/인덱스펀드',      group:''},
 ];
 
 function renderPortfolioTable(data) {
