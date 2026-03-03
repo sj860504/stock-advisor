@@ -939,14 +939,17 @@ async function fetchHistory() {
         if (!data?.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">내역 없음</td></tr>'; return; }
         tbody.innerHTML = data.map(d => {
             const isBuy = (d.action||d.order_type||'').toLowerCase() === 'buy';
-            const retBadge = d.profit_pct != null ? badge(d.profit_pct) : '-';
+            const s = isKr(d) ? '₩' : '$';
+            const retBadge = d.profit_pct != null
+                ? `${badge(d.profit_pct)}<span class="${cls(d.profit||0)}" style="font-size:.75rem;display:block">${d.profit > 0 ? '+' : ''}${fmtCurr(d.profit, s)}</span>`
+                : '-';
             return `<tr>
-                <td style="font-size:.8rem;white-space:nowrap">${(d.created_at||d.date||'').slice(0,16)}</td>
+                <td style="font-size:.8rem;white-space:nowrap">${(d.created_at||d.timestamp||d.date||'').slice(0,16)}</td>
                 <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name||''}</span></td>
                 <td><span class="badge ${isBuy?'b-up':'b-down'}">${isBuy?'BUY':'SELL'}</span></td>
-                <td>${fmtCurr(d.price, isKr(d)?'₩':'$')}</td>
+                <td>${fmtCurr(d.price, s)}</td>
                 <td>${fmt(d.quantity,0)}</td>
-                <td>${fmtCurr(d.amount??((d.price||0)*(d.quantity||0)), isKr(d)?'₩':'$')}</td>
+                <td>${fmtCurr(d.amount??((d.price||0)*(d.quantity||0)), s)}</td>
                 <td>${retBadge}</td>
             </tr>`;
         }).join('');

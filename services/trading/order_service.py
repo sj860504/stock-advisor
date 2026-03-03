@@ -80,8 +80,10 @@ class OrderService:
         holding = holdings_map.get(record.ticker)
         buy_price = holding.buy_price if holding and holding.buy_price else None
         profit = None
+        profit_pct = None
         if buy_price and record.order_type == "sell":
             profit = round((record.price - buy_price) * record.quantity, 2)
+            profit_pct = round((record.price - buy_price) / buy_price * 100, 2)
         return TradeRecordDto(
             id=record.id,
             ticker=record.ticker,
@@ -94,6 +96,7 @@ class OrderService:
             name=holding.name if holding else None,
             buy_price=buy_price,
             profit=profit,
+            profit_pct=profit_pct,
         )
 
     @classmethod

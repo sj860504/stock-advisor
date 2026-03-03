@@ -286,6 +286,7 @@ class TradeRecordDto(BaseModel):
     name: Optional[str] = None
     buy_price: Optional[float] = None
     profit: Optional[float] = None
+    profit_pct: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
