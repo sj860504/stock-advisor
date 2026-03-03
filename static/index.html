@@ -104,6 +104,7 @@
         .sector-target-line { position:absolute; top:-3px; width:2px; height:14px; background:rgba(255,255,255,.55); border-radius:1px; }
         .sector-mini-bar { width:100%; background:#252a33; border-radius:3px; height:5px; margin:3px 0; position:relative; }
         .sector-mini-fill { height:100%; border-radius:3px; transition:width .5s; }
+        .sector-mkt-tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 
         /* Modal */
         .modal-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:200; align-items:center; justify-content:center; backdrop-filter:blur(4px); }
@@ -270,7 +271,11 @@
     <div class="card" style="margin-bottom:16px">
         <div class="card-title">
             <span>🏗️ 섹터 비중 관리</span>
-            <button class="btn btn-outline btn-sm" onclick="fetchSectorWeights()">🔄 새로고침</button>
+            <div style="display:flex;gap:6px;align-items:center">
+                <button class="btn btn-outline btn-sm sector-mkt-tab active" id="sector-tab-kr" onclick="switchSectorTab('kr')">🇰🇷 한국</button>
+                <button class="btn btn-outline btn-sm sector-mkt-tab" id="sector-tab-us" onclick="switchSectorTab('us')">🇺🇸 미국</button>
+                <button class="btn btn-outline btn-sm" onclick="fetchSectorWeights()">🔄 새로고침</button>
+            </div>
         </div>
         <div id="sector-weights-content"><div class="empty">Loading...</div></div>
     </div>
@@ -981,14 +986,34 @@ async function fetchBalance() {
 const SECTOR_LABELS = { tech: '기술주', value: '가치주', financial: '금융주' };
 const SECTOR_ICONS  = { tech: '💻', value: '🏥', financial: '🏦' };
 
+let sectorMarketTab = 'kr';   // 현재 탭: 'kr' | 'us'
+let sectorTargetOverrides = {};  // 로컬에서 수정한 목표 비중 (탭별 초기화)
+let _sectorDataCache = null;     // 마지막 API 결과 캐시
+
+function switchSectorTab(market) {
+    sectorMarketTab = market;
+    sectorTargetOverrides = {};
+    document.querySelectorAll('.sector-mkt-tab').forEach(b => b.classList.remove('active'));
+    const tab = document.getElementById('sector-tab-' + market);
+    if (tab) tab.classList.add('active');
+    if (_sectorDataCache) {
+        const el = document.getElementById('sector-weights-content');
+        if (el) el.innerHTML = renderSectorWeightsFull(_sectorDataCache[market] || {}, market);
+    } else {
+        fetchSectorWeights();
+    }
+}
+
 async function fetchSectorWeights() {
     const el = document.getElementById('sector-weights-content');
     if (el) el.innerHTML = '<div class="empty">Loading...</div>';
     try {
         const data = await apiFetch('/analysis/sector-weights?user_id=' + USER);
-        if (el) el.innerHTML = renderSectorWeightsFull(data);
-        // 미니 카드도 같이 업데이트
-        renderSectorMini(data);
+        _sectorDataCache = data;
+        const mktData = data?.[sectorMarketTab] || {};
+        if (el) el.innerHTML = renderSectorWeightsFull(mktData, sectorMarketTab);
+        // 미니 카드도 같이 업데이트 (KR 기준)
+        renderSectorMini(data?.kr || {});
     } catch(e) {
         if (el) el.innerHTML = `<div class="empty" style="color:var(--down)">오류: ${e.message}</div>`;
     }
@@ -997,14 +1022,15 @@ async function fetchSectorWeights() {
 async function fetchSectorWeightsMini() {
     try {
         const data = await apiFetch('/analysis/sector-weights?user_id=' + USER);
-        renderSectorMini(data);
+        _sectorDataCache = data;
+        renderSectorMini(data?.kr || {});
     } catch(e) {}
 }
 
-function renderSectorMini(data) {
+function renderSectorMini(mktData) {
     const el = document.getElementById('sector-mini-content');
     if (!el) return;
-    const weights = data?.weights || {};
+    const weights = mktData?.weights || {};
     const groups = ['tech', 'value', 'financial'];
     el.innerHTML = groups.map(g => {
         const w = weights[g] || {};
@@ -1026,30 +1052,28 @@ function renderSectorMini(data) {
     }).join('');
 }
 
-let sectorTargetOverrides = {};  // 로컬에서 수정한 목표 비중
-
-function renderSectorWeightsFull(data) {
-    const weights = data?.weights || {};
-    const underweight = data?.underweight || [];
-    const overweight  = data?.overweight  || [];
+function renderSectorWeightsFull(mktData, market) {
+    const weights = mktData?.weights || {};
+    const underweight = mktData?.underweight || [];
+    const overweight  = mktData?.overweight  || [];
+    const currency    = mktData?.currency || (market === 'us' ? 'USD' : 'KRW');
+    const totalVal    = mktData?.total || 0;
     const groups = ['tech', 'value', 'financial'];
 
     // 미분류(other) 비중 표시
     const otherW = weights['other'] || {};
     const otherCur = (otherW.weight ?? otherW.current ?? 0) * 100;
-    const otherValKrw = otherW.value_krw ?? 0;
     const otherWarning = otherCur > 10
         ? `<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:.82rem">
-            ⚠️ <b style="color:var(--warn)">${otherCur.toFixed(1)}%</b> 가 <b>미분류(기타)</b>로 집계되어 섹터 비중이 부정확합니다.<br>
-            <span style="color:var(--sub)">종목의 섹터 정보가 없거나 분류되지 않은 종목이 있습니다. (평가액 ₩${Math.round(otherValKrw).toLocaleString()})</span>
+            ⚠️ <b style="color:var(--warn)">${otherCur.toFixed(1)}%</b> 가 <b>미분류(기타)</b>로 집계되어 섹터 비중이 부정확합니다.
            </div>`
         : '';
-
 
     const weightRows = groups.map(g => {
         const w = weights[g] || {};
         const cur = (w.weight ?? w.current ?? 0) * 100;
-        const tgt = sectorTargetOverrides[g] != null ? sectorTargetOverrides[g] : (w.target ?? 0) * 100;
+        const overrideKey = market + '_' + g;
+        const tgt = sectorTargetOverrides[overrideKey] != null ? sectorTargetOverrides[overrideKey] : (w.target ?? 0) * 100;
         const dev = cur - tgt;
         const devAbs = Math.abs(dev);
         const isOk = devAbs < 5;
@@ -1076,9 +1100,9 @@ function renderSectorWeightsFull(data) {
                 <span style="font-size:.78rem;color:var(--sub);white-space:nowrap">목표:</span>
                 <input type="range" min="0" max="100" step="1" value="${Math.round(tgt)}"
                     style="flex:1;height:6px;cursor:pointer;accent-color:var(--accent)"
-                    oninput="updateSectorTarget('${g}', this.value)"
-                    id="sector-slider-${g}">
-                <span id="sector-tgt-val-${g}" style="font-size:.85rem;font-weight:700;min-width:36px;text-align:right">${Math.round(tgt)}%</span>
+                    oninput="updateSectorTarget('${market}', '${g}', this.value)"
+                    id="sector-slider-${market}-${g}">
+                <span id="sector-tgt-val-${market}-${g}" style="font-size:.85rem;font-weight:700;min-width:36px;text-align:right">${Math.round(tgt)}%</span>
             </div>
             <div class="sector-bar-outer">
                 <div class="sector-bar-fill2" style="width:${Math.min(cur,100)}%;background:${barColor}"></div>
@@ -1094,8 +1118,8 @@ function renderSectorWeightsFull(data) {
         }).join('')
         : '<span style="color:var(--sub);font-size:.82rem">없음</span>';
 
-    const totalKrw = data?.total_stock_krw;
-    const totalLabel = totalKrw ? `총 주식 평가액: ₩${Math.round(totalKrw).toLocaleString()}` : '';
+    const sym = currency === 'USD' ? '$' : '₩';
+    const totalLabel = totalVal ? `총 주식 평가액: ${sym}${Math.round(totalVal).toLocaleString()}` : '';
 
     return `
         ${totalLabel ? `<div style="font-size:.8rem;color:var(--sub);margin-bottom:12px">${totalLabel}</div>` : ''}
@@ -1103,7 +1127,7 @@ function renderSectorWeightsFull(data) {
         ${weightRows}
         <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-outline btn-sm" onclick="resetSectorTargets()">초기화</button>
-            <button class="btn btn-primary btn-sm" onclick="saveSectorTargets()">목표 저장</button>
+            <button class="btn btn-primary btn-sm" onclick="saveSectorTargets('${market}')">목표 저장</button>
         </div>
         <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div>
@@ -1117,9 +1141,10 @@ function renderSectorWeightsFull(data) {
         </div>`;
 }
 
-function updateSectorTarget(group, val) {
-    sectorTargetOverrides[group] = parseInt(val);
-    const lbl = document.getElementById('sector-tgt-val-' + group);
+function updateSectorTarget(market, group, val) {
+    const key = market + '_' + group;
+    sectorTargetOverrides[key] = parseInt(val);
+    const lbl = document.getElementById('sector-tgt-val-' + market + '-' + group);
     if (lbl) lbl.textContent = val + '%';
 }
 
@@ -1128,17 +1153,21 @@ function resetSectorTargets() {
     fetchSectorWeights();
 }
 
-async function saveSectorTargets() {
-    if (!Object.keys(sectorTargetOverrides).length) { showToast('변경된 목표 없음', false); return; }
+async function saveSectorTargets(market) {
+    market = market || sectorMarketTab;
+    const marketEntries = Object.entries(sectorTargetOverrides).filter(([k]) => k.startsWith(market + '_'));
+    if (!marketEntries.length) { showToast('변경된 목표 없음', false); return; }
     try {
-        // settings 형태로 저장: sector_target_tech, sector_target_value, sector_target_financial
-        const promises = Object.entries(sectorTargetOverrides).map(([g, v]) =>
-            apiFetch('/trading/settings', {
+        // settings 형태로 저장: SECTOR_TARGET_KR_TECH, SECTOR_TARGET_US_TECH, ...
+        const promises = marketEntries.map(([k, v]) => {
+            const group = k.replace(market + '_', '');
+            const settingKey = `SECTOR_TARGET_${market.toUpperCase()}_${group.toUpperCase()}`;
+            return apiFetch('/trading/settings', {
                 method: 'PUT',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({key: 'sector_target_' + g, value: String(v / 100)}),
-            })
-        );
+                body: JSON.stringify({key: settingKey, value: String(v / 100)}),
+            });
+        });
         await Promise.all(promises);
         showToast('✅ 섹터 목표 비중 저장됨');
         sectorTargetOverrides = {};

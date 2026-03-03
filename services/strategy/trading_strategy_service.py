@@ -186,29 +186,50 @@ class TradingStrategyService:
         return group_values
 
     @classmethod
-    def _get_sector_group_weights(cls, holdings: list, exchange_rate: float = 1400.0) -> dict:
-        """주식 자산 내 섹터 그룹 현재 비중 및 목표 대비 편차 반환.
+    def _get_sector_target_weights(cls, market: str) -> dict:
+        """시장별 섹터 목표 비중 (Settings 우선, 없으면 기본값)."""
+        prefix = f"SECTOR_TARGET_{market.upper()}_"
+        return {
+            grp: SettingsService.get_float(f"{prefix}{grp.upper()}", cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0))
+            for grp in ("tech", "value", "financial")
+        }
 
-        Returns:
-            {
-              "total_stock_krw": float,
-              "weights": {
-                  "tech":      {"value_krw": float, "weight": float, "target": float, "dev": float},
-                  "value":     {...},
-                  "financial": {...},
-                  "other":     {...},
-              }
-            }
+    @classmethod
+    def _get_sector_group_weights(cls, holdings: list, exchange_rate: float = 1400.0, market: str = "all") -> dict:
+        """주식 자산 내 섹터 그룹 현재 비중 및 목표 대비 편차 반환.
+        market: 'kr' | 'us' | 'all'
         """
-        group_values = cls._compute_group_values(holdings, exchange_rate)
+        if market == "kr":
+            filtered = [h for h in holdings if is_kr(h.get("ticker", ""))]
+        elif market == "us":
+            filtered = [h for h in holdings if not is_kr(h.get("ticker", ""))]
+        else:
+            filtered = holdings
+
+        # 비중 계산용 가치: 동일 통화 기준 (kr=KRW, us=USD, all=KRW환산)
+        group_values: dict = {"tech": 0.0, "value": 0.0, "financial": 0.0, "other": 0.0}
+        for h in filtered:
+            if h.get("quantity", 0) <= 0:
+                continue
+            val = cls._get_holding_value(h)
+            if val <= 0:
+                continue
+            ticker = h.get("ticker", "")
+            if market == "all" and not is_kr(ticker):
+                val *= exchange_rate  # 통합 뷰에서만 KRW 환산
+            grp = cls._get_sector_group(ticker, h)
+            group_values[grp] = group_values.get(grp, 0.0) + val
+
         total = sum(group_values.values())
+        target_weights = cls._get_sector_target_weights(market if market != "all" else "kr")
         weights: dict = {}
         for grp, val in group_values.items():
             w = val / total if total > 0 else 0.0
-            target = cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0)
-            weights[grp] = {"value_krw": round(val), "weight": round(w, 4),
+            target = target_weights.get(grp, cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0))
+            weights[grp] = {"value": round(val), "weight": round(w, 4),
                             "target": target, "dev": round(w - target, 4)}
-        return {"total_stock_krw": round(total), "weights": weights}
+        currency = "USD" if market == "us" else "KRW"
+        return {"total": round(total), "currency": currency, "weights": weights}
 
     @classmethod
     def _classify_holdings_by_deviation(cls, holdings: list, weights: dict) -> tuple:
@@ -239,26 +260,25 @@ class TradingStrategyService:
         return underweight, overweight
 
     @classmethod
-    def get_sector_rebalance_status(cls, user_id: str = "sean") -> dict:
-        """섹터 비중 현황 및 리밸런싱 필요 종목 반환 (API용).
+    def _build_market_rebalance(cls, holdings: list, exchange_rate: float, market: str) -> dict:
+        sw = cls._get_sector_group_weights(holdings, exchange_rate, market)
+        weights = sw["weights"]
+        mkt_holdings = [h for h in holdings if (is_kr(h.get("ticker","")) == (market == "kr"))]
+        under, over = cls._classify_holdings_by_deviation(mkt_holdings, weights)
+        under.sort(key=lambda x: x["dev"])
+        over.sort(key=lambda x: -x["dev"])
+        return {"weights": weights, "underweight": under, "overweight": over,
+                "total": sw["total"], "currency": sw["currency"]}
 
-        Returns:
-            {
-              "weights": {...},          # 그룹별 현재/목표/편차
-              "underweight": [...],      # 매수 우선 섹터 종목 목록
-              "overweight": [...],       # 매도 고려 섹터 종목 목록
-            }
-        """
+    @classmethod
+    def get_sector_rebalance_status(cls, user_id: str = "sean") -> dict:
+        """섹터 비중 현황 및 리밸런싱 필요 종목 반환 (API용). KR/US 분리."""
         exchange_rate = MacroService.get_exchange_rate()
         holdings = PortfolioService.load_portfolio(user_id)
-        sw = cls._get_sector_group_weights(holdings, exchange_rate)
-        weights = sw["weights"]
-
-        underweight, overweight = cls._classify_holdings_by_deviation(holdings, weights)
-        underweight.sort(key=lambda x: x["dev"])           # 가장 부족한 순
-        overweight.sort(key=lambda x: -x["dev"])           # 가장 초과한 순
-        return {"weights": weights, "underweight": underweight, "overweight": overweight,
-                "total_stock_krw": sw["total_stock_krw"]}
+        return {
+            "kr": cls._build_market_rebalance(holdings, exchange_rate, "kr"),
+            "us": cls._build_market_rebalance(holdings, exchange_rate, "us"),
+        }
 
     @classmethod
     def _get_holding_value(cls, holding: dict) -> float:
