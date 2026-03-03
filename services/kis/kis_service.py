@@ -386,6 +386,9 @@ class KisService:
     @classmethod
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy") -> dict:
         """국내 주식 주문 (매수/매도)"""
+        if Config.DEV_MODE:
+            logger.info(f"[DEV MODE] 실제 주문 차단 → {order_type.upper()} {ticker} {quantity}qty @ {price}")
+            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
         from services.market.stock_meta_service import StockMetaService
         api_name = "주식주문_매수" if order_type == "buy" else "주식주문_매도"
         tr_id, _ = StockMetaService.get_api_info(api_name)
@@ -408,6 +411,9 @@ class KisService:
         - Config.KIS_ENABLE_AFTER_HOURS_ORDER=True 일 때만 허용
         - 모의투자(VTS)에서는 차단
         """
+        if Config.DEV_MODE:
+            logger.info(f"[DEV MODE] 사후장 주문 차단 → {order_type.upper()} {ticker} {quantity}qty")
+            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
         if Config.KIS_IS_VTS:
             return {"status": "failed", "msg": "사후장 주문은 모의투자(VTS)에서 지원하지 않습니다."}
         if not Config.KIS_ENABLE_AFTER_HOURS_ORDER:
@@ -444,6 +450,9 @@ class KisService:
     @classmethod
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD") -> dict:
         """해외 주식 주문 (미국 기준, 초당 거래건수 제한 준수)"""
+        if Config.DEV_MODE:
+            logger.info(f"[DEV MODE] 해외 주문 차단 → {order_type.upper()} {ticker} {quantity}qty @ {price}")
+            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
