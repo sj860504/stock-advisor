@@ -113,10 +113,11 @@ class SettingsService:
         return result
 
     @classmethod
-    def get_all_settings(cls):
-        """전체 설정 조회"""
+    def get_all_settings(cls) -> list:
+        """전체 설정 조회 → [{key, value, description}, ...] 리스트 반환."""
         cls.init_defaults()
-        return SettingsRepo.get_all()
+        raw = SettingsRepo.get_all()
+        return [{"key": k, **v} for k, v in raw.items()]
 
     @classmethod
     def get_tick_settings(cls) -> dict:
