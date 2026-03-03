@@ -28,6 +28,7 @@ LOW_TIER_POLL_MINUTES = 5
 class SchedulerService:
     _scheduler = None
     _ws_loop = None
+    _ws_thread = None  # 중복 스레드 방지용
 
     @classmethod
     def _register_econ_vix_jobs(cls, _ET: object) -> None:
@@ -62,7 +63,11 @@ class SchedulerService:
 
     @classmethod
     def _start_websocket_thread(cls) -> None:
-        """KIS WebSocket 전용 데몬 스레드 시작."""
+        """KIS WebSocket 전용 데몬 스레드 시작. 이미 실행 중이면 재시작하지 않는다."""
+        if cls._ws_thread and cls._ws_thread.is_alive():
+            logger.info("⏭️ WebSocket thread already running. Skipping duplicate start.")
+            return
+
         def _run() -> None:
             """전용 이벤트 루프에서 WebSocket 연결을 실행합니다."""
             try:
@@ -75,7 +80,8 @@ class SchedulerService:
             except Exception as e:
                 logger.error(f"❌ Critical Error in WebSocket thread: {e}", exc_info=True)
 
-        threading.Thread(target=_run, name="KIS-WS-Thread", daemon=True).start()
+        cls._ws_thread = threading.Thread(target=_run, name="KIS-WS-Thread", daemon=True)
+        cls._ws_thread.start()
 
     @classmethod
     def start_scheduler(cls) -> None:
@@ -163,14 +169,21 @@ class SchedulerService:
 
     @classmethod
     def _classify_tiers(cls, all_kr: list, all_us: list, kr_holdings: set, us_holdings: set, target_universe: set) -> tuple:
-        """HIGH/LOW 티어 분류 및 MarketDataService 등록. Returns (kr_high_set, us_high_set, high_set, low_set)."""
-        kr_high = list(kr_holdings) + [t for t in all_kr if t not in kr_holdings][:WS_HIGH_TIER_COUNT]
-        us_high = list(us_holdings) + [t for t in all_us if t not in us_holdings][:WS_HIGH_TIER_COUNT]
-        kr_high_set = set(kr_high[:WS_HIGH_TIER_COUNT + len(kr_holdings)])
-        us_high_set = set(us_high[:WS_HIGH_TIER_COUNT + len(us_holdings)])
+        """HIGH/LOW 티어 분류 및 MarketDataService 등록. Returns (kr_high_set, us_high_set, high_set, low_set).
+        KIS WebSocket 한도: 시장당 20종목 엄수 (holdings 우선, 나머지 슬롯에 시총 상위 fill).
+        """
+        # KR: holdings 먼저(최대 20), 남은 슬롯에 non-holding 상위 종목
+        kr_h = list(kr_holdings)[:WS_HIGH_TIER_COUNT]
+        kr_h += [t for t in all_kr if t not in kr_holdings][:WS_HIGH_TIER_COUNT - len(kr_h)]
+        kr_high_set = set(kr_h)
+        # US: 동일 원칙
+        us_h = list(us_holdings)[:WS_HIGH_TIER_COUNT]
+        us_h += [t for t in all_us if t not in us_holdings][:WS_HIGH_TIER_COUNT - len(us_h)]
+        us_high_set = set(us_h)
         high_set = kr_high_set | us_high_set
         low_set = target_universe - high_set
         MarketDataService.set_tiers(high_set, low_set)
+        logger.info(f"📊 Tier 분류: KR HIGH {len(kr_high_set)}/20, US HIGH {len(us_high_set)}/20, LOW {len(low_set)}")
         return kr_high_set, us_high_set, high_set, low_set
 
     @classmethod
