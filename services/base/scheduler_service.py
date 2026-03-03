@@ -374,19 +374,25 @@ class SchedulerService:
 
     @classmethod
     def _refresh_low_tier_prices(cls) -> None:
-        """Tier LOW 종목 현재가를 5분 주기로 KIS REST API 폴링하여 갱신합니다."""
+        """Tier HIGH/LOW 종목 현재가를 5분 주기로 KIS REST API 폴링하여 갱신합니다.
+        - LOW tier: REST 폴링이 유일한 가격 업데이트 소스
+        - HIGH tier: WebSocket 실시간이 주요 소스이나, WebSocket 미수신 대비 REST 폴링 병행
+        """
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
         if not is_kr_open and not is_us_open:
             return
+        high_tickers = MarketDataService.get_high_tier_tickers()
         low_tickers = MarketDataService.get_low_tier_tickers()
-        if not low_tickers:
+        all_poll_tickers = high_tickers + low_tickers
+        if not all_poll_tickers:
             return
-        active_tickers = cls._filter_active_low_tickers(low_tickers, is_kr_open, is_us_open)
+        active_tickers = cls._filter_active_low_tickers(all_poll_tickers, is_kr_open, is_us_open)
         if not active_tickers:
             return
-        logger.info(f"⏱️ Tier LOW 가격 갱신 시작: {len(active_tickers)}종목")
+        high_active = len([t for t in high_tickers if t in set(active_tickers)])
+        logger.info(f"⏱️ 가격 갱신 시작: {len(active_tickers)}종목 (HIGH {high_active} + LOW {len(active_tickers)-high_active})")
         try:
             cls._poll_active_tickers(active_tickers)
         except Exception as e:
