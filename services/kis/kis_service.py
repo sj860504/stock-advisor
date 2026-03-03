@@ -30,6 +30,10 @@ class KisService:
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
     _min_req_interval = 0.55  # VTS 기준 약 2TPS 제한 대응
+
+    # 실전 계좌 토큰 (시세 조회 전용)
+    _real_access_token = None
+    _real_token_expiry = None
     
     @classmethod
     def _throttle_request(cls) -> None:
@@ -128,6 +132,82 @@ class KisService:
             return cached
         # 3. 신규 발급
         return cls._request_new_token()
+
+    # ── 실전 계좌 토큰 (시세/WebSocket 전용) ──────────────────────────────────
+
+    @classmethod
+    def _load_cached_real_token(cls) -> Optional[str]:
+        """실전 토큰 파일 캐시에서 유효한 토큰 반환. 없거나 만료 시 None."""
+        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
+        if not os.path.exists(token_cache_path):
+            return None
+        try:
+            with open(token_cache_path, "r") as f:
+                token_cache = json.load(f)
+            expiry = datetime.fromisoformat(token_cache["expiry"])
+            if datetime.now() < expiry:
+                cls._real_access_token = token_cache["token"]
+                cls._real_token_expiry = expiry
+                logger.info("📄 KIS Real Access Token loaded from session file.")
+                return cls._real_access_token
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _request_new_real_token(cls) -> str:
+        """실전 계좌 신규 토큰 발급 후 파일에 저장하고 반환."""
+        from datetime import timedelta
+        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
+        url = f"{Config.KIS_REAL_BASE_URL}/oauth2/tokenP"
+        headers = {"content-type": "application/json; charset=utf-8"}
+        body = {
+            "grant_type": "client_credentials",
+            "appkey": Config.KIS_REAL_APP_KEY,
+            "appsecret": Config.KIS_REAL_APP_SECRET,
+        }
+        try:
+            response = requests.post(url, json=body, timeout=TOKEN_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            token_data = response.json()
+            cls._real_access_token = token_data["access_token"]
+            cls._real_token_expiry = datetime.now() + timedelta(hours=2)
+            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
+            with open(token_cache_path, 'w') as f:
+                json.dump({"token": cls._real_access_token, "expiry": cls._real_token_expiry.isoformat()}, f)
+            logger.info("🔑 KIS Real Access Token issued and saved to file.")
+            return cls._real_access_token
+        except Exception as e:
+            logger.error(f"❌ Failed to get real access token: {e}")
+            raise
+
+    @classmethod
+    def get_real_access_token(cls) -> str:
+        """실전 계좌 토큰 반환. has_real_credentials()=False 이면 VTS 토큰 폴백."""
+        if not Config.has_real_credentials():
+            return cls.get_access_token()
+        if cls._real_access_token and cls._real_token_expiry and datetime.now() < cls._real_token_expiry:
+            return cls._real_access_token
+        cached = cls._load_cached_real_token()
+        if cached:
+            return cached
+        return cls._request_new_real_token()
+
+    @classmethod
+    def get_real_headers(cls, tr_id: str) -> dict:
+        """시세 조회용 헤더 (실전 크레덴셜 설정 시 실전, 아니면 VTS)."""
+        if Config.has_real_credentials():
+            token = cls.get_real_access_token()
+            return {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": Config.KIS_REAL_APP_KEY,
+                "appsecret": Config.KIS_REAL_APP_SECRET,
+                "tr_id": tr_id,
+            }
+        return cls.get_headers(tr_id)
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod
     def get_headers(cls, tr_id: str) -> dict:

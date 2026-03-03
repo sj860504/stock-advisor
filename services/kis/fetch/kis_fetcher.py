@@ -51,6 +51,27 @@ class KisFetcher:
             "custtype": "P"
         }
 
+    @staticmethod
+    def _get_price_base_url() -> str:
+        """시세 조회용 Base URL. 실전 크레덴셜 설정 시 실전 서버, 아니면 VTS."""
+        return Config.KIS_REAL_BASE_URL if Config.has_real_credentials() else Config.KIS_BASE_URL
+
+    @classmethod
+    def _get_price_headers(cls, token: str, tr_id: str) -> dict:
+        """시세 조회용 헤더. 실전 크레덴셜 설정 시 실전 자격증명 사용."""
+        if Config.has_real_credentials():
+            from services.kis.kis_service import KisService
+            real_token = KisService.get_real_access_token()
+            return {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {real_token}",
+                "appkey": Config.KIS_REAL_APP_KEY,
+                "appsecret": Config.KIS_REAL_APP_SECRET,
+                "tr_id": tr_id,
+                "custtype": "P",
+            }
+        return cls._get_headers(token, tr_id)
+
     @classmethod
     def _throttle_request(cls):
         with cls._req_lock:
@@ -100,12 +121,12 @@ class KisFetcher:
         """국내 주식 현재가 조회"""
         tr_id, path = cls._get_api_info("주식현재가_시세")
         if not path: return {}
-        
-        url = f"{Config.KIS_BASE_URL}{path}"
+
+        url = f"{cls._get_price_base_url()}{path}"
         params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}
-        
+
         try:
-            headers = cls._get_headers(token, tr_id=tr_id)
+            headers = cls._get_price_headers(token, tr_id=tr_id)
             response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
             if response is None:
                 return {}
@@ -158,11 +179,11 @@ class KisFetcher:
         if len(kis_market) > 3 and kis_market != "IDX":
              kis_market = kis_market[:3]
 
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_price_base_url()}{path}"
         params = {"AUTH": "", "EXCD": kis_market, "SYMB": ticker}
-        
+
         try:
-            headers = cls._get_headers(token, tr_id=tr_id)
+            headers = cls._get_price_headers(token, tr_id=tr_id)
             response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
             if response is None:
                 return {}
@@ -206,11 +227,11 @@ class KisFetcher:
         if len(kis_market) > 3 and kis_market != "IDX":
              kis_market = kis_market[:3]
 
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_price_base_url()}{path}"
         params = {"AUTH": "", "EXCD": kis_market, "SYMB": ticker}
-        
+
         try:
-            headers = cls._get_headers(token, tr_id=tr_id)
+            headers = cls._get_price_headers(token, tr_id=tr_id)
             response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
             if response.status_code == 200:
                 response_data = response.json()
@@ -240,12 +261,12 @@ class KisFetcher:
         market_map = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS", "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
         kis_excd = market_map.get(excd.upper(), excd.upper()[:3])
 
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_price_base_url()}{path}"
         params = {"AUTH": "", "EXCD": kis_excd, "GUBN": "0"}
-        
+
         for attempt in range(2):
             try:
-                headers = cls._get_headers(token, tr_id=tr_id)
+                headers = cls._get_price_headers(token, tr_id=tr_id)
                 response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
                 if response.status_code == 200:
                     response_data = response.json()
@@ -266,9 +287,9 @@ class KisFetcher:
 
     @classmethod
     def fetch_domestic_ranking(cls, token: str, mrkt_div: str = "0000") -> dict:
-        """국내 주식 시가총액 순위 조회 (VTS 대응 폴백 포함)"""
-        # 모의투자(VTS) 환경에서는 랭킹 API가 작동하지 않으므로 마스터 파일 기반 폴백 사용
-        if Config.KIS_IS_VTS:
+        """국내 주식 시가총액 순위 조회 (VTS 환경 + 실전 크레덴셜 없을 때 폴백)"""
+        # 실전 크레덴셜이 없는 VTS 환경에서는 마스터 파일 기반 폴백 사용
+        if Config.KIS_IS_VTS and not Config.has_real_credentials():
             from services.market.master_data_service import MasterDataService
             top_stocks = MasterDataService.get_top_market_cap_tickers(100)
             if top_stocks:
@@ -277,8 +298,8 @@ class KisFetcher:
 
         tr_id, path = cls._get_api_info("국내주식_시가총액순위")
         if not path: return {}
-        
-        url = f"{Config.KIS_BASE_URL}{path}"
+
+        url = f"{cls._get_price_base_url()}{path}"
         for div_code in ["J"]: # '0'은 유효하지 않으므로 'J'만 시도
             params = {
                 "fid_cond_mrkt_div_code": div_code,
@@ -290,7 +311,7 @@ class KisFetcher:
                 "fid_input_iscd_1": mrkt_div
             }
             try:
-                headers = cls._get_headers(token, tr_id=tr_id)
+                headers = cls._get_price_headers(token, tr_id=tr_id)
                 response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
                 if response.status_code == 200:
                     response_data = response.json()
@@ -318,7 +339,7 @@ class KisFetcher:
         tr_id, path = cls._get_api_info("국내주식_일자별시세")
         if not path: path = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
         
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_price_base_url()}{path}"
         params = {
             "fid_cond_mrkt_div_code": "J",
             "fid_input_iscd": ticker,
@@ -328,7 +349,7 @@ class KisFetcher:
             "fid_org_adj_prc": "1"
         }
         try:
-            headers = cls._get_headers(token, tr_id=tr_id)
+            headers = cls._get_price_headers(token, tr_id=tr_id)
             response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=4)
             if response is None:
                 return {}
@@ -343,8 +364,8 @@ class KisFetcher:
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
         
-        url = f"{Config.KIS_BASE_URL}{path}"
-        
+        url = f"{cls._get_price_base_url()}{path}"
+
         excd = "NAS"
         if ticker in ["SPX", "NAS", "VIX", "DJI", "TSX"]:
             excd = "IDX"
@@ -384,7 +405,7 @@ class KisFetcher:
             }
 
         try:
-            headers = cls._get_headers(token, tr_id=tr_id)
+            headers = cls._get_price_headers(token, tr_id=tr_id)
             response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=5)
             if response is None:
                 return {}

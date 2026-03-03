@@ -5,13 +5,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # 한국투자증권 설정
+    # 한국투자증권 설정 — VTS(모의투자, 주문용)
     KIS_APP_KEY = os.getenv("KIS_APP_KEY")
     KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
     KIS_BASE_URL = os.getenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
     KIS_WS_URL = os.getenv("KIS_WS_URL", "ws://ops.koreainvestment.com:21000")
     KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO")
     KIS_IS_VTS = os.getenv("KIS_IS_VTS", "true").lower() == "true"
+
+    # 한국투자증권 설정 — 실전 계좌(시세/WebSocket 전용, 선택 설정)
+    # 설정 시: 실시간 WebSocket + REST 시세는 실전 서버 사용, 주문/잔고는 VTS 유지
+    KIS_REAL_APP_KEY = os.getenv("KIS_REAL_APP_KEY", "")
+    KIS_REAL_APP_SECRET = os.getenv("KIS_REAL_APP_SECRET", "")
+    KIS_REAL_BASE_URL = os.getenv("KIS_REAL_BASE_URL", "https://openapi.koreainvestment.com:9443")
+    KIS_REAL_WS_URL = os.getenv("KIS_REAL_WS_URL", "ws://ops.koreainvestment.com:21000")
+
+    @classmethod
+    def has_real_credentials(cls) -> bool:
+        """실전 시세 조회용 크레덴셜이 설정되어 있으면 True."""
+        return bool(cls.KIS_REAL_APP_KEY and cls.KIS_REAL_APP_SECRET)
     # 실전투자 환경에서만 사후장(시간외) 주문 메서드 활성화
     KIS_ENABLE_AFTER_HOURS_ORDER = os.getenv("KIS_ENABLE_AFTER_HOURS_ORDER", "false").lower() == "true"
     # 사후장 주문 구분값(기본: 장후 시간외)

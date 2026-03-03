@@ -32,20 +32,31 @@ class KisWsService:
         self.subscribed_markets = {}
         
     def get_approval_key(self):
-        """웹소켓 접속키 발급"""
-        url = f"{Config.KIS_BASE_URL}/oauth2/Approval"
+        """웹소켓 접속키 발급 (실전 크레덴셜 설정 시 실전 서버 사용)"""
+        if Config.has_real_credentials():
+            url = f"{Config.KIS_REAL_BASE_URL}/oauth2/Approval"
+            body = {
+                "grant_type": "client_credentials",
+                "appkey": Config.KIS_REAL_APP_KEY,
+                "secretkey": Config.KIS_REAL_APP_SECRET,
+            }
+            self.ws_url = Config.KIS_REAL_WS_URL
+            env_label = "실전"
+        else:
+            url = f"{Config.KIS_BASE_URL}/oauth2/Approval"
+            body = {
+                "grant_type": "client_credentials",
+                "appkey": Config.KIS_APP_KEY,
+                "secretkey": Config.KIS_APP_SECRET,
+            }
+            env_label = "VTS"
+
         headers = {"content-type": "application/json; charset=utf-8"}
-        body = {
-            "grant_type": "client_credentials",
-            "appkey": Config.KIS_APP_KEY,
-            "secretkey": Config.KIS_APP_SECRET
-        }
-        
         try:
             response = requests.post(url, headers=headers, json=body, timeout=WS_APPROVAL_REQUEST_TIMEOUT)
             if response.status_code == 200:
                 self.approval_key = response.json().get("approval_key")
-                logger.info("🔑 WebSocket Approval Key acquired.")
+                logger.info(f"🔑 WebSocket Approval Key acquired ({env_label}).")
                 return True
             logger.error(f"❌ Failed to get approval key: {response.text}")
             return False
@@ -63,9 +74,9 @@ class KisWsService:
                         await asyncio.sleep(retry_delay)
                         continue
 
-                # 모의투자(VTS)의 경우 포트 조정 (21000 -> 31000)
+                # VTS 환경에서만 포트 31000으로 전환 (실전 계좌는 21000 유지)
                 ws_url = self.ws_url
-                if "vts" in Config.KIS_BASE_URL.lower() and ":21000" in ws_url:
+                if not Config.has_real_credentials() and "vts" in Config.KIS_BASE_URL.lower() and ":21000" in ws_url:
                     ws_url = ws_url.replace(":21000", ":31000")
                     logger.info(f"🔌 VTS Environment detected. Using port 31000: {ws_url}")
 
