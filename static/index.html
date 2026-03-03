@@ -1088,7 +1088,10 @@ function renderSectorWeightsFull(data) {
     }).join('');
 
     const renderHoldingList = (list) => list.length
-        ? list.map(h => `<span style="display:inline-block;padding:2px 8px;background:#252a33;border-radius:4px;font-size:.8rem;margin:2px">${h.ticker ?? h}</span>`).join('')
+        ? list.map(h => {
+            const label = (h.name && h.name !== h.ticker) ? h.name : (h.ticker ?? h);
+            return `<span title="${h.ticker??''}" style="display:inline-block;padding:2px 8px;background:#252a33;border-radius:4px;font-size:.8rem;margin:2px">${label}</span>`;
+        }).join('')
         : '<span style="color:var(--sub);font-size:.82rem">없음</span>';
 
     const totalKrw = data?.total_stock_krw;
