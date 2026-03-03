@@ -60,13 +60,19 @@ class TradingStrategyService:
         "Technology": "tech", "IT": "tech", "기술": "tech",
         "Information Technology": "tech",
         "Communication Services": "tech", "통신서비스": "tech", "통신": "tech",
-        # 가치주 (방어적: 필수소비재 + 헬스케어 + 유틸리티)
+        # 가치주 (방어적: 필수소비재 + 헬스케어 + 유틸리티 + 에너지 + 산업재 + 소재 + 소비재)
         "Consumer Staples": "value", "Consumer Defensive": "value", "필수소비재": "value",
         "Healthcare": "value", "Health Care": "value", "헬스케어": "value", "의료": "value",
         "Utilities": "value", "유틸리티": "value",
+        "Energy": "value", "에너지": "value",
+        "Industrials": "value", "산업재": "value",
+        "Materials": "value", "소재": "value",
+        "Consumer Discretionary": "value", "임의소비재": "value",
+        "Real Estate": "value", "리츠": "value", "부동산": "value",
         # 금융주
         "Financials": "financial", "Financial": "financial",
         "Financial Services": "financial", "금융": "financial", "은행": "financial",
+        "Insurance": "financial", "보험": "financial",
     }
     # 그룹별 목표 비중 (합계 = 1.0, 주식 자산 대비)
     SECTOR_TARGET_WEIGHT: dict = {"tech": 0.50, "value": 0.30, "financial": 0.20}
