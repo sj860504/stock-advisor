@@ -1,5 +1,4 @@
 import json
-import os
 from config import Config
 from typing import Optional
 from datetime import datetime, timedelta
@@ -27,7 +26,6 @@ class TradingStrategyService:
     """
     사용자의 투자 전략에 따른 매매 시그널 판단 및 실행 서비스
     """
-    _state_path = os.path.join(os.path.dirname(__file__), "..", "data", "strategy_state.json")
     _enabled = False
     _top10_cache = {"timestamp": 0, "tickers": set()}
 
@@ -80,11 +78,8 @@ class TradingStrategyService:
     def set_enabled(cls, enabled: bool) -> None:
         cls._enabled = enabled
         logger.info(f"⚙️ Trading Strategy Engine {'ENABLED' if enabled else 'DISABLED'}")
-        # enabled 상태를 파일에 영속적으로 저장 (재시작 후 복원)
         try:
-            state = cls._load_state()
-            state["_enabled"] = enabled
-            cls._save_state(state)
+            SettingsService.set_setting("STRATEGY_ENABLED", "true" if enabled else "false")
         except Exception as e:
             logger.warning(f"⚠️ Failed to persist strategy enabled state: {e}")
 
@@ -94,11 +89,11 @@ class TradingStrategyService:
 
     @classmethod
     def _restore_enabled_state(cls) -> None:
-        """앱 시작 시 저장된 enabled 상태를 복원합니다."""
+        """앱 시작 시 저장된 enabled 상태를 복원합니다. JSON → DB 1회 마이그레이션 포함."""
+        cls._migrate_json_to_db()
         try:
-            state = cls._load_state()
-            persisted = state.get("_enabled")
-            if persisted is True:
+            persisted = SettingsService.get_setting("STRATEGY_ENABLED", None)
+            if persisted == "true":
                 cls._enabled = True
                 logger.info("⚙️ Trading Strategy Engine restored: ENABLED (from last session)")
             else:
@@ -107,16 +102,54 @@ class TradingStrategyService:
             logger.warning(f"⚠️ Failed to restore strategy enabled state: {e}")
 
     @classmethod
-    def _load_state(cls) -> dict:
-        if os.path.exists(cls._state_path):
-            with open(cls._state_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
+    def _migrate_json_to_db(cls) -> None:
+        """strategy_state.json → DB 1회 마이그레이션. JSON 파일이 없으면 스킵."""
+        import os
+        json_path = os.path.join(os.path.dirname(__file__), "..", "data", "strategy_state.json")
+        if not os.path.exists(json_path):
+            return
+        try:
+            from repositories.strategy_state_repo import StrategyStateRepo
+            with open(json_path, "r", encoding="utf-8") as f:
+                old = json.load(f)
+            migrated = False
+            for key, val in old.items():
+                if key.startswith("_") or not isinstance(val, dict):
+                    continue  # _enabled, _global 은 SettingsService로 처리
+                existing = StrategyStateRepo.load(key)
+                if existing:
+                    continue  # 이미 DB에 있으면 스킵
+                StrategyStateRepo.save(key, val)
+                migrated = True
+                logger.info(f"✅ strategy_state 마이그레이션 완료: user={key}")
+            # _enabled 마이그레이션
+            if "_enabled" in old and SettingsService.get_setting("STRATEGY_ENABLED", None) is None:
+                SettingsService.set_setting("STRATEGY_ENABLED", "true" if old["_enabled"] else "false")
+            # top_weight_overrides 마이그레이션
+            overrides = old.get("_global", {}).get("top_weight_overrides")
+            if overrides and SettingsService.get_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", None) is None:
+                SettingsService.set_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", json.dumps(overrides, ensure_ascii=False))
+            if migrated:
+                bak = json_path + ".migrated"
+                os.rename(json_path, bak)
+                logger.info(f"📦 마이그레이션 완료. JSON 백업: {bak}")
+        except Exception as e:
+            logger.warning(f"⚠️ strategy_state JSON 마이그레이션 실패: {e}")
+
+    @classmethod
+    def _load_state(cls, user_id: str = "sean") -> dict:
+        """DB에서 user_id 전략 상태 로드. {user_id: {sell_cooldown, ...}} 형태 반환."""
+        from repositories.strategy_state_repo import StrategyStateRepo
+        user_state = StrategyStateRepo.load(user_id)
+        return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}}}
 
     @classmethod
     def _save_state(cls, state: dict) -> None:
-        with open(cls._state_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        """state dict에서 user별 상태를 DB에 저장."""
+        from repositories.strategy_state_repo import StrategyStateRepo
+        for user_id, user_state in state.items():
+            if isinstance(user_state, dict):
+                StrategyStateRepo.save(user_id, user_state)
 
     @classmethod
     def _get_ticker_market(cls, ticker: str) -> str:
@@ -330,26 +363,20 @@ class TradingStrategyService:
         return len(reasons) == 0, reasons
 
     @classmethod
-    def _get_global_state(cls) -> dict:
-        state = cls._load_state()
-        if "_global" not in state:
-            state["_global"] = {}
-        return state
-
-    @classmethod
     def get_top_weight_overrides(cls) -> dict:
         """티커별 사용자 가중치 오버라이드 조회"""
-        state = cls._get_global_state()
-        global_state = state.get("_global", {})
-        return global_state.get("top_weight_overrides", {})
+        raw = SettingsService.get_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", "{}")
+        try:
+            return json.loads(raw or "{}")
+        except Exception:
+            return {}
 
     @classmethod
     def set_top_weight_overrides(cls, overrides: dict) -> dict:
         """티커별 사용자 가중치 오버라이드 저장"""
-        state = cls._get_global_state()
-        state["_global"]["top_weight_overrides"] = overrides or {}
-        cls._save_state(state)
-        return state["_global"]["top_weight_overrides"]
+        value = overrides or {}
+        SettingsService.set_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", json.dumps(value, ensure_ascii=False))
+        return value
 
     @classmethod
     def _get_top10_market_cap_tickers(cls) -> set:
@@ -489,7 +516,7 @@ class TradingStrategyService:
         if (is_kr(ticker) and not MarketHourService.is_kr_market_open(allow_extended=allow_ext)) or \
            (not is_kr(ticker) and not MarketHourService.is_us_market_open(allow_extended=allow_ext)): return False
 
-        tick_state = cls._load_state()
+        tick_state = cls._load_state(user_id)
         user_state = tick_state.setdefault(user_id, {})
         today = datetime.now().strftime("%Y-%m-%d")
         trade_state = cls._get_or_reset_tick_state(user_state, today)
@@ -920,7 +947,7 @@ class TradingStrategyService:
         macro_data = MacroService.get_macro_data()
         cash_balance = PortfolioService.load_cash(user_id)
 
-        state = cls._load_state()
+        state = cls._load_state(user_id)
         user_state = cls._init_strategy_user_state(state, user_id)
         total_assets, target_cash_kr, target_cash_us = cls._calculate_total_assets(holdings, cash_balance, macro_data)
 
@@ -956,7 +983,7 @@ class TradingStrategyService:
         holdings = PortfolioService.load_portfolio(user_id)
         macro_data = MacroService.get_macro_data()
 
-        state = cls._load_state()
+        state = cls._load_state(user_id)
         user_state = state.get(user_id, {})
 
         cash_balance = PortfolioService.load_cash(user_id)
