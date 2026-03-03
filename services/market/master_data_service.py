@@ -112,8 +112,11 @@ class MasterDataService:
         try:
             kospi = cls.get_kospi_master()
             kosdaq = cls.get_kosdaq_master()
-            kospi_df = kospi[["단축코드", "한글명", "시가총액"]].rename(columns={"시가총액": "market_cap_raw"})
-            kosdaq_df = kosdaq[["단축코드", "한글명", "전일기준 시가총액 (억)"]].rename(
+            # ETP=1: ETF/ETN 제외 → 개별 주식만
+            kospi_stocks = kospi[pd.to_numeric(kospi["ETP"], errors="coerce").fillna(0) == 0]
+            kosdaq_stocks = kosdaq[pd.to_numeric(kosdaq["ETP"], errors="coerce").fillna(0) == 0]
+            kospi_df = kospi_stocks[["단축코드", "한글명", "시가총액"]].rename(columns={"시가총액": "market_cap_raw"})
+            kosdaq_df = kosdaq_stocks[["단축코드", "한글명", "전일기준 시가총액 (억)"]].rename(
                 columns={"전일기준 시가총액 (억)": "market_cap_raw"}
             )
             merged = pd.concat([kospi_df, kosdaq_df])
