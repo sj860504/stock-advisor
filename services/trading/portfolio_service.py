@@ -357,6 +357,9 @@ class PortfolioService:
         return {
             "ticker": holding.get("ticker"),
             "name": holding.get("name"),
+            "quantity": holding.get("quantity"),
+            "buy_price": holding.get("buy_price"),
+            "sector": holding.get("sector") or "Others",
             "price": price,
             "change": cached.get("change", 0),
             "change_pct": cached.get("change_pct", 0),
