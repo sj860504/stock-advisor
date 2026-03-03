@@ -728,6 +728,53 @@ class TradingStrategyService:
         return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, today, state, total_assets, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
 
     @classmethod
+    def _check_unmonitored_holdings(
+        cls, prepared_signals: list, holdings: list, user_id: str,
+        total_assets: float, cash_balance: float, exchange_rate: float,
+        macro_data: dict, target_cash_kr: float, target_cash_us: float,
+        take_profit_pct: float, stop_loss_pct: float,
+        sell_cooldown: dict, today: str,
+    ) -> bool:
+        """모니터링 유니버스 밖 보유 종목(ETF 등)에 대한 스탑로스/익절 체크."""
+        monitored_tickers = {sig['ticker'] for sig in prepared_signals}
+        trade_executed = False
+        for h in holdings:
+            ticker = h.get('ticker')
+            if not ticker or ticker in monitored_tickers:
+                continue
+            qty = h.get('quantity', 0)
+            if not qty or qty <= 0:
+                continue
+            buy_price = float(h.get('buy_price') or 0)
+            current_price = float(h.get('current_price') or 0)
+            if buy_price <= 0 or current_price <= 0:
+                continue
+            profit_pct = (current_price - buy_price) / buy_price * 100
+            logger.info(f"🔍 [비유니버스 보유] {ticker} ({h.get('name', '')}): PnL={profit_pct:.1f}%")
+            if profit_pct <= stop_loss_pct:
+                executed = cls._execute_trade_v2(
+                    ticker, "sell", f"스탑로스({profit_pct:.2f}%)", profit_pct, True, 0,
+                    current_price, total_assets, cash_balance, exchange_rate,
+                    holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
+                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+                )
+                trade_executed = bool(executed) or trade_executed
+            elif profit_pct >= take_profit_pct:
+                if sell_cooldown.get(ticker) == today:
+                    logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 익절매도). 내일 재판단.")
+                    continue
+                executed = cls._execute_trade_v2(
+                    ticker, "sell", f"익절권({profit_pct:.2f}%)", profit_pct, True, 0,
+                    current_price, total_assets, cash_balance, exchange_rate,
+                    holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
+                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+                )
+                if executed:
+                    sell_cooldown[ticker] = today
+                trade_executed = bool(executed) or trade_executed
+        return trade_executed
+
+    @classmethod
     def _execute_collected_signals(cls, user_id: str, prepared_signals: list, holdings: list, total_assets: float, cash_balance: float, target_cash_kr: float, target_cash_us: float, macro_data: dict, user_state: dict = None) -> bool:
         """수집된 시그널을 기반으로 실제 주문 집행"""
         buy_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
@@ -748,6 +795,13 @@ class TradingStrategyService:
                 holdings, user_id, total_assets, cash_balance, exchange_rate,
                 macro_data, target_cash_kr, target_cash_us,
             ) or trade_executed
+
+        # 모니터링 유니버스 외 보유 종목(ETF 등) 스탑로스/익절 체크
+        trade_executed = cls._check_unmonitored_holdings(
+            prepared_signals, holdings, user_id, total_assets, cash_balance,
+            exchange_rate, macro_data, target_cash_kr, target_cash_us,
+            take_profit_pct, stop_loss_pct, sell_cooldown, today,
+        ) or trade_executed
         return trade_executed
 
     @classmethod
