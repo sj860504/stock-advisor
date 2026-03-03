@@ -725,12 +725,23 @@ class TradingStrategyService:
         return bool(executed)
 
     @classmethod
-    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, today: str, state, total_assets: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float) -> bool:
+    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict, today: str, state, total_assets: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float) -> bool:
         """점수 기반 매수/매도 처리. Returns executed."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
         if 0 < score <= buy_max and not holding:  # score=0 은 매수 제외
+            # ETF/기타 섹터 신규 매수 차단
+            sector = getattr(state, 'sector', '') or ''
+            if sector in ('ETF', 'Others', '미분류/ETF'):
+                logger.info(f"⏭️ {ticker} ETF/기타 섹터 신규 매수 차단 (sector={sector}). 스킵.")
+                return False
+            # 당일 신규 매수 쿨다운 (KIS 반영 지연 대비)
+            if add_buy_cooldown.get(ticker) == today:
+                logger.info(f"⏭️ {ticker} 신규매수 쿨다운 중 (오늘 이미 매수). 내일 재판단.")
+                return False
             executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
+            if executed:
+                add_buy_cooldown[ticker] = today
             return bool(executed)
         if (score >= sell_min or score <= 10) and holding:
             is_stop_loss = score <= 10
@@ -772,7 +783,7 @@ class TradingStrategyService:
         current_rsi = getattr(state, 'rsi', 50.0)
         if cls._handle_add_buy_signal(ticker, holding, profit_pct, stop_loss_pct, current_rsi, add_rsi_limit, add_score_limit, score, add_buy_cooldown, today, state, total_assets, cash_balance, exchange_rate, **common_kwargs):
             return True
-        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, today, state, total_assets, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
+        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, total_assets, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
 
     @classmethod
     def _check_unmonitored_holdings(
