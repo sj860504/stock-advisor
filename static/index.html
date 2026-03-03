@@ -795,7 +795,7 @@ function renderDashTable(data) {
             <td>${fmtCurr(d.buy_price??d.avg_price, s)}</td>
             <td>${fmt(d.quantity,0)}</td>
             <td>${badge(ret)}</td>
-            <td>${fmtCurr(d.current_value, s)}</td>
+            <td>${fmtCurr(d.current_value||(price*(d.quantity||0)), s)}<span class="${cls(d.profit_loss||0)}" style="font-size:.8rem;display:block">${d.profit_loss ? (d.profit_loss>0?'+':'')+fmtCurr(d.profit_loss,s) : ''}</span></td>
             <td style="color:var(--sub);font-size:.8rem">${fmtCurr(ema200, s)}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
             <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) : '-'}</td>
@@ -827,7 +827,7 @@ function renderPortfolioTable(data) {
             <td>${fmtCurr(d.buy_price??d.avg_price, s)}</td>
             <td>${fmtCurr(d.price??d.current_price, s)}</td>
             <td>${fmt(d.quantity,0)}</td>
-            <td>${fmtCurr(d.current_value, s)}</td>
+            <td>${fmtCurr(d.current_value||(d.price*(d.quantity||0)), s)}<span class="${cls(d.profit_loss||0)}" style="font-size:.8rem;display:block">${d.profit_loss ? (d.profit_loss>0?'+':'')+fmtCurr(d.profit_loss,s) : ''}</span></td>
             <td>${badge(ret)}</td>
             <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>

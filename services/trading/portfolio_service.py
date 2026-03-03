@@ -356,14 +356,20 @@ class PortfolioService:
         upside = ((dcf - price) / price) * 100 if (dcf and price) else 0
         ticker = holding.get("ticker") or ""
         market = "kr" if (ticker.isdigit() and len(ticker) == 6) else "us"
+        quantity = holding.get("quantity") or 0
+        current_value = price * quantity if price and quantity else 0
+        cost_basis = buy_price * quantity if buy_price and quantity else 0
+        profit_loss = current_value - cost_basis
         return {
             "ticker": ticker,
             "name": holding.get("name"),
-            "quantity": holding.get("quantity"),
-            "buy_price": holding.get("buy_price"),
+            "quantity": quantity,
+            "buy_price": buy_price,
             "sector": holding.get("sector") or "Others",
             "market": market,
             "price": price,
+            "current_value": current_value,
+            "profit_loss": profit_loss,
             "change": cached.get("change", 0),
             "change_pct": cached.get("change_pct", 0),
             "pre_price": cached.get("pre_price"),
