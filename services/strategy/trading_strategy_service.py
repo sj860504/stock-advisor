@@ -682,7 +682,7 @@ class TradingStrategyService:
         """점수 기반 매수/매도 처리. Returns executed."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
-        if 10 < score <= buy_max and not holding:  # score≤10 은 스탑로스 구간 → 매수 제외
+        if 0 < score <= buy_max and not holding:  # score=0 은 매수 제외
             executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
             return bool(executed)
         if (score >= sell_min or score <= 10) and holding:
