@@ -68,6 +68,7 @@ class TradingStrategyService:
         "Industrials": "value", "산업재": "value",
         "Materials": "value", "소재": "value",
         "Consumer Discretionary": "value", "임의소비재": "value",
+        "Consumer Cyclical": "value", "소비재": "value",
         "Real Estate": "value", "리츠": "value", "부동산": "value",
         # 금융주
         "Financials": "financial", "Financial": "financial",
