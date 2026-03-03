@@ -436,6 +436,17 @@ class PortfolioService:
         return holdings
 
     @classmethod
+    def update_holding_sector(cls, user_id: str, ticker: str, sector: str) -> list:
+        """보유 종목의 섹터를 수동으로 업데이트합니다."""
+        holdings = cls.load_portfolio(user_id)
+        target = next((h for h in holdings if h.get("ticker") == ticker), None)
+        if not target:
+            raise ValueError(f"{ticker} 종목을 찾을 수 없습니다.")
+        target["sector"] = sector
+        cls.save_portfolio(user_id, holdings)
+        return holdings
+
+    @classmethod
     def rebalance_portfolio(cls, user_id: str = "sean"):
         # 기존 로직과 동일하되 sync_with_kis가 DB를 업데이트하므로 이를 활용
         return cls._rebalance_logic(user_id)

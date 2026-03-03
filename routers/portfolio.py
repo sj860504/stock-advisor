@@ -65,6 +65,16 @@ def add_holding(
     return HoldingActionResponse(message=f"{resolved_ticker} 추가 완료", holdings=holdings)
 
 
+@router.patch("/{user_id}/{ticker}/sector", response_model=HoldingActionResponse)
+def update_sector(user_id: str, ticker: str, sector: str) -> HoldingActionResponse:
+    """보유 종목의 섹터를 수동으로 업데이트합니다."""
+    try:
+        holdings = PortfolioService.update_holding_sector(user_id, ticker, sector)
+        return HoldingActionResponse(message=f"{ticker} 섹터 → {sector} 업데이트 완료", holdings=holdings)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.delete("/{user_id}/{ticker}", response_model=HoldingActionResponse)
 def remove_holding(user_id: str, ticker: str) -> HoldingActionResponse:
     """보유 종목을 제거합니다."""

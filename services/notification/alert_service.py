@@ -23,16 +23,35 @@ class AlertService:
     def set_webhook(cls, webhook_url: str):
         cls._webhook_url = webhook_url
     
+    # 개발 모드에서 차단할 키워드 (매수/매도 실행 알림)
+    _DEV_BLOCK_KEYWORDS = (
+        "매수 체결", "매도 체결",   # 전략 실행 체결 메시지
+        "틱매매",                    # 틱매매 알림
+        "분할매수", "분할매도",      # 분할 매매
+        "익절", "손절",              # 손익 실행
+        "리밸런싱", "rebalance",     # 섹터 리밸런싱
+        "KIS 주문",                  # KIS API 주문
+    )
+
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
         """슬랙으로 실제 알림을 전송합니다."""
+        # 개발 모드: 매수/매도 실행 알림은 로그로만 출력
+        if Config.DEV_MODE:
+            is_trade_alert = any(kw in message for kw in cls._DEV_BLOCK_KEYWORDS)
+            if is_trade_alert:
+                logger.info(f"[DEV MODE] Slack 매수/매도 알림 차단 → {message[:80]}...")
+                return False
+
         webhook_url = cls._webhook_url or Config.SLACK_WEBHOOK_URL
         if not webhook_url:
             print(f"⚠️ Slack Webhook URL not configured. Log: {message}")
             return False
-            
+
         try:
             payload = {"text": message}
+            if Config.DEV_MODE:
+                payload["text"] = f"[DEV] {message}"
             response = requests.post(webhook_url, json=payload, timeout=5)
             response.raise_for_status()
             logger.info(f"✅ Slack message sent successfully.")

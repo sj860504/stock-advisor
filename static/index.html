@@ -259,9 +259,9 @@
             <table>
                 <thead><tr>
                     <th>종목</th><th>매수가</th><th>현재가</th><th>수량</th>
-                    <th>평가금액</th><th>수익률</th><th>DCF 적정가</th><th>RSI</th><th></th>
+                    <th>평가금액</th><th>수익률</th><th>DCF 적정가</th><th>RSI</th><th>섹터</th><th></th>
                 </tr></thead>
-                <tbody id="portfolio-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+                <tbody id="portfolio-tbody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -803,14 +803,35 @@ function renderDashTable(data) {
     }).join('');
 }
 
+const SECTOR_OPTIONS = [
+    {value:'Others',           label:'미분류'},
+    {value:'Technology',       label:'기술 (Tech)'},
+    {value:'Information Technology', label:'IT'},
+    {value:'Communication Services', label:'통신서비스'},
+    {value:'Healthcare',       label:'헬스케어'},
+    {value:'Consumer Staples', label:'필수소비재'},
+    {value:'Utilities',        label:'유틸리티'},
+    {value:'Financials',       label:'금융'},
+    {value:'Financial Services',label:'금융서비스'},
+    {value:'Consumer Discretionary', label:'임의소비재'},
+    {value:'Industrials',      label:'산업재'},
+    {value:'Energy',           label:'에너지'},
+    {value:'Materials',        label:'소재'},
+    {value:'Real Estate',      label:'리츠/부동산'},
+];
+
 function renderPortfolioTable(data) {
     const tbody = document.getElementById('portfolio-tbody');
-    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty">보유 종목 없음</td></tr>'; return; }
+    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">보유 종목 없음</td></tr>'; return; }
+    const sectorOpts = SECTOR_OPTIONS.map(o =>
+        `<option value="${o.value}">${o.label}</option>`
+    ).join('');
     tbody.innerHTML = data.map(d => {
         const ret = d.return_pct ?? d.profit_pct;
         const rsi = d.rsi;
         const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
         const s = getSym(d);
+        const curSector = d.sector || 'Others';
         return `<tr>
             <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name||''}</span></td>
             <td>${fmtCurr(d.buy_price??d.avg_price, s)}</td>
@@ -820,6 +841,14 @@ function renderPortfolioTable(data) {
             <td>${badge(ret)}</td>
             <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi,1)}</span></td>
+            <td>
+                <select style="width:110px;padding:3px 6px;font-size:.75rem"
+                    onchange="updateSector('${d.ticker}', this.value)">
+                    ${SECTOR_OPTIONS.map(o =>
+                        `<option value="${o.value}"${o.value===curSector?' selected':''}>${o.label}</option>`
+                    ).join('')}
+                </select>
+            </td>
             <td style="white-space:nowrap">
                 <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}', '${s}')">DCF설정</button>
                 <button class="btn btn-danger btn-sm" style="margin-right:4px" onclick="openSellModal('${d.ticker}')">매도</button>
@@ -827,6 +856,15 @@ function renderPortfolioTable(data) {
             </td>
         </tr>`;
     }).join('');
+}
+
+async function updateSector(ticker, sector) {
+    try {
+        await apiFetch(`/portfolio/${USER}/${encodeURIComponent(ticker)}/sector?sector=${encodeURIComponent(sector)}`, {method:'PATCH'});
+        showToast(`✅ ${ticker} 섹터 → ${sector}`);
+        // 섹터 비중 미니카드 갱신
+        fetchSectorWeightsMini();
+    } catch(e) { showToast('❌ ' + e.message, false); }
 }
 
 async function deleteHolding(ticker) {

@@ -26,6 +26,9 @@ class Config:
     # FRED API (거시경제)
     FRED_API_KEY = os.getenv("FRED_API_KEY")
     
+    # 개발 모드 (true: Slack 매수/매도 알림 차단)
+    DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+
     # 로깅 레벨
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
