@@ -1529,10 +1529,6 @@ class TradingStrategyService:
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} 잔고 부족 (필요: {final_price:,.0f}원)")
             return False, 0
-        ok, limit_reasons = cls._passes_allocation_limits(ticker, est_krw, holdings, total_assets, cash_balance, holding, kr_assets, us_assets_krw)
-        if not ok:
-            logger.info(f"⏭️ {ticker} 비중 제한 매수 스킵: {', '.join(limit_reasons)}")
-            return False, 0
         logger.info(f"⚖️ {ticker} 분할 매수 예정 ({quantity}주)")
         if not is_kr_flag:
             current_price = cls._fetch_fresh_us_price(ticker, current_price)
