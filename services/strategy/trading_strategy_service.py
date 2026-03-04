@@ -687,8 +687,7 @@ class TradingStrategyService:
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
-        if executed:
-            sell_cooldown[ticker] = today
+        sell_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
         return bool(executed)
 
     @classmethod
@@ -740,17 +739,14 @@ class TradingStrategyService:
                 logger.info(f"⏭️ {ticker} 신규매수 쿨다운 중 (오늘 이미 매수). 내일 재판단.")
                 return False
             executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
-            if executed:
-                add_buy_cooldown[ticker] = today
+            add_buy_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
             return bool(executed)
-        if (score >= sell_min or score <= 10) and holding:
-            is_stop_loss = score <= 10
-            if not is_stop_loss and sell_cooldown.get(ticker) == today:
+        if score >= sell_min and holding:
+            if sell_cooldown.get(ticker) == today:
                 logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 점수매도). 내일 재판단.")
                 return False
             executed = cls._execute_trade_v2(ticker, "sell", f"점수 {score} [{reason_str}]", profit_pct, True, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
-            if executed and not is_stop_loss:
-                sell_cooldown[ticker] = today
+            sell_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
             return bool(executed)
         return False
 
@@ -1559,10 +1555,7 @@ class TradingStrategyService:
             return False, 0
         holding_qty = current_holding.get("quantity", 0)
         split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
-        if score <= 10:
-            sell_qty, msg = holding_qty, "전량 매도(손절)"
-        else:
-            sell_qty, msg = max(1, int(holding_qty / split_count)), "분할 매도(익절)"
+        sell_qty, msg = max(1, int(holding_qty / split_count)), "분할 매도(익절)"
         buy_price_val = float(current_holding.get("buy_price") or 0) or None
         if not is_kr(ticker):
             current_price = cls._fetch_fresh_us_price(ticker, current_price)
