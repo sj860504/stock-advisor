@@ -120,7 +120,7 @@ class AnalysisService:
             cash = PortfolioService.load_cash(user_id)
             return TradingStrategyService.calculate_score(
                 ticker, state, holding.model_dump() if holding else None,
-                macro_snapshot, {}, cash, cash,
+                macro_snapshot, {}, cash,
             )
         except Exception:
             return None, []

@@ -363,20 +363,21 @@ class TradingStrategyService:
         return reasons
 
     @classmethod
-    def _passes_allocation_limits(cls, ticker: str, add_value: float, holdings: list, total_assets: float, cash_balance: float, holding: Optional[dict] = None, kr_assets: float = 0.0, us_assets_krw: float = 0.0) -> tuple:
+    def _passes_allocation_limits(cls, ticker: str, add_value: float, holdings: list, cash_balance: float, holding: Optional[dict] = None, kr_assets: float = 0.0, us_assets_krw: float = 0.0) -> tuple:
         """시장/섹터 비중 제한 검사 (한국/미국 분리)"""
-        if total_assets <= 0:
+        market = cls._get_ticker_market(ticker)
+        market_total = kr_assets if market == 'KR' else us_assets_krw
+        if market_total <= 0:
             return True, []
         from services.market.macro_service import MacroService
         exchange_rate = MacroService.get_exchange_rate()
-        market = cls._get_ticker_market(ticker)
         sector = cls._get_ticker_sector(ticker, holding)
         cls._compute_market_balances(holdings, cash_balance, exchange_rate, kr_assets, us_assets_krw, add_value, market)
         sector_values = cls._compute_sector_value_map(holdings, ticker, add_value, sector, exchange_rate)
         max_sector = SettingsService.get_float("STRATEGY_MAX_SECTOR_RATIO", 0.3)
         reasons = []
         if max_sector > 0:
-            ratio = sector_values.get(sector, 0.0) / total_assets if total_assets > 0 else 0
+            ratio = sector_values.get(sector, 0.0) / market_total
             if ratio > max_sector:
                 reasons.append(f"섹터비중초과({sector} {ratio:.2%} > {max_sector:.2%})")
         reasons.extend(cls._check_sector_group_limit(ticker, holding, holdings, exchange_rate))
@@ -512,9 +513,9 @@ class TradingStrategyService:
         return False
 
     @classmethod
-    def _run_tick_intraday(cls, ticker: str, state, holding, holdings: list, total_assets: float, cash_balance: float, trade_state: dict, low_1h: float) -> bool:
+    def _run_tick_intraday(cls, ticker: str, state, holding, holdings: list, market_total: float, cash_balance: float, trade_state: dict, low_1h: float) -> bool:
         """틱매매 장중 매도/매수 조건 실행. Returns executed."""
-        tranche = min(cash_balance, max(0.0, total_assets * SettingsService.get_float("STRATEGY_TICK_CASH_RATIO", 0.2))) / 2
+        tranche = min(cash_balance, max(0.0, market_total * SettingsService.get_float("STRATEGY_TICK_CASH_RATIO", 0.2))) / 2
         buy_price = float(holding.get("buy_price", 1)) if holding and float(holding.get("buy_price", 1)) > 0 else 1.0
         pnl_pct = (getattr(state, 'current_price', 0) - buy_price) / buy_price * 100 if holding else 0
         executed = cls._evaluate_tick_sell_conditions(ticker, holding, state, pnl_pct, SettingsService.get_float("STRATEGY_TICK_TAKE_PROFIT_PCT", 1.0), SettingsService.get_float("STRATEGY_TICK_STOP_LOSS_PCT", -5.0), trade_state) if holding else False
@@ -523,7 +524,7 @@ class TradingStrategyService:
         return executed
 
     @classmethod
-    def _run_tick_trade(cls, user_id: str, holdings: list, total_assets: float, cash_balance: float) -> bool:
+    def _run_tick_trade(cls, user_id: str, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float) -> bool:
         """하루 1종목 틱매매 (진입/청산/유지)"""
         if SettingsService.get_int("STRATEGY_TICK_ENABLED", 0) != 1: return False
         ticker = (SettingsService.get_setting("STRATEGY_TICK_TICKER", "005930") or "").strip().upper()
@@ -544,7 +545,8 @@ class TradingStrategyService:
         holding = next((h for h in holdings if h["ticker"] == ticker), None)
         if holding and cls._is_near_market_close(ticker, SettingsService.get_int("STRATEGY_TICK_CLOSE_MINUTES", 5)):
             return cls._execute_tick_eod_sell(ticker, holding, holdings, current_price, trade_state, user_state, tick_state)
-        executed = cls._run_tick_intraday(ticker, state, holding, holdings, total_assets, cash_balance, trade_state, low_1h)
+        market_total = kr_total if is_kr(ticker) else us_total_krw
+        executed = cls._run_tick_intraday(ticker, state, holding, holdings, market_total, cash_balance, trade_state, low_1h)
         user_state["tick_trade"] = trade_state
         cls._save_state(tick_state)
         return executed
@@ -609,12 +611,12 @@ class TradingStrategyService:
 
     @classmethod
     def _calculate_total_assets(cls, holdings: list, cash_balance: float, macro_data: dict) -> tuple:
-        """총 자산 및 시장 국면별 현금 비중 목표 계산"""
+        """시장별 자산 및 시장 국면별 현금 비중 목표 계산. Returns (kr_total, us_total_krw, target_cash_kr, target_cash_us)."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
         usd_cash = PortfolioService.get_usd_cash_balance()
         exchange_rate = MacroService.get_exchange_rate()
-        
+
         kr_holdings = filter_kr(holdings)
         us_holdings = filter_us(holdings)
 
@@ -622,32 +624,33 @@ class TradingStrategyService:
         us_market_value_usd = sum(h.get('current_price', 0) * h.get('quantity', 0) for h in us_holdings)
         us_market_value_krw = us_market_value_usd * exchange_rate
         usd_cash_krw = usd_cash * exchange_rate
-        
-        total_assets = kr_market_value + us_market_value_krw + cash_balance + usd_cash_krw
-        
+
+        kr_total = kr_market_value + max(0.0, cash_balance)
+        us_total_krw = us_market_value_krw + usd_cash_krw
+
         regime_status = macro_data.get('market_regime', {}).get('status', 'Neutral').upper()
         target_cash_kr = cls._get_target_cash_ratio('KR', regime_status)
         target_cash_us = cls._get_target_cash_ratio('US', regime_status)
-        logger.info(f"💰 시장 국면: {regime_status} → 한국 현금비중 목표: {target_cash_kr:.1%}, 미국 현금비중 목표: {target_cash_us:.1%}")
-        
-        return total_assets, target_cash_kr, target_cash_us
+        logger.info(f"💰 시장 국면: {regime_status} → KR 총액: {kr_total:,.0f}원, US 총액: {us_total_krw:,.0f}원 | 한국 현금비중 목표: {target_cash_kr:.1%}, 미국 현금비중 목표: {target_cash_us:.1%}")
+
+        return kr_total, us_total_krw, target_cash_kr, target_cash_us
 
     @classmethod
-    def _collect_trading_signals(cls, holdings: list, macro_data: dict, user_state: dict, total_assets: float, cash_balance: float, target_cash_kr: float, target_cash_us: float) -> list:
+    def _collect_trading_signals(cls, holdings: list, macro_data: dict, user_state: dict, kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float) -> list:
         """시장 상태를 확인하고 유효한 매매 시그널을 수집"""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-        
+
         analyze_kr = not is_us_open
         analyze_us = not is_kr_open
         logger.info(f"📊 시장 상태: KR개장={is_kr_open}, US개장={is_us_open} → KR분석={analyze_kr}, US분석={analyze_us}")
-        
+
         all_states = MarketDataService.get_all_states()
         prepared_signals = []
-        
+
         holdings_map = {h['ticker']: h for h in holdings}
         for ticker, ticker_state in list(all_states.items()):
             is_kr_ticker = is_kr(ticker)
@@ -658,7 +661,8 @@ class TradingStrategyService:
 
             holding = holdings_map.get(ticker)
             market_cash_ratio = target_cash_kr if is_kr_ticker else target_cash_us
-            score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, total_assets, cash_balance, market_cash_ratio=market_cash_ratio)
+            market_total = kr_total if is_kr_ticker else us_total_krw
+            score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_cash_ratio=market_cash_ratio, market_total_krw=market_total)
             
             prepared_signals.append({"ticker": ticker, "state": ticker_state, "holding": holding, "score": score, "reasons": reasons})
             
@@ -669,7 +673,7 @@ class TradingStrategyService:
     def _handle_profit_take_signal(
         cls, ticker: str, holding: dict, profit_pct: float, take_profit_pct: float,
         sell_cooldown: dict, today: str, state, score: int,
-        total_assets: float, cash_balance: float, exchange_rate: float,
+        market_total: float, cash_balance: float, exchange_rate: float,
         holdings: list, user_id: str, macro_data: dict,
         target_cash_kr: float, target_cash_us: float,
     ) -> bool:
@@ -683,7 +687,7 @@ class TradingStrategyService:
             return False
         executed = cls._execute_trade_v2(
             ticker, "sell", f"익절권({profit_pct:.2f}%)", profit_pct, True, score,
-            getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate,
+            getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
@@ -695,7 +699,7 @@ class TradingStrategyService:
         cls, ticker: str, holding: dict, profit_pct: float, stop_loss_pct: float,
         current_rsi: float, add_rsi_limit: float, add_score_limit: int, score: int,
         add_buy_cooldown: dict, today: str, state,
-        total_assets: float, cash_balance: float, exchange_rate: float,
+        market_total: float, cash_balance: float, exchange_rate: float,
         holdings: list, user_id: str, macro_data: dict,
         target_cash_kr: float, target_cash_us: float,
     ) -> bool:
@@ -715,7 +719,7 @@ class TradingStrategyService:
             return False
         executed = cls._execute_trade_v2(
             ticker, "buy", f"추가매수({profit_pct:.2f}%)", profit_pct, True, score,
-            getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate,
+            getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
@@ -724,7 +728,7 @@ class TradingStrategyService:
         return bool(executed)
 
     @classmethod
-    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict, today: str, state, total_assets: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float) -> bool:
+    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict, today: str, state, market_total: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float) -> bool:
         """점수 기반 매수/매도 처리. Returns executed."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
@@ -738,14 +742,14 @@ class TradingStrategyService:
             if add_buy_cooldown.get(ticker) == today:
                 logger.info(f"⏭️ {ticker} 신규매수 쿨다운 중 (오늘 이미 매수). 내일 재판단.")
                 return False
-            executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
+            executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
             add_buy_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
             return bool(executed)
         if score >= sell_min and holding:
             if sell_cooldown.get(ticker) == today:
                 logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 점수매도). 내일 재판단.")
                 return False
-            executed = cls._execute_trade_v2(ticker, "sell", f"점수 {score} [{reason_str}]", profit_pct, True, score, getattr(state, 'current_price', 0), total_assets, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
+            executed = cls._execute_trade_v2(ticker, "sell", f"점수 {score} [{reason_str}]", profit_pct, True, score, getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
             sell_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
             return bool(executed)
         return False
@@ -755,7 +759,7 @@ class TradingStrategyService:
         cls, sig: dict, buy_max: int, sell_min: int, take_profit_pct: float,
         stop_loss_pct: float, add_rsi_limit: float, add_score_limit: int,
         sell_cooldown: dict, add_buy_cooldown: dict, today: str,
-        holdings: list, user_id: str, total_assets: float, cash_balance: float,
+        holdings: list, user_id: str, kr_total: float, us_total_krw: float, cash_balance: float,
         exchange_rate: float, macro_data: dict, target_cash_kr: float, target_cash_us: float,
     ) -> bool:
         """시그널 1건을 처리하여 매매 실행 여부 반환."""
@@ -773,18 +777,19 @@ class TradingStrategyService:
             buy_price = holding.get('buy_price', 0)
             ref_price = float(holding.get("current_price") or getattr(state, 'current_price', 0))
             if buy_price > 0: profit_pct = (ref_price - buy_price) / buy_price * 100
+        market_total = kr_total if is_kr(ticker) else us_total_krw
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
-        if cls._handle_profit_take_signal(ticker, holding, profit_pct, take_profit_pct, sell_cooldown, today, state, score, total_assets, cash_balance, exchange_rate, **common_kwargs):
+        if cls._handle_profit_take_signal(ticker, holding, profit_pct, take_profit_pct, sell_cooldown, today, state, score, market_total, cash_balance, exchange_rate, **common_kwargs):
             return True
         current_rsi = getattr(state, 'rsi', 50.0)
-        if cls._handle_add_buy_signal(ticker, holding, profit_pct, stop_loss_pct, current_rsi, add_rsi_limit, add_score_limit, score, add_buy_cooldown, today, state, total_assets, cash_balance, exchange_rate, **common_kwargs):
+        if cls._handle_add_buy_signal(ticker, holding, profit_pct, stop_loss_pct, current_rsi, add_rsi_limit, add_score_limit, score, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, **common_kwargs):
             return True
-        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, total_assets, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
+        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
 
     @classmethod
     def _check_unmonitored_holdings(
         cls, prepared_signals: list, holdings: list, user_id: str,
-        total_assets: float, cash_balance: float, exchange_rate: float,
+        kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
         macro_data: dict, target_cash_kr: float, target_cash_us: float,
         take_profit_pct: float, stop_loss_pct: float,
         sell_cooldown: dict, today: str,
@@ -805,10 +810,11 @@ class TradingStrategyService:
                 continue
             profit_pct = (current_price - buy_price) / buy_price * 100
             logger.info(f"🔍 [비유니버스 보유] {ticker} ({h.get('name', '')}): PnL={profit_pct:.1f}%")
+            market_total = kr_total if is_kr(ticker) else us_total_krw
             if profit_pct <= stop_loss_pct:
                 executed = cls._execute_trade_v2(
                     ticker, "sell", f"스탑로스({profit_pct:.2f}%)", profit_pct, True, 0,
-                    current_price, total_assets, cash_balance, exchange_rate,
+                    current_price, market_total, cash_balance, exchange_rate,
                     holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
                     target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
                 )
@@ -819,7 +825,7 @@ class TradingStrategyService:
                     continue
                 executed = cls._execute_trade_v2(
                     ticker, "sell", f"익절권({profit_pct:.2f}%)", profit_pct, True, 0,
-                    current_price, total_assets, cash_balance, exchange_rate,
+                    current_price, market_total, cash_balance, exchange_rate,
                     holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
                     target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
                 )
@@ -829,7 +835,7 @@ class TradingStrategyService:
         return trade_executed
 
     @classmethod
-    def _execute_collected_signals(cls, user_id: str, prepared_signals: list, holdings: list, total_assets: float, cash_balance: float, target_cash_kr: float, target_cash_us: float, macro_data: dict, user_state: dict = None) -> bool:
+    def _execute_collected_signals(cls, user_id: str, prepared_signals: list, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float, macro_data: dict, user_state: dict = None) -> bool:
         """수집된 시그널을 기반으로 실제 주문 집행"""
         buy_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
         sell_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
@@ -846,13 +852,13 @@ class TradingStrategyService:
             trade_executed = cls._process_single_signal(
                 sig, buy_max, sell_min, take_profit_pct, stop_loss_pct, add_rsi_limit,
                 add_score_limit, sell_cooldown, add_buy_cooldown, today,
-                holdings, user_id, total_assets, cash_balance, exchange_rate,
+                holdings, user_id, kr_total, us_total_krw, cash_balance, exchange_rate,
                 macro_data, target_cash_kr, target_cash_us,
             ) or trade_executed
 
         # 모니터링 유니버스 외 보유 종목(ETF 등) 스탑로스/익절 체크
         trade_executed = cls._check_unmonitored_holdings(
-            prepared_signals, holdings, user_id, total_assets, cash_balance,
+            prepared_signals, holdings, user_id, kr_total, us_total_krw, cash_balance,
             exchange_rate, macro_data, target_cash_kr, target_cash_us,
             take_profit_pct, stop_loss_pct, sell_cooldown, today,
         ) or trade_executed
@@ -942,16 +948,16 @@ class TradingStrategyService:
     @classmethod
     def _run_signals_and_tick(
         cls, user_id: str, holdings: list, macro_data: dict, user_state: dict,
-        total_assets: float, cash_balance: float,
+        kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float,
     ) -> bool:
         """시그널 수집 + 집행 + 틱매매를 수행하고 매매 실행 여부 반환."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
-        prepared_signals = cls._collect_trading_signals(holdings, macro_data, user_state, total_assets, cash_balance, target_cash_kr, target_cash_us)
-        trade_executed = cls._execute_collected_signals(user_id, prepared_signals, holdings, total_assets, cash_balance, target_cash_kr, target_cash_us, macro_data, user_state)
+        prepared_signals = cls._collect_trading_signals(holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us)
+        trade_executed = cls._execute_collected_signals(user_id, prepared_signals, holdings, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us, macro_data, user_state)
         try:
-            tick_executed = cls._run_tick_trade(user_id, holdings, total_assets, cash_balance)
+            tick_executed = cls._run_tick_trade(user_id, holdings, kr_total, us_total_krw, cash_balance)
             trade_executed = trade_executed or bool(tick_executed)
         except Exception as e:
             logger.warning(f"⚠️ Tick trading process error: {e}")
@@ -976,13 +982,13 @@ class TradingStrategyService:
 
         state = cls._load_state(user_id)
         user_state = cls._init_strategy_user_state(state, user_id)
-        total_assets, target_cash_kr, target_cash_us = cls._calculate_total_assets(holdings, cash_balance, macro_data)
+        kr_total, us_total_krw, target_cash_kr, target_cash_us = cls._calculate_total_assets(holdings, cash_balance, macro_data)
 
         exchange_rate = MacroService.get_exchange_rate()
         usd_cash = PortfolioService.get_usd_cash_balance()
         cls._log_intramarket_cash_ratio(holdings, cash_balance, usd_cash, exchange_rate, target_cash_kr, target_cash_us)
 
-        trade_executed = cls._run_signals_and_tick(user_id, holdings, macro_data, user_state, total_assets, cash_balance, target_cash_kr, target_cash_us)
+        trade_executed = cls._run_signals_and_tick(user_id, holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us)
         cls._save_state(state)
         logger.info("✅ 전략 실행 및 매매 판단 완료.")
         if trade_executed:
@@ -1014,7 +1020,7 @@ class TradingStrategyService:
         user_state = state.get(user_id, {})
 
         cash_balance = PortfolioService.load_cash(user_id)
-        total_assets, _, _ = cls._calculate_total_assets(holdings, cash_balance, macro_data)
+        kr_total, us_total_krw, _, _ = cls._calculate_total_assets(holdings, cash_balance, macro_data)
 
         buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
         sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
@@ -1022,7 +1028,8 @@ class TradingStrategyService:
         waiting_list = []
         for ticker, ticker_state in all_state_items:
             holding = holdings_map.get(ticker)
-            score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, total_assets, cash_balance)
+            market_total = kr_total if is_kr(ticker) else us_total_krw
+            score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_total_krw=market_total)
             if score <= buy_threshold_max or score >= sell_threshold_min:
                 waiting_list.append(cls._build_waiting_list_entry(ticker, ticker_state, score, reasons))
 
@@ -1065,9 +1072,9 @@ class TradingStrategyService:
         return order_result
 
     @classmethod
-    def analyze_ticker(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, total_assets: float, cash_balance: float, exchange_rate: float) -> dict:
+    def analyze_ticker(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, exchange_rate: float, market_total_krw: float = 0.0) -> dict:
         """외부에서 개별 종목 분석 결과를 받을 수 있도록 공개된 인터페이스"""
-        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, total_assets, cash_balance)
+        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total_krw)
         
         buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
         sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
@@ -1273,12 +1280,13 @@ class TradingStrategyService:
         return score, reasons, False
 
     @classmethod
-    def calculate_score(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, total_assets: float, cash_balance: float, market_cash_ratio: float = None) -> tuple:
+    def calculate_score(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, market_cash_ratio: float = None, market_total_krw: float = 0.0) -> tuple:
         """개별 종목의 투자 점수 계산 ([A]~[G] 헬퍼 통합)"""
         curr_price = state.current_price
         if curr_price <= 0: return 0, ["가격정보없음"]
         profit_pct = cls._calc_holding_profit(holding, curr_price)
-        cash_ratio = cash_balance / total_assets if total_assets > 0 else 0
+        # 시장별 현금비중 계산 (market_total_krw = 해당 시장 총액)
+        cash_ratio = cash_balance / market_total_krw if market_total_krw > 0 else 0
         panic_locks = user_state.get('panic_locks', {})
         regime = macro.get('market_regime', {}).get('status', 'Unknown').upper()
         if market_cash_ratio is None:
@@ -1306,19 +1314,19 @@ class TradingStrategyService:
         return (ref_price - buy_price) / buy_price * 100 if buy_price and buy_price > 0 else 0.0
 
     @classmethod
-    def _dispatch_analyze_trade(cls, ticker: str, side: str, score: int, reason_str: str, state, profit_pct: float, total_assets: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, holding, macro: dict) -> None:
+    def _dispatch_analyze_trade(cls, ticker: str, side: str, score: int, reason_str: str, state, profit_pct: float, market_total: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, holding, macro: dict) -> None:
         """_analyze_stock_v3 에서 매수/매도 execute_trade_v2 호출을 위임."""
         is_holding = bool(holding)
         cls._execute_trade_v2(
             ticker, side, f"점수 {score} [{reason_str}]", profit_pct, is_holding, score,
-            state.current_price, total_assets, cash_balance, exchange_rate,
+            state.current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro,
         )
 
     @classmethod
-    def _analyze_stock_v3(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, total_assets: float, cash_balance: float, exchange_rate: float, user_id: str = "sean") -> None:
+    def _analyze_stock_v3(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, market_total: float, cash_balance: float, exchange_rate: float, user_id: str = "sean") -> None:
         """기존 내부 분석 루프 (리팩토링된 calculate_score 활용)"""
-        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, total_assets, cash_balance)
+        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total)
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         reason_str = ", ".join(reasons)
 
@@ -1327,9 +1335,9 @@ class TradingStrategyService:
         port = PortfolioService.load_portfolio(user_id)
 
         if score <= buy_threshold_max and not holding:
-            cls._dispatch_analyze_trade(ticker, "buy", score, reason_str, state, profit_pct, total_assets, cash_balance, exchange_rate, port, user_id, holding, macro)
+            cls._dispatch_analyze_trade(ticker, "buy", score, reason_str, state, profit_pct, market_total, cash_balance, exchange_rate, port, user_id, holding, macro)
         elif score >= sell_threshold_min and holding:
-            cls._dispatch_analyze_trade(ticker, "sell", score, reason_str, state, profit_pct, total_assets, cash_balance, exchange_rate, port, user_id, holding, macro)
+            cls._dispatch_analyze_trade(ticker, "sell", score, reason_str, state, profit_pct, market_total, cash_balance, exchange_rate, port, user_id, holding, macro)
 
     @classmethod
     def _check_market_hours(cls, ticker: str) -> bool:
@@ -1338,7 +1346,7 @@ class TradingStrategyService:
         return MarketHourService.is_kr_market_open(allow_extended=allow_extended) if is_kr(ticker) else MarketHourService.is_us_market_open(allow_extended=allow_extended)
 
     @classmethod
-    def _is_cash_ratio_sufficient(cls, ticker: str, holdings: list, cash_balance: float, total_assets: float, exchange_rate: float, target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict) -> bool:
+    def _is_cash_ratio_sufficient(cls, ticker: str, holdings: list, cash_balance: float, exchange_rate: float, target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict) -> bool:
         """목표 현금 비중 조건 충족 여부 검사"""
         is_kr_ticker = is_kr(ticker)
         regime_status = (macro or {}).get('market_regime', {}).get('status', 'Neutral').upper()
@@ -1364,16 +1372,15 @@ class TradingStrategyService:
         return cash_ratio <= target_cash_ratio and not cls._is_panic_market(macro or {})
 
     @classmethod
-    def _calculate_buy_quantity(cls, score: int, total_assets: float, cash_balance: float, current_price: float, exchange_rate: float, is_kr: bool, market_total_krw: float = 0.0) -> tuple:
+    def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr: bool, market_total_krw: float = 0.0) -> tuple:
         """투자 비중에 따른 매수 수량 및 필요 소요 자금(원화) 계산.
-        market_total_krw: 해당 시장(KR 또는 US) 포트폴리오 총액(원화). 0이면 total_assets 사용.
+        market_total_krw: 해당 시장(KR 또는 US) 포트폴리오 총액(원화).
         """
         per_trade_ratio = SettingsService.get_float("STRATEGY_PER_TRADE_RATIO", 0.05)
         split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
         buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 75)
 
-        # 각 시장 포트폴리오 크기 기준으로 매수 규모 계산 (cross-market 혼용 방지)
-        base_assets = market_total_krw if market_total_krw > 0 else total_assets
+        base_assets = market_total_krw
         multiplier = 2.0 if score >= 90 else (1.5 if score >= 80 else 1.0)
         target_invest_krw = base_assets * per_trade_ratio * multiplier
         one_time_invest_krw = target_invest_krw / split_count
@@ -1456,7 +1463,7 @@ class TradingStrategyService:
     @classmethod
     def _check_buy_cash_and_entry_conditions(
         cls, ticker: str, cash_balance: float, is_holding: bool, profit_pct: float,
-        holdings: list, total_assets: float, exchange_rate: float,
+        holdings: list, exchange_rate: float,
         target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict,
     ) -> bool:
         """현금 잔고 및 진입 조건 검사. 매수 진행 가능하면 True 반환."""
@@ -1475,7 +1482,7 @@ class TradingStrategyService:
             if profit_pct > add_position_below:
                 logger.info(f"⏭️ {ticker} 추가매수 조건 미충족. 주문 스킵.")
                 return False
-        if cls._is_cash_ratio_sufficient(ticker, holdings, cash_balance, total_assets, exchange_rate, target_cash_ratio_kr, target_cash_ratio_us, macro):
+        if cls._is_cash_ratio_sufficient(ticker, holdings, cash_balance, exchange_rate, target_cash_ratio_kr, target_cash_ratio_us, macro):
             logger.info(f"⏭️ {ticker} 현금비중 조건으로 인해 매수 스킵.")
             return False
         return True
@@ -1512,20 +1519,20 @@ class TradingStrategyService:
     @classmethod
     def _execute_buy_order(
         cls, ticker: str, score: int, profit_pct: float, is_holding: bool,
-        current_price: float, total_assets: float, cash_balance: float,
+        current_price: float, market_total: float, cash_balance: float,
         exchange_rate: float, holdings: list, user_id: str, holding: Optional[dict],
         macro: dict, target_cash_ratio_kr: float, target_cash_ratio_us: float,
     ) -> tuple[bool, int]:
         """매수 주문 실행 (현금/비중 조건 검사 포함). Returns (executed, trade_qty)."""
         if not cls._check_buy_cash_and_entry_conditions(
             ticker, cash_balance, is_holding, profit_pct,
-            holdings, total_assets, exchange_rate,
+            holdings, exchange_rate,
             target_cash_ratio_kr, target_cash_ratio_us, macro,
         ):
             return False, 0
         is_kr_flag, holdings, kr_assets, us_assets_krw = cls._compute_buy_market_totals(ticker, holdings, cash_balance, exchange_rate, user_id)
         market_total_krw = kr_assets if is_kr_flag else us_assets_krw
-        quantity, est_krw, final_price = cls._calculate_buy_quantity(score, total_assets, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw)
+        quantity, est_krw, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw)
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} 잔고 부족 (필요: {final_price:,.0f}원)")
             return False, 0
@@ -1564,7 +1571,7 @@ class TradingStrategyService:
 
     @classmethod
     def _execute_trade_v2(
-        cls, ticker: str, side: str, reason: str, profit_pct: float, is_holding: bool, score: int, current_price: float, total_assets: float, cash_balance: float, exchange_rate: float, holdings: list = None, user_id: str = "sean", holding: dict = None, macro: dict = None, target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None
+        cls, ticker: str, side: str, reason: str, profit_pct: float, is_holding: bool, score: int, current_price: float, market_total: float, cash_balance: float, exchange_rate: float, holdings: list = None, user_id: str = "sean", holding: dict = None, macro: dict = None, target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None
     ) -> bool:
         """분할 매수/매도 실행 로직"""
         logger.info(f"📢 시그널 [{side.upper()}] {ticker} - 사유: {reason}")
@@ -1577,7 +1584,7 @@ class TradingStrategyService:
 
         if side == "buy":
             executed, trade_qty = cls._execute_buy_order(
-                ticker, score, profit_pct, is_holding, current_price, total_assets,
+                ticker, score, profit_pct, is_holding, current_price, market_total,
                 cash_balance, exchange_rate, holdings, user_id, holding, macro,
                 target_cash_ratio_kr, target_cash_ratio_us,
             )
@@ -1603,7 +1610,7 @@ class TradingStrategyService:
     @classmethod
     def _try_sell_overweight_holding(
         cls, h: dict, grp: str, dev: float,
-        holdings: list, total_assets: float, cash_balance: float, exchange_rate: float,
+        holdings: list, market_total: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
         """초과 그룹 내 보유 종목 1건에 대해 매도 시도. Returns (executed, skipped_entry, cash_delta)."""
@@ -1617,7 +1624,7 @@ class TradingStrategyService:
             return False, {"ticker": ticker, "reason": f"손실중({profit_pct:.1f}%) 리밸런싱 제외"}, 0.0
         executed = cls._execute_trade_v2(
             ticker, "sell", f"섹터리밸런싱-초과({grp} {dev:+.1%})",
-            profit_pct, True, 60, current_price, total_assets, cash_balance, exchange_rate,
+            profit_pct, True, 60, current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=h, macro=macro,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
@@ -1630,7 +1637,7 @@ class TradingStrategyService:
     @classmethod
     def _execute_overweight_sells(
         cls, weights: dict, holdings: list,
-        total_assets: float, cash_balance: float, exchange_rate: float,
+        kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple[int, list, list, float]:
         """STEP 1: 초과 섹터 보유 종목 분할 매도 → (sells_executed, sold_list, skipped_list, updated_cash)"""
@@ -1644,8 +1651,9 @@ class TradingStrategyService:
                 reverse=True,
             )
             for h in grp_holdings:
+                market_total = kr_total if is_kr(h["ticker"]) else us_total_krw
                 executed, skip_entry, cash_delta = cls._try_sell_overweight_holding(
-                    h, grp, dev, holdings, total_assets, cash_balance, exchange_rate,
+                    h, grp, dev, holdings, market_total, cash_balance, exchange_rate,
                     user_id, macro, target_cash_kr, target_cash_us,
                 )
                 if skip_entry:
@@ -1661,7 +1669,7 @@ class TradingStrategyService:
     @classmethod
     def _score_underweight_buy_candidates(
         cls, grp: str, all_states: dict, holdings_map: dict, macro: dict, user_state: dict,
-        total_assets: float, cash_balance: float, target_cash_kr: float, target_cash_us: float,
+        kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float,
     ) -> list:
         """주어진 섹터 그룹의 매수 후보 종목 리스트를 스코어 오름차순으로 반환."""
         candidates = []
@@ -1673,9 +1681,11 @@ class TradingStrategyService:
             if not cls._check_market_hours(ticker):
                 continue
             holding = holdings_map.get(ticker)
+            market_total = kr_total if is_kr(ticker) else us_total_krw
             score, reasons = cls.calculate_score(
-                ticker, state, holding, macro, user_state, total_assets, cash_balance,
+                ticker, state, holding, macro, user_state, cash_balance,
                 market_cash_ratio=target_cash_kr if is_kr(ticker) else target_cash_us,
+                market_total_krw=market_total,
             )
             candidates.append((ticker, state, holding, score, reasons))
         candidates.sort(key=lambda x: x[3])
@@ -1684,7 +1694,7 @@ class TradingStrategyService:
     @classmethod
     def _buy_best_underweight_candidate(
         cls, grp: str, dev: float, candidates: list, buy_threshold: int,
-        holdings: list, total_assets: float, cash_balance: float, exchange_rate: float,
+        holdings: list, kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
         """부족 섹터 최우선 후보 1건에 대해 매수 시도. Returns (executed, skipped_list, bought_entry)."""
@@ -1693,10 +1703,11 @@ class TradingStrategyService:
             if score > buy_threshold + 10:
                 skipped.append({"ticker": ticker, "reason": f"매수신호미달(score={score})"})
                 continue
+            market_total = kr_total if is_kr(ticker) else us_total_krw
             executed = cls._execute_trade_v2(
                 ticker, "buy", f"섹터리밸런싱-부족({grp} {dev:+.1%})",
                 0.0, False, score, getattr(state, "current_price", 0),
-                total_assets, cash_balance, exchange_rate,
+                market_total, cash_balance, exchange_rate,
                 holdings=holdings, user_id=user_id, holding=holding, macro=macro,
                 target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
             )
@@ -1705,7 +1716,7 @@ class TradingStrategyService:
         return False, skipped, None
 
     @classmethod
-    def _execute_underweight_buys(cls, weights: dict, holdings: list, total_assets: float, cash_balance: float, exchange_rate: float, user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float) -> tuple[int, list, list]:
+    def _execute_underweight_buys(cls, weights: dict, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float, user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float) -> tuple[int, list, list]:
         """STEP 2: 부족 섹터 후보 종목 매수 → (buys_executed, bought_list, skipped_list)"""
         underweight_groups = sorted([(grp, info) for grp, info in weights.items() if grp != "other" and info["dev"] < -cls.SECTOR_REBAL_THRESHOLD], key=lambda x: x[1]["dev"])
         all_states   = MarketDataService.get_all_states()
@@ -1717,10 +1728,10 @@ class TradingStrategyService:
             dev = info["dev"]
             candidates = cls._score_underweight_buy_candidates(
                 grp, all_states, holdings_map, macro, user_state,
-                total_assets, cash_balance, target_cash_kr, target_cash_us,
+                kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us,
             )
             executed, grp_skipped, bought_entry = cls._buy_best_underweight_candidate(
-                grp, dev, candidates, buy_threshold, holdings, total_assets, cash_balance,
+                grp, dev, candidates, buy_threshold, holdings, kr_total, us_total_krw, cash_balance,
                 exchange_rate, user_id, macro, target_cash_kr, target_cash_us,
             )
             skipped.extend(grp_skipped)
@@ -1758,20 +1769,20 @@ class TradingStrategyService:
 
     @classmethod
     def _execute_rebalance_trades(
-        cls, weights: dict, holdings: list, total_assets: float, cash_balance: float,
+        cls, weights: dict, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float,
         exchange_rate: float, user_id: str, macro: dict,
         target_cash_kr: float, target_cash_us: float,
     ) -> dict:
         """초과 매도 + 부족 매수를 수행하여 결과 dict(sold, bought, skipped) 반환."""
         result: dict = {"sold": [], "bought": [], "skipped": []}
         _, sold, skipped_s, cash_balance = cls._execute_overweight_sells(
-            weights, holdings, total_assets, cash_balance, exchange_rate,
+            weights, holdings, kr_total, us_total_krw, cash_balance, exchange_rate,
             user_id, macro, target_cash_kr, target_cash_us,
         )
         result["sold"].extend(sold)
         result["skipped"].extend(skipped_s)
         _, bought, skipped_b = cls._execute_underweight_buys(
-            weights, holdings, total_assets, cash_balance, exchange_rate,
+            weights, holdings, kr_total, us_total_krw, cash_balance, exchange_rate,
             user_id, macro, target_cash_kr, target_cash_us,
         )
         result["bought"].extend(bought)
@@ -1790,11 +1801,11 @@ class TradingStrategyService:
         exchange_rate = MacroService.get_exchange_rate()
         holdings      = PortfolioService.load_portfolio(user_id)
         macro         = MacroService.get_macro_data()
-        total_assets, target_cash_kr, target_cash_us = cls._get_portfolio_totals(user_id, holdings)
         cash_balance  = PortfolioService.get_cash_balance(user_id) or 0.0
+        kr_total, us_total_krw, target_cash_kr, target_cash_us = cls._calculate_total_assets(holdings, cash_balance, macro)
 
         weights = cls._get_sector_group_weights(holdings, exchange_rate)["weights"]
-        result = cls._execute_rebalance_trades(weights, holdings, total_assets, cash_balance, exchange_rate, user_id, macro, target_cash_kr, target_cash_us)
+        result = cls._execute_rebalance_trades(weights, holdings, kr_total, us_total_krw, cash_balance, exchange_rate, user_id, macro, target_cash_kr, target_cash_us)
         result["weights_before"] = weights
 
         sw_after = cls._get_sector_group_weights(PortfolioService.load_portfolio(user_id), exchange_rate)
