@@ -82,7 +82,7 @@ class OrderService:
         result_msg: str,
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
-    ):
+    ) -> Optional["TradeHistory"]:
         """매매 내역을 DB에 기록합니다. 성공 시 TradeHistory 엔티티, 실패 시 None 반환."""
         return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price=buy_price)
 

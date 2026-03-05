@@ -1,5 +1,5 @@
 import time
-from typing import List
+from typing import List, Optional
 from services.strategy.trading_strategy_service import TradingStrategyService
 from services.market.market_data_service import MarketDataService
 from utils.logger import get_logger
@@ -26,7 +26,7 @@ class SimulationService:
     SIMULATION_WAIT_DEFAULT = 10
 
     @classmethod
-    def run_live_simulation(cls, tickers: List[str] = None, user_id: str = "sean", wait_seconds: int = None):
+    def run_live_simulation(cls, tickers: Optional[List[str]] = None, user_id: str = "sean", wait_seconds: int = None) -> bool:
         """
         현재 시장 데이터를 기반으로 전략 시뮬레이션 실행
         """

@@ -250,6 +250,8 @@ class PortfolioHoldingDto(BaseModel):
     sector: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """model_dump() 래퍼. 외부 레이어(API 라우터, 서비스)에서 Pydantic 내부 API에
+        직접 의존하지 않도록 도메인 수준의 직렬화 인터페이스를 제공합니다."""
         return self.model_dump()
 
 
@@ -263,6 +265,9 @@ class MacroDataSnapshot(BaseModel):
     economic_indicators: Dict[str, Any] = Field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        """명시적 필드 매핑을 통해 API 응답용 dict를 생성합니다.
+        model_dump() 대신 수동 매핑을 사용하는 이유는, 향후 필드 추가·제거 시
+        외부 API 계약에 노출되는 키를 명시적으로 제어하기 위함입니다."""
         return {
             "us_10y_yield": self.us_10y_yield,
             "market_regime": self.market_regime,
@@ -289,6 +294,8 @@ class TradeRecordDto(BaseModel):
     profit_pct: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """model_dump() 래퍼. 외부 레이어(API 라우터, 서비스)에서 Pydantic 내부 API에
+        직접 의존하지 않도록 도메인 수준의 직렬화 인터페이스를 제공합니다."""
         return self.model_dump()
 
 
