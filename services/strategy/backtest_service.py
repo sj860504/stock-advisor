@@ -34,61 +34,62 @@ class BacktestService:
         return {"A": result_all_in, "B": result_fixed_30}
 
     @staticmethod
+    def _calc_invest_amount(strategy: str, cash: float, shares: float, price: float) -> float:
+        """매수 전략별 투자금 계산 (all_in / fixed_30)."""
+        if strategy == "all_in":
+            return cash
+        if strategy == "fixed_30":
+            total_equity     = cash + shares * price
+            target_exposure  = total_equity * FIXED_RATIO_STRATEGY
+            current_exposure = shares * price
+            if target_exposure > current_exposure:
+                return min(target_exposure - current_exposure, cash)
+        return 0.0
+
+    @staticmethod
+    def _calc_mdd_from_equity(equity_curve: list) -> float:
+        """equity curve 리스트에서 최대낙폭(MDD %)을 계산합니다."""
+        equity_series = pd.Series(equity_curve)
+        if equity_series.empty:
+            return 0.0
+        roll_max = equity_series.cummax()
+        return float((equity_series / roll_max - 1.0).min() * 100)
+
+    @staticmethod
     def _simulate(df, strategy="all_in"):
         """RSI 기반 매매 시뮬레이션 (all_in 또는 fixed_30)"""
         initial_balance = BACKTEST_INITIAL_BALANCE
-        cash = initial_balance
-        shares = 0
+        cash   = initial_balance
+        shares = 0.0
         trades = []
         equity_curve = []
+
         for i in range(1, len(df)):
             price = float(df["Close"].iloc[i])
-            rsi = float(df["RSI"].iloc[i])
+            rsi   = float(df["RSI"].iloc[i])
             if np.isnan(rsi):
                 continue
             date = df.index[i]
+
             if rsi < RSI_OVERSOLD and cash > 0:
-                invest_amount = 0
-                if strategy == "all_in":
-                    invest_amount = cash
-                elif strategy == "fixed_30":
-                    total_equity = cash + (shares * price)
-                    target_exposure = total_equity * FIXED_RATIO_STRATEGY
-                    current_exposure = shares * price
-                    if target_exposure > current_exposure:
-                        invest_amount = min(target_exposure - current_exposure, cash)
+                invest_amount = BacktestService._calc_invest_amount(strategy, cash, shares, price)
                 if invest_amount > BACKTEST_MIN_TRADE_AMOUNT:
-                    buy_shares = invest_amount / price
-                    shares += buy_shares
-                    cash -= invest_amount
+                    shares += invest_amount / price
+                    cash   -= invest_amount
                     trades.append({"type": "BUY", "date": date, "price": price, "rsi": rsi})
-
             elif rsi > RSI_OVERBOUGHT and shares > 0:
-                sell_amount = shares * price
-                cash += sell_amount
-                shares = 0
+                cash  += shares * price
+                shares = 0.0
                 trades.append({"type": "SELL", "date": date, "price": price, "rsi": rsi})
-            
-            # 자산 추적
-            total_val = cash + (shares * price)
-            equity_curve.append(total_val)
 
-        final_val = cash + (shares * float(df["Close"].iloc[-1]))
+            equity_curve.append(cash + shares * price)
+
+        final_val = cash + shares * float(df["Close"].iloc[-1])
         total_ret = (final_val - initial_balance) / initial_balance * 100
-        
-        # MDD 계산
-        equity_series = pd.Series(equity_curve)
-        if not equity_series.empty:
-            roll_max = equity_series.cummax()
-            drawdown = equity_series / roll_max - 1.0
-            mdd = drawdown.min() * 100
-        else:
-            mdd = 0
-
         return {
-            "initial": initial_balance,
-            "final": round(final_val, 2),
-            "return_pct": round(total_ret, 2),
-            "mdd": round(mdd, 2),
-            "trade_count": len(trades)
+            "initial":     initial_balance,
+            "final":       round(final_val, 2),
+            "return_pct":  round(total_ret, 2),
+            "mdd":         round(BacktestService._calc_mdd_from_equity(equity_curve), 2),
+            "trade_count": len(trades),
         }

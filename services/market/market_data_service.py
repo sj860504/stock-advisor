@@ -132,14 +132,22 @@ class MarketDataService:
             "base_date":    datetime.now(),
         }
 
+    @staticmethod
+    def _update_target_prices_from_snapshot(state: TickerState, snapshot) -> None:
+        """EMA200 기반 목표 매수/매도가를 state에 설정합니다."""
+        ema200 = snapshot.ema.get(200) if snapshot else None
+        if ema200:
+            state.target_buy_price  = round(ema200 * 1.01, 2)
+            state.target_sell_price = round(ema200 * 1.15, 2)
+
     @classmethod
     def _full_api_warmup(cls, ticker: str, state: TickerState):
         """KIS API 호출 기반 full warm-up. 세마포어 진입 후 호출해야 합니다."""
         from services.market.stock_meta_service import StockMetaService
 
-        api_ticker  = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
-        basic_info  = cls._fetch_basic_price(ticker)
-        df          = DataService.get_price_history(api_ticker, days=300)
+        api_ticker     = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
+        basic_info     = cls._fetch_basic_price(ticker)
+        df             = DataService.get_price_history(api_ticker, days=300)
 
         if df.empty:
             logger.warning(f"⚠️ No history data for {api_ticker}. Skipping warm-up.")
@@ -156,30 +164,23 @@ class MarketDataService:
         # 2단계: 지표 계산 및 state 반영
         state.prev_close    = float(df.iloc[-2]["Close"]) if len(df) > 1 else float(df.iloc[-1]["Close"])
         state.current_price = partial_metrics["current_price"]
-
         snapshot = IndicatorService.compute_latest_indicators_snapshot(df["Close"])
-        emas     = snapshot.ema if snapshot else {}
         rsi      = snapshot.rsi if snapshot else None
         dcf_val  = DcfService.calculate_dcf(ticker)
-        state.update_indicators(emas=emas, dcf=dcf_val, rsi=rsi)
+        state.update_indicators(emas=snapshot.ema if snapshot else {}, dcf=dcf_val, rsi=rsi)
 
         # 3단계: 최종 지표 DB 저장
         try:
-            final_metrics = {
+            StockMetaService.save_financials(ticker, {
                 **partial_metrics,
                 **(snapshot.to_metrics_dict() if snapshot else {}),
                 "dcf_value": dcf_val,
-            }
-            StockMetaService.save_financials(ticker, final_metrics)
+            })
         except Exception as e:
             logger.error(f"⚠️ Failed to save final metrics for {ticker}: {e}")
 
         # 4단계: EMA200 기반 목표가 산출
-        ema200 = snapshot.ema.get(200) if snapshot else None
-        if ema200:
-            state.target_buy_price  = round(ema200 * 1.01, 2)
-            state.target_sell_price = round(ema200 * 1.15, 2)
-
+        cls._update_target_prices_from_snapshot(state, snapshot)
         logger.info(
             f"✅ Full warm-up: {ticker} ({state.name}) "
             f"Price={state.current_price}, RSI={rsi}, DCF={dcf_val}, TargetBuy={state.target_buy_price}"
@@ -220,10 +221,22 @@ class MarketDataService:
         logger.info(f"🆕 Batch registering {len(filtered)} tickers (KR={is_kr_open}, US={is_us_open})...")
 
         from services.market.stock_meta_service import StockMetaService
-        # new_tickers 전체 DB 로드 (비활성 시장 종목도 UI 표시용으로 등록)
-        financials_map = StockMetaService.get_batch_latest_financials(new_tickers)
-        tickers_needing_warmup = []
+        financials_map         = StockMetaService.get_batch_latest_financials(new_tickers)
+        tickers_needing_warmup = cls._register_tickers_from_db(new_tickers, financials_map, analyze_kr, analyze_us)
 
+        logger.info(
+            f"🆕 Batch registered {len(new_tickers)} tickers "
+            f"(warm-up {len(tickers_needing_warmup)}, KR={is_kr_open}, US={is_us_open})"
+        )
+        if tickers_needing_warmup:
+            threading.Thread(target=cls._warm_up_batch, args=(tickers_needing_warmup,), daemon=True).start()
+
+    @classmethod
+    def _register_tickers_from_db(
+        cls, new_tickers: list, financials_map: dict, analyze_kr: bool, analyze_us: bool
+    ) -> list:
+        """각 ticker를 states에 등록하고 warm-up이 필요한 목록을 반환합니다."""
+        tickers_needing_warmup = []
         for ticker in new_tickers:
             state = TickerState(ticker=ticker)
             cls._states[ticker] = state
@@ -231,23 +244,12 @@ class MarketDataService:
             if financials and cls._load_indicators_from_db(financials, state):
                 logger.debug(f"✅ Batch DB load: {ticker}")
             else:
-                # warm-up은 현재 활성 시장 종목만 (API 부하 방지)
                 is_active = (is_kr(ticker) and analyze_kr) or (not is_kr(ticker) and analyze_us)
                 if is_active:
                     if financials:
                         logger.info(f"🔄 DB data incomplete for {ticker}, scheduling warm-up.")
                     tickers_needing_warmup.append(ticker)
-
-        logger.info(
-            f"🆕 Batch registered {len(new_tickers)} tickers "
-            f"(warm-up {len(tickers_needing_warmup)}, KR={is_kr_open}, US={is_us_open})"
-        )
-        if tickers_needing_warmup:
-            threading.Thread(
-                target=cls._warm_up_batch,
-                args=(tickers_needing_warmup,),
-                daemon=True,
-            ).start()
+        return tickers_needing_warmup
 
     @classmethod
     def _warm_up_batch(cls, tickers: list):

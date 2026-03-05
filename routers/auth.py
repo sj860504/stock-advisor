@@ -53,7 +53,7 @@ def verify_token(token: str) -> str:
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest):
+def login(body: LoginRequest) -> TokenResponse:
     """아이디/비밀번호 검증 후 JWT 토큰 반환."""
     valid_user = body.username == Config.AUTH_USERNAME
     valid_pass = _verify_password(body.password, Config.AUTH_PASSWORD_HASH)

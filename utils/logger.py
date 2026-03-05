@@ -2,7 +2,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-def get_logger(name: str):
+def get_logger(name: str) -> logging.Logger:
     """
     애플리케이션 공통 로거 설정
     - 콘솔 출력 (INFO 이상)

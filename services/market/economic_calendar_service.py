@@ -101,51 +101,46 @@ class EconomicCalendarService:
             logger.debug(f"FRED release/dates 조회 실패 (release_id={release_id}): {e}")
             return []
 
-    @classmethod
-    def _estimate_next_release_date(cls, release_id: str, freq: str) -> str | None:
-        """과거 발표 이력으로 다음 발표 날짜 추정.
+    @staticmethod
+    def _estimate_weekly_release_date() -> str:
+        """주간 시리즈 다음 목요일 날짜 반환."""
+        today_dt   = datetime.now()
+        days_ahead = (3 - today_dt.weekday()) % 7  # 목=3
+        if days_ahead == 0:
+            days_ahead = 7
+        return (today_dt + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
-        weekly: 다음 목요일
-        monthly: 직전 2회 발표 간격(28~42일)을 기준으로, 마지막 발표일에서 가장 근접한
-                 다음 날짜를 탐색. 평균 간격의 이상치 영향을 줄이기 위해 중앙값 사용.
+    @classmethod
+    def _estimate_monthly_release_date(cls, release_id: str) -> str | None:
+        """월별 시리즈의 과거 발표 이력 기반 다음 발표일 추정.
+
+        직전 간격(28~50일) 중앙값을 사용해 이상치에 강건하게 계산.
         """
         today_str = datetime.now().strftime("%Y-%m-%d")
-
-        if freq == "weekly":
-            today_dt   = datetime.now()
-            days_ahead = (3 - today_dt.weekday()) % 7  # 목=3
-            if days_ahead == 0:
-                days_ahead = 7
-            return (today_dt + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-
-        # 월별: 최근 6개월 이내 발표 이력만 사용 (이상치 필터)
         past = cls._get_past_release_dates(release_id, n=6)
         if not past:
             return None
-
-        # 가장 최근 발표가 이미 미래면 그것을 반환
         if past[0] > today_str:
             return past[0]
 
-        # 연속 간격 계산 후 28~42일 범위만 유지 (월별 지표 정상 범위)
         deltas = []
         for i in range(min(len(past) - 1, 4)):
-            d1 = datetime.strptime(past[i],     "%Y-%m-%d")
-            d2 = datetime.strptime(past[i + 1], "%Y-%m-%d")
+            d1   = datetime.strptime(past[i],     "%Y-%m-%d")
+            d2   = datetime.strptime(past[i + 1], "%Y-%m-%d")
             diff = (d1 - d2).days
-            if 20 <= diff <= 50:   # 정상 범위 내 간격만 사용
+            if 20 <= diff <= 50:
                 deltas.append(diff)
 
-        if not deltas:
-            avg_days = 30
-        else:
-            # 중앙값 사용 (이상치에 강건)
-            deltas.sort()
-            avg_days = deltas[len(deltas) // 2]
-
+        avg_days = deltas[len(deltas) // 2] if deltas else 30
         last_dt  = datetime.strptime(past[0], "%Y-%m-%d")
-        next_dt  = last_dt + timedelta(days=avg_days)
-        return next_dt.strftime("%Y-%m-%d")
+        return (last_dt + timedelta(days=avg_days)).strftime("%Y-%m-%d")
+
+    @classmethod
+    def _estimate_next_release_date(cls, release_id: str, freq: str) -> str | None:
+        """과거 발표 이력으로 다음 발표 날짜 추정."""
+        if freq == "weekly":
+            return cls._estimate_weekly_release_date()
+        return cls._estimate_monthly_release_date(release_id)
 
     # ── FRED 최신 관측일 조회 (신규 발표 감지용) ──────────────────────────
 
@@ -202,82 +197,61 @@ class EconomicCalendarService:
             cls._last_obs_date[series_id] = latest
         return new_releases
 
-    @classmethod
-    def get_weekly_calendar(cls, days: int = 7) -> list[dict]:
-        """오늘부터 N일간 경제지표 예상 발표 일정 반환 (날짜순).
-
-        반환 구조:
-        [
-          {
-            "date":         "2026-03-06",
-            "time_et":      "08:30",
-            "time_kst":     "22:30",
-            "date_kst":     "2026-03-05",
-            "datetime_utc": "2026-03-06T13:30:00+00:00",
-            "datetime_kst": "2026-03-06T22:30:00+09:00",
-            "release_id":   "50",
-            "series_ids":   ["PAYEMS", "UNRATE", "CES0500000003"],
-            "names":        ["비농업고용(NFP)", "실업률", "시간당평균임금"],
-            "total_weight": 7,
-            "is_past":      False,
-          }
-        ]
-        """
-        now_utc   = datetime.now(UTC)
-        today_str = now_utc.strftime("%Y-%m-%d")
-        end_str   = (now_utc + timedelta(days=days)).strftime("%Y-%m-%d")
-
-        # release_id 기준으로 시리즈 그룹핑
-        # {release_id: {time_et, freq, series: [...]}}
+    @staticmethod
+    def _build_release_groups() -> dict[str, dict]:
+        """SERIES_META를 release_id 기준으로 그룹화하여 반환합니다."""
         release_groups: dict[str, dict] = {}
         for sid, meta in SERIES_META.items():
             rid = meta["release_id"]
             if rid not in release_groups:
-                release_groups[rid] = {
-                    "time_et": meta["time_et"],
-                    "freq":    meta["freq"],
-                    "series":  [],
-                }
+                release_groups[rid] = {"time_et": meta["time_et"], "freq": meta["freq"], "series": []}
             release_groups[rid]["series"].append({
-                "series_id": sid,
-                "name":      meta["name"],
-                "weight":    meta["weight"],
+                "series_id": sid, "name": meta["name"], "weight": meta["weight"],
             })
+        return release_groups
 
+    @classmethod
+    def _build_calendar_event(cls, rid: str, grp: dict, next_date: str, now_utc: datetime) -> dict:
+        """단일 경제지표 발표 이벤트 dict를 생성합니다."""
+        time_et     = grp["time_et"]
+        dt_et       = cls._to_et(next_date, time_et)
+        dt_utc      = dt_et.astimezone(UTC)
+        dt_kst      = cls._et_to_kst(dt_et)
+        series_list = grp["series"]
+        return {
+            "date":         next_date,
+            "time_et":      time_et,
+            "time_kst":     dt_kst.strftime("%H:%M"),
+            "date_kst":     dt_kst.strftime("%Y-%m-%d"),
+            "datetime_utc": dt_utc.isoformat(),
+            "datetime_kst": dt_kst.isoformat(),
+            "release_id":   rid,
+            "series_ids":   [s["series_id"] for s in series_list],
+            "names":        [s["name"] for s in series_list],
+            "total_weight": sum(s["weight"] for s in series_list),
+            "is_past":      dt_utc <= now_utc,
+        }
+
+    @classmethod
+    def get_weekly_calendar(cls, days: int = 7) -> list[dict]:
+        """오늘부터 N일간 경제지표 예상 발표 일정 반환 (날짜순)."""
+        now_utc   = datetime.now(UTC)
+        today_str = now_utc.strftime("%Y-%m-%d")
+        end_str   = (now_utc + timedelta(days=days)).strftime("%Y-%m-%d")
+
+        release_groups = cls._build_release_groups()
         events: list[dict] = []
-        seen_keys: set[tuple] = set()   # (date, release_id) 중복 방지
+        seen_keys: set[tuple] = set()
 
         for rid, grp in release_groups.items():
             next_date = cls._estimate_next_release_date(rid, grp["freq"])
-            if not next_date:
+            if not next_date or not (today_str <= next_date <= end_str):
                 continue
-            if not (today_str <= next_date <= end_str):
-                continue
-
             key = (next_date, rid)
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-
-            time_et  = grp["time_et"]
-            dt_et    = cls._to_et(next_date, time_et)
-            dt_utc   = dt_et.astimezone(UTC)
-            dt_kst   = cls._et_to_kst(dt_et)
-
-            series_list = grp["series"]
-            events.append({
-                "date":         next_date,
-                "time_et":      time_et,
-                "time_kst":     dt_kst.strftime("%H:%M"),
-                "date_kst":     dt_kst.strftime("%Y-%m-%d"),
-                "datetime_utc": dt_utc.isoformat(),
-                "datetime_kst": dt_kst.isoformat(),
-                "release_id":   rid,
-                "series_ids":   [s["series_id"] for s in series_list],
-                "names":        [s["name"] for s in series_list],
-                "total_weight": sum(s["weight"] for s in series_list),
-                "is_past":      dt_utc <= now_utc,
-            })
+            events.append(cls._build_calendar_event(rid, grp, next_date, now_utc))
 
         events.sort(key=lambda e: e["datetime_utc"])
         logger.info(f"📅 주간 캘린더: {len(events)}개 이벤트 ({today_str} ~ {end_str})")

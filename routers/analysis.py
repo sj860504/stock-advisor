@@ -58,7 +58,7 @@ def get_financial_metrics(ticker_input: str) -> FinancialMetricsResponse:
 
 
 @router.get("/dcf", response_model=DcfListResponse)
-def get_all_dcf(market_type: Optional[str] = None, has_value: bool = False):
+def get_all_dcf(market_type: Optional[str] = None, has_value: bool = False) -> DcfListResponse:
     """
     전 종목 최신 DCF 적정가 목록 반환.
     - market_type: 'KR' 또는 'US' 필터 (미입력 시 전체)
@@ -69,7 +69,7 @@ def get_all_dcf(market_type: Optional[str] = None, has_value: bool = False):
 
 
 @router.get("/dcf/{ticker_input}", response_model=DcfDetailResponse)
-def get_dcf(ticker_input: str):
+def get_dcf(ticker_input: str) -> DcfDetailResponse:
     """
     종목의 현재 DCF 적정가 조회.
     오버라이드 설정 → yfinance FCF → EPS*PER 폴백 순으로 자동 선택.

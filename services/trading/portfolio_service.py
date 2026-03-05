@@ -92,38 +92,19 @@ class PortfolioService:
         return PortfolioRepo.load_cash(user_id)
 
     @classmethod
-    def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
-        """KIS 실제 잔고와 동기화 (DB 업데이트 포함)"""
-        logger.info(f"🔄 Syncing portfolio with KIS for user: {user_id}")
-        balance_data = KisService.get_balance()
-        if not balance_data:
-            return cls.load_portfolio(user_id) # 실패 시 로컬(DB) 데이터 반환
-        overseas_balance = KisService.get_overseas_balance()
-
-        existing_holdings = cls.load_portfolio(user_id)  # List[dict]
-        # 기존 섹터 맵 — KIS 동기화 시 섹터 덮어쓰기 방지
-        existing_sector_map = {
-            h["ticker"]: h.get("sector") or DEFAULT_SECTOR
-            for h in existing_holdings
-        }
-        existing_us_map = {
-            h["ticker"]: HoldingSchema(**h)
-            for h in existing_holdings
-            if str(h.get("ticker", "")).isalpha()
-        }
-
+    def _parse_balance_holdings(
+        cls, balance_data: dict, existing_sector_map: dict
+    ) -> tuple[List[HoldingSchema], Dict[str, HoldingSchema]]:
+        """KIS 잔고 데이터에서 KR 보유 목록과 US 보유 dict를 파싱합니다."""
         holdings: List[HoldingSchema] = []
-        us_holdings_by_ticker: Dict[str, HoldingSchema] = {}
+        us_by_ticker: Dict[str, HoldingSchema] = {}
         for item in balance_data.get("holdings", []):
             ticker = str(item.get('pdno') or item.get('symb') or "").strip().upper()
             if not ticker:
                 continue
-
             qty = int(float(item.get('hldg_qty') or item.get('ovrs_cblc_qty') or item.get('ord_psbl_qty') or 0))
             if qty <= 0:
                 continue
-
-            is_kr_ticker = is_kr(ticker)
             parsed = HoldingSchema(
                 ticker=ticker,
                 name=item.get('prdt_name') or item.get('ovrs_item_name') or item.get('hldg_pdno_name') or ticker,
@@ -132,60 +113,79 @@ class PortfolioService:
                 current_price=float(item.get('prpr') or item.get('ovrs_now_pric') or item.get('now_pric') or 0),
                 sector=existing_sector_map.get(ticker, DEFAULT_SECTOR),
             )
-            if is_kr_ticker:
+            if is_kr(ticker):
                 holdings.append(parsed)
             else:
-                us_holdings_by_ticker[ticker] = parsed
+                us_by_ticker[ticker] = parsed
+        return holdings, us_by_ticker
 
-        # 해외 잔고 조회가 가능하면 미국 보유를 최신값으로 덮어씀
-        if overseas_balance and overseas_balance.get("holdings"):
-            for item in overseas_balance.get("holdings", []):
-                ticker = str(
-                    item.get("ovrs_pdno") or item.get("pdno") or item.get("symb") or item.get("ovrs_item_cd") or ""
-                ).strip().upper()
-                if not ticker or is_kr(ticker):
-                    continue
-                qty = int(float(item.get("ovrs_cblc_qty") or item.get("hldg_qty") or item.get("ord_psbl_qty") or 0))
-                if qty <= 0:
-                    continue
-                current_price = float(
-                    item.get("now_pric2") or 
-                    item.get("ovrs_now_pric") or 
-                    item.get("prpr") or 
-                    item.get("now_pric") or 0
-                )
-                us_holdings_by_ticker[ticker] = HoldingSchema(
-                    ticker=ticker,
-                    name=item.get("ovrs_item_name") or item.get("prdt_name") or ticker,
-                    quantity=qty,
-                    buy_price=float(item.get("pchs_avg_pric") or item.get("avg_unpr") or item.get("pavg_unit_amt") or 0),
-                    current_price=current_price,
-                    sector=existing_sector_map.get(ticker, DEFAULT_SECTOR),
-                )
+    @classmethod
+    def _apply_overseas_balance_override(
+        cls, overseas_balance: dict, us_by_ticker: Dict[str, HoldingSchema], existing_sector_map: dict
+    ) -> None:
+        """해외 잔고 조회 결과로 US 보유를 최신값으로 덮어씁니다."""
+        if not overseas_balance or not overseas_balance.get("holdings"):
+            return
+        for item in overseas_balance["holdings"]:
+            ticker = str(
+                item.get("ovrs_pdno") or item.get("pdno") or item.get("symb") or item.get("ovrs_item_cd") or ""
+            ).strip().upper()
+            if not ticker or is_kr(ticker):
+                continue
+            qty = int(float(item.get("ovrs_cblc_qty") or item.get("hldg_qty") or item.get("ord_psbl_qty") or 0))
+            if qty <= 0:
+                continue
+            us_by_ticker[ticker] = HoldingSchema(
+                ticker=ticker,
+                name=item.get("ovrs_item_name") or item.get("prdt_name") or ticker,
+                quantity=qty,
+                buy_price=float(item.get("pchs_avg_pric") or item.get("avg_unpr") or item.get("pavg_unit_amt") or 0),
+                current_price=float(
+                    item.get("now_pric2") or item.get("ovrs_now_pric") or item.get("prpr") or item.get("now_pric") or 0
+                ),
+                sector=existing_sector_map.get(ticker, DEFAULT_SECTOR),
+            )
 
-        if us_holdings_by_ticker:
-            holdings.extend(us_holdings_by_ticker.values())
-        else:
-            holdings.extend(existing_us_map.values())
-
+    @classmethod
+    def _extract_kr_cash_from_summary(cls, balance_data: dict) -> tuple[dict, float]:
+        """balance_data에서 최적 summary 항목과 KR 현금을 반환합니다."""
         summary_items = balance_data.get("summary", [])
         if len(summary_items) > 1:
-            def _summary_sort_key(row):
-                try:
-                    return float(row.get("tot_evlu_amt") or row.get("dnca_tot_amt") or 0)
-                except (TypeError, ValueError):
-                    return 0
-            summary = max(summary_items, key=_summary_sort_key)
+            summary = max(
+                summary_items,
+                key=lambda r: float(r.get("tot_evlu_amt") or r.get("dnca_tot_amt") or 0),
+            )
         else:
             summary = summary_items[0] if summary_items else {}
-        usd_cash = cls.get_usd_cash_balance()
-        summary["_usd_cash_balance"] = usd_cash
-        cls._last_balance_summary = summary
-        # prvs_rcdl_excc_amt=D+2 매도대금 포함 실제 주문가능금액 (출금은 안 되지만 매수 주문은 가능)
+        # prvs_rcdl_excc_amt=D+2 매도대금 포함 실제 주문가능금액
         # dnca_tot_amt=당일 예수금 (D+2 미정산 매도금 미반영으로 과소 계상될 수 있음)
         prvs = cls._extract_float(summary, "prvs_rcdl_excc_amt")
         dnca = cls._extract_float(summary, "dnca_tot_amt")
-        cash = max(0.0, prvs if prvs > 0 else dnca)
+        return summary, max(0.0, prvs if prvs > 0 else dnca)
+
+    @classmethod
+    def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
+        """KIS 실제 잔고와 동기화 (DB 업데이트 포함)"""
+        logger.info(f"🔄 Syncing portfolio with KIS for user: {user_id}")
+        balance_data = KisService.get_balance()
+        if not balance_data:
+            return cls.load_portfolio(user_id)
+
+        existing_holdings = cls.load_portfolio(user_id)
+        existing_sector_map = {h["ticker"]: h.get("sector") or DEFAULT_SECTOR for h in existing_holdings}
+        existing_us_map = {
+            h["ticker"]: HoldingSchema(**h)
+            for h in existing_holdings
+            if str(h.get("ticker", "")).isalpha()
+        }
+
+        holdings, us_by_ticker = cls._parse_balance_holdings(balance_data, existing_sector_map)
+        cls._apply_overseas_balance_override(KisService.get_overseas_balance(), us_by_ticker, existing_sector_map)
+        holdings.extend(us_by_ticker.values() if us_by_ticker else existing_us_map.values())
+
+        summary, cash = cls._extract_kr_cash_from_summary(balance_data)
+        summary["_usd_cash_balance"] = cls.get_usd_cash_balance()
+        cls._last_balance_summary = summary
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
 

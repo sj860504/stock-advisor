@@ -11,6 +11,51 @@ class ReportService:
     """Slack 메시지 및 리포트 텍스트 생성 전담. 데이터를 받아 문자열로 변환합니다."""
 
     @staticmethod
+    def _format_price_portfolio_lines(price_info: dict, portfolio: dict) -> str:
+        """현재가·보유 현황 섹션 문자열 반환."""
+        change_pct = price_info.get("change_pct", 0)
+        change_icon = "📈" if change_pct > 0 else "📉"
+        lines = f"💰 **현재가**: ${price_info.get('current')} ({change_pct:+.2f}%) {change_icon}\n"
+        if portfolio.get("owned"):
+            lines += f"💼 **나의 평단**: ${portfolio.get('avg_cost')} (현재 수익률 {portfolio.get('return_pct', 0):+.2f}%)\n"
+        return lines + "\n"
+
+    @staticmethod
+    def _format_fundamental_lines(fundamental: dict) -> str:
+        """내재 가치 분석 섹션 문자열 반환."""
+        dcf_fair   = fundamental.get("dcf_fair", "N/A")
+        upside_dcf = fundamental.get("upside_dcf", 0)
+        lines = f"💎 **내재 가치 분석**\n🔸 DCF 적정가: **${dcf_fair}** (상승여력 {upside_dcf:+.1f}%)\n"
+        analyst_target = fundamental.get("analyst_target")
+        if analyst_target is not None:
+            upside_analyst = fundamental.get("upside_analyst", 0)
+            lines += f"🔸 기관 목표가: **${analyst_target}** (상승여력 {upside_analyst:+.1f}%)\n"
+        return lines + "\n"
+
+    @staticmethod
+    def _format_technical_lines(technical: dict, current_price: float) -> str:
+        """기술적 지표 섹션 문자열 반환."""
+        rsi = technical.get("rsi", 50)
+        rsi_status = "🔥 과매수" if rsi > 70 else ("🥶 과매도" if rsi < 30 else "⚖️ 중립")
+        lines = f"🛠 **기술적 지표**\n🔸 RSI: {rsi} ({rsi_status})\n"
+        ema200 = technical.get("emas", {}).get(200)
+        if ema200 is not None:
+            dist = round((current_price - ema200) / ema200 * 100, 1)
+            lines += f"🔸 EMA200 대비: {dist:+.1f}% ({'정배열' if current_price > ema200 else '역배열'})\n"
+        return lines + "\n"
+
+    @staticmethod
+    def _build_conclusion_line(upside_dcf, rsi: float) -> str:
+        """매매 결론 문자열 반환."""
+        if isinstance(upside_dcf, (int, float)) and upside_dcf > 20 and rsi < 40:
+            return "🚀 **강력 매수 찬스 (저평가+과매도)**"
+        if isinstance(upside_dcf, (int, float)) and upside_dcf > 10:
+            return "✅ **매수 고려 (저평가)**"
+        if rsi > 75:
+            return "⚠️ **매도/익절 고려 (단기 과열)**"
+        return "👀 **보유 및 관망**"
+
+    @staticmethod
     def format_comprehensive_report(data: Union[dict, ComprehensiveReport]) -> str:
         """종합 분석 데이터(딕셔너리 또는 ComprehensiveReport)를 Slack 메시지 텍스트로 변환합니다."""
         if isinstance(data, ComprehensiveReport):
@@ -18,55 +63,24 @@ class ReportService:
         if "error" in data:
             return f"❌ 분석 실패: {data['error']}"
 
-        price_info = data.get("price_info", {})
-        fundamental = data.get("fundamental", {})
-        technical = data.get("technical", {})
-        portfolio = data.get("portfolio", {})
+        price_info    = data.get("price_info", {})
+        fundamental   = data.get("fundamental", {})
+        technical     = data.get("technical", {})
         macro_context = data.get("macro_context", {})
 
-        msg = f"📊 **[{data.get('name')} ({data.get('ticker')})] 종합 분석 리포트**\n\n"
-        change_pct = price_info.get("change_pct", 0)
-        change_icon = "📈" if change_pct > 0 else "📉"
-        msg += f"💰 **현재가**: ${price_info.get('current')} ({change_pct:+.2f}%) {change_icon}\n"
-        if portfolio.get("owned"):
-            msg += f"💼 **나의 평단**: ${portfolio.get('avg_cost')} (현재 수익률 {portfolio.get('return_pct', 0):+.2f}%)\n"
-        msg += "\n"
-
-        msg += "💎 **내재 가치 분석**\n"
-        dcf_fair = fundamental.get("dcf_fair", "N/A")
-        upside_dcf = fundamental.get("upside_dcf", 0)
-        msg += f"🔸 DCF 적정가: **${dcf_fair}** (상승여력 {upside_dcf:+.1f}%)\n"
-        analyst_target = fundamental.get("analyst_target")
-        if analyst_target is not None:
-            upside_analyst = fundamental.get("upside_analyst", 0)
-            msg += f"🔸 기관 목표가: **${analyst_target}** (상승여력 {upside_analyst:+.1f}%)\n\n"
-
-        rsi = technical.get("rsi", 50)
-        rsi_status = "🔥 과매수" if rsi > 70 else ("🥶 과매도" if rsi < 30 else "⚖️ 중립")
-        msg += "🛠 **기술적 지표**\n"
-        msg += f"🔸 RSI: {rsi} ({rsi_status})\n"
-        emas = technical.get("emas", {})
-        current_price = price_info.get("current", 0)
-        ema200 = emas.get(200)
-        if ema200 is not None:
-            dist = round((current_price - ema200) / ema200 * 100, 1)
-            msg += f"🔸 EMA200 대비: {dist:+.1f}% ({'정배열' if current_price > ema200 else '역배열'})\n\n"
+        msg  = f"📊 **[{data.get('name')} ({data.get('ticker')})] 종합 분석 리포트**\n\n"
+        msg += ReportService._format_price_portfolio_lines(price_info, data.get("portfolio", {}))
+        msg += ReportService._format_fundamental_lines(fundamental)
+        msg += ReportService._format_technical_lines(technical, price_info.get("current", 0))
 
         if macro_context:
             msg += f"🌍 **거시 환경**: {macro_context.get('regime')} Market (VIX: {macro_context.get('vix')})\n\n"
         if "news_summary" in data:
             msg += data["news_summary"]
 
-        conclusion = "판단 유보"
-        if isinstance(upside_dcf, (int, float)) and upside_dcf > 20 and rsi < 40:
-            conclusion = "🚀 **강력 매수 찬스 (저평가+과매도)**"
-        elif isinstance(upside_dcf, (int, float)) and upside_dcf > 10:
-            conclusion = "✅ **매수 고려 (저평가)**"
-        elif rsi > 75:
-            conclusion = "⚠️ **매도/익절 고려 (단기 과열)**"
-        else:
-            conclusion = "👀 **보유 및 관망**"
-        msg += f"\n💡 **AI 결론**: {conclusion}"
+        rsi        = technical.get("rsi", 50)
+        upside_dcf = fundamental.get("upside_dcf", 0)
+        msg += f"\n💡 **AI 결론**: {ReportService._build_conclusion_line(upside_dcf, rsi)}"
         return msg
 
     @staticmethod
@@ -269,6 +283,36 @@ class ReportService:
         return lines
 
     @staticmethod
+    def _aggregate_by_ticker(trade_list: List) -> dict:
+        """매매 내역을 티커별로 집계합니다."""
+        grouped = defaultdict(lambda: {"qty": 0, "total_amt": 0.0, "is_kr": True})
+        for t in trade_list:
+            grouped[t.ticker]["qty"] += t.quantity
+            grouped[t.ticker]["total_amt"] += t.quantity * t.price
+            grouped[t.ticker]["is_kr"] = is_kr(t.ticker)
+        return grouped
+
+    @staticmethod
+    def _format_trade_group_lines(trade_list: List, label: str, icon: str) -> str:
+        """매수 또는 매도 그룹을 집계하여 Slack 메시지 섹션으로 반환합니다."""
+        groups = ReportService._aggregate_by_ticker(trade_list)
+        total_krw = sum(v["total_amt"] for v in groups.values() if v["is_kr"])
+        total_usd = sum(v["total_amt"] for v in groups.values() if not v["is_kr"])
+        header = f"{icon} **{label}** ({len(trade_list)}건"
+        if total_krw > 0:
+            header += f", KR {total_krw:,.0f}원"
+        if total_usd > 0:
+            header += f", US ${total_usd:,.2f}"
+        lines = header + ")\n"
+        for ticker, info in sorted(groups.items()):
+            avg = info["total_amt"] / info["qty"] if info["qty"] else 0
+            if info["is_kr"]:
+                lines += f"  • {ticker} {info['qty']}주 | 평균 {avg:,.0f}원 | 합계 {info['total_amt']:,.0f}원\n"
+            else:
+                lines += f"  • {ticker} {info['qty']}주 | 평균 ${avg:,.2f} | 합계 ${info['total_amt']:,.2f}\n"
+        return lines
+
+    @staticmethod
     def format_daily_trade_history(trades: list, start_dt: datetime, end_dt: datetime) -> str:
         """일일 매매 내역을 Slack 메시지로 포맷팅합니다. 티커별로 집계하여 보여줍니다."""
         date_str = start_dt.strftime("%m/%d %H:%M") + " ~ " + end_dt.strftime("%m/%d %H:%M")
@@ -278,51 +322,12 @@ class ReportService:
             msg += "📭 해당 기간 매매 내역이 없습니다."
             return msg
 
-        buys = [t for t in trades if t.order_type == "buy"]
+        buys  = [t for t in trades if t.order_type == "buy"]
         sells = [t for t in trades if t.order_type == "sell"]
-        msg += f"📊 총 **{len(trades)}건** (매수 {len(buys)}건 / 매도 {len(sells)}건)\n\n"
-
-        def _aggregate_by_ticker(trade_list: List) -> dict:
-            grouped = defaultdict(lambda: {"qty": 0, "total_amt": 0.0, "is_kr": True})
-            for t in trade_list:
-                grouped[t.ticker]["qty"] += t.quantity
-                grouped[t.ticker]["total_amt"] += t.quantity * t.price
-                grouped[t.ticker]["is_kr"] = is_kr(t.ticker)
-            return grouped
+        msg  += f"📊 총 **{len(trades)}건** (매수 {len(buys)}건 / 매도 {len(sells)}건)\n\n"
 
         if buys:
-            buy_groups = _aggregate_by_ticker(buys)
-            total_krw = sum(v["total_amt"] for v in buy_groups.values() if v["is_kr"])
-            total_usd = sum(v["total_amt"] for v in buy_groups.values() if not v["is_kr"])
-            summary = f"🟢 **매수** ({len(buys)}건"
-            if total_krw > 0:
-                summary += f", KR {total_krw:,.0f}원"
-            if total_usd > 0:
-                summary += f", US ${total_usd:,.2f}"
-            msg += summary + ")\n"
-            for ticker, info in sorted(buy_groups.items()):
-                avg = info["total_amt"] / info["qty"] if info["qty"] else 0
-                if info["is_kr"]:
-                    msg += f"  • {ticker} {info['qty']}주 | 평균 {avg:,.0f}원 | 합계 {info['total_amt']:,.0f}원\n"
-                else:
-                    msg += f"  • {ticker} {info['qty']}주 | 평균 ${avg:,.2f} | 합계 ${info['total_amt']:,.2f}\n"
-            msg += "\n"
-
+            msg += ReportService._format_trade_group_lines(buys, "매수", "🟢") + "\n"
         if sells:
-            sell_groups = _aggregate_by_ticker(sells)
-            total_krw = sum(v["total_amt"] for v in sell_groups.values() if v["is_kr"])
-            total_usd = sum(v["total_amt"] for v in sell_groups.values() if not v["is_kr"])
-            summary = f"🔴 **매도** ({len(sells)}건"
-            if total_krw > 0:
-                summary += f", KR {total_krw:,.0f}원"
-            if total_usd > 0:
-                summary += f", US ${total_usd:,.2f}"
-            msg += summary + ")\n"
-            for ticker, info in sorted(sell_groups.items()):
-                avg = info["total_amt"] / info["qty"] if info["qty"] else 0
-                if info["is_kr"]:
-                    msg += f"  • {ticker} {info['qty']}주 | 평균 {avg:,.0f}원 | 합계 {info['total_amt']:,.0f}원\n"
-                else:
-                    msg += f"  • {ticker} {info['qty']}주 | 평균 ${avg:,.2f} | 합계 ${info['total_amt']:,.2f}\n"
-
+            msg += ReportService._format_trade_group_lines(sells, "매도", "🔴")
         return msg
