@@ -258,72 +258,69 @@ class MacroService:
         return max(0, min(20, round((raw + max_val) / (2 * max_val) * 20)))
 
     @classmethod
-    def _calc_technical_20(cls, close: pd.Series, ndx_1m_hist=None) -> tuple:
-        """EMA 배열 + SPX/NDX/2주 모멘텀 + ATH드로다운 → (technical_20: 0~20, detail, ema_map)."""
-        current_price = float(close.iloc[-1])
-        ema_periods = [5, 20, 60, 120, 200]
-        ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in ema_periods}
-
-        tech_raw = 0
+    def _calc_ema_raw(cls, close: pd.Series, current_price: float, ema_map: dict) -> int:
+        """EMA 배열 정렬 + 기울기 점수 합산."""
         price_weights = {5: 12, 20: 16, 60: 16, 120: 20, 200: 24}
-        for p, w in price_weights.items():
-            tech_raw += w if current_price >= ema_map[p] else -w
-
-        ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in ema_periods)
+        raw = sum(w if current_price >= ema_map[p] else -w for p, w in price_weights.items())
+        ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in [5, 20, 60, 120, 200])
         if ema5 > ema20 > ema60 > ema120 > ema200:
-            tech_raw += 12
+            raw += 12
         elif ema5 < ema20 < ema60 < ema120 < ema200:
-            tech_raw -= 12
+            raw -= 12
         for p in [20, 60, 120]:
             ema_series = close.ewm(span=p, adjust=False).mean()
             slope_up = len(ema_series) >= 2 and float(ema_series.iloc[-1]) > float(ema_series.iloc[-2])
-            tech_raw += 4 if slope_up else -4
+            raw += 4 if slope_up else -4
+        return raw
 
-        spx_1m_ret = None
+    @classmethod
+    def _calc_momentum_raw(cls, close: pd.Series, ndx_1m_hist) -> tuple:
+        """SPX/NDX 1M·2W 모멘텀 + 52주 ATH 드로다운 점수 합산."""
+        raw = 0
+        spx_1m_ret = ndx_1m_ret = spx_2w_ret = spx_from_ath = None
         if len(close) >= 21:
             spx_1m_ret = round((float(close.iloc[-1]) / float(close.iloc[-21]) - 1) * 100, 2)
-            if spx_1m_ret > 3:    tech_raw += 10
-            elif spx_1m_ret > 1:  tech_raw += 5
-            elif spx_1m_ret < -3: tech_raw -= 10
-            elif spx_1m_ret < -1: tech_raw -= 5
-
-        ndx_1m_ret = None
+            if spx_1m_ret > 3:    raw += 10
+            elif spx_1m_ret > 1:  raw += 5
+            elif spx_1m_ret < -3: raw -= 10
+            elif spx_1m_ret < -1: raw -= 5
         if ndx_1m_hist is not None and len(ndx_1m_hist) >= 5:
             ndx_1m_ret = round(
                 (float(ndx_1m_hist["Close"].iloc[-1]) / float(ndx_1m_hist["Close"].iloc[0]) - 1) * 100, 2
             )
-            if ndx_1m_ret > 3:    tech_raw += 5
-            elif ndx_1m_ret > 1:  tech_raw += 2
-            elif ndx_1m_ret < -3: tech_raw -= 5
-            elif ndx_1m_ret < -1: tech_raw -= 2
-
-        spx_2w_ret = None
+            if ndx_1m_ret > 3:    raw += 5
+            elif ndx_1m_ret > 1:  raw += 2
+            elif ndx_1m_ret < -3: raw -= 5
+            elif ndx_1m_ret < -1: raw -= 2
         if len(close) >= 11:
             spx_2w_ret = round((float(close.iloc[-1]) / float(close.iloc[-11]) - 1) * 100, 2)
-            if spx_2w_ret > 2:      tech_raw += 6
-            elif spx_2w_ret > 0.5:  tech_raw += 3
-            elif spx_2w_ret < -2:   tech_raw -= 6
-            elif spx_2w_ret < -0.5: tech_raw -= 3
-
-        spx_from_ath = None
+            if spx_2w_ret > 2:      raw += 6
+            elif spx_2w_ret > 0.5:  raw += 3
+            elif spx_2w_ret < -2:   raw -= 6
+            elif spx_2w_ret < -0.5: raw -= 3
         if len(close) >= 252:
             ath_52w = float(close.iloc[-252:].max())
             if ath_52w > 0:
-                spx_from_ath = round((current_price / ath_52w - 1) * 100, 2)
-                if spx_from_ath < -20:   tech_raw -= 8
-                elif spx_from_ath < -10: tech_raw -= 4
-                elif spx_from_ath < -5:  tech_raw -= 2
+                spx_from_ath = round((float(close.iloc[-1]) / ath_52w - 1) * 100, 2)
+                if spx_from_ath < -20:   raw -= 8
+                elif spx_from_ath < -10: raw -= 4
+                elif spx_from_ath < -5:  raw -= 2
+        return raw, {
+            "spx_1m_ret": spx_1m_ret, "ndx_1m_ret": ndx_1m_ret,
+            "spx_2w_ret": spx_2w_ret, "spx_from_ath_pct": spx_from_ath,
+        }
 
-        max_abs_tech = sum(price_weights.values()) + 12 + (4 * 3) + 10 + 5 + 6 + 8
+    @classmethod
+    def _calc_technical_20(cls, close: pd.Series, ndx_1m_hist=None) -> tuple:
+        """EMA 배열 + SPX/NDX/2주 모멘텀 + ATH드로다운 → (technical_20: 0~20, detail, ema_map)."""
+        current_price = float(close.iloc[-1])
+        ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in [5, 20, 60, 120, 200]}
+        ema_raw = cls._calc_ema_raw(close, current_price, ema_map)
+        momentum_raw, tech_detail = cls._calc_momentum_raw(close, ndx_1m_hist)
+        tech_raw = ema_raw + momentum_raw
+        max_abs_tech = sum({5: 12, 20: 16, 60: 16, 120: 20, 200: 24}.values()) + 12 + (4 * 3) + 10 + 5 + 6 + 8
         technical_score = max(-30, min(30, int(round((tech_raw / max_abs_tech) * 30))))
-        technical_20 = cls._to_20(technical_score, 30)
-
-        return technical_20, {
-            "spx_1m_ret": spx_1m_ret,
-            "ndx_1m_ret": ndx_1m_ret,
-            "spx_2w_ret": spx_2w_ret,
-            "spx_from_ath_pct": spx_from_ath,
-        }, ema_map
+        return cls._to_20(technical_score, 30), tech_detail, ema_map
 
     @classmethod
     def _calc_vix_20(cls, vix: float, vix_1m_chg: float | None) -> int:
@@ -462,6 +459,81 @@ class MacroService:
         return bear_threshold
 
     @classmethod
+    def _fetch_spx_and_ndx_history(cls) -> tuple:
+        """실시간 SPX 2년치 close + NDX 1개월 히스토리 조회."""
+        import yfinance as yf
+        close = None
+        try:
+            raw = yf.Ticker("^GSPC").history(period="2y")
+            if not raw.empty and "Close" in raw.columns:
+                close = pd.to_numeric(raw["Close"], errors="coerce").dropna() or None
+        except Exception:
+            pass
+        ndx_1m_hist = None
+        try:
+            ndx_1m_hist = yf.Ticker("^NDX").history(period="1mo")
+        except Exception:
+            pass
+        return close, ndx_1m_hist
+
+    @classmethod
+    def _fetch_vix_1m_change(cls, vix: float) -> float | None:
+        """VIX 1개월 변화율 조회."""
+        try:
+            import yfinance as yf
+            vix_h = yf.Ticker("^VIX").history(period="1mo")
+            if len(vix_h) >= 5:
+                vix_prev = float(vix_h["Close"].iloc[0])
+                if vix_prev > 0:
+                    return round((vix - vix_prev) / vix_prev * 100, 1)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _assemble_regime_result(
+        close: pd.Series, ema_map: dict,
+        technical_20: int, tech_detail: dict,
+        vix_20: int, fng_20: int, econ_20: int,
+        other_20: int, other_scores: dict,
+        vix: float, vix_1m_chg, us_10y_yield: float,
+        yield_spread, btc_ret, dxy_ret, gold_ret,
+        bear_threshold: int = 40,
+    ) -> dict:
+        """컴포넌트 점수를 합산해 시장 국면 결과 dict를 반환합니다."""
+        regime_score = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
+        if regime_score >= 65:
+            status = "Bull"
+        elif regime_score <= bear_threshold:
+            status = "Bear"
+        else:
+            status = "Neutral"
+        current_price = float(close.iloc[-1])
+        ema200 = ema_map[200]
+        ma200  = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
+        diff_pct = round((current_price - ma200) / ma200 * 100, 2) if ma200 else 0
+        return {
+            "status": status,
+            "current": round(current_price, 2),
+            "ma200": round(float(ma200 or 0), 2),
+            "diff_pct": float(diff_pct),
+            "regime_score": regime_score,
+            "bear_threshold": bear_threshold,
+            "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
+            "components": {
+                "technical": technical_20, "technical_detail": tech_detail,
+                "vix": vix_20, "fear_greed": fng_20, "economic": econ_20, "other": other_20,
+                "other_detail": {
+                    "us_10y_yield": round(us_10y_yield, 3),
+                    "yield_spread_10y2y": yield_spread,
+                    "vix_1m_chg": vix_1m_chg,
+                    "btc_1m_ret": btc_ret, "dxy_1m_ret": dxy_ret, "gold_1m_ret": gold_ret,
+                    **other_scores,
+                },
+            },
+        }
+
+    @classmethod
     def _get_market_regime(
         cls,
         vix: float | None = None,
@@ -469,116 +541,37 @@ class MacroService:
         economic_indicators: dict | None = None,
         us_10y_yield: float | None = None,
     ) -> dict:
-        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산.
-
-        배점 구조 (각 20점, 합계 0~100, 중립=50):
-          - 기술 (EMA 배열): 20점
-          - VIX (공포지수): 20점
-          - Fear&Greed:     20점
-          - 경제지표(FRED): 20점
-          - 기타(금리+BTC+Gold): 20점
-        """
-        # ── SPX 2년치 조회 ──────────────────────────────────────────────────
-        hist = pd.DataFrame()
-        try:
-            import yfinance as yf
-            raw = yf.Ticker("^GSPC").history(period="2y")
-            if not raw.empty and "Close" in raw.columns:
-                hist = raw[["Close"]].copy()
-        except Exception:
-            pass
-
-        if hist.empty or "Close" not in hist.columns:
+        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산."""
+        close, ndx_1m_hist = cls._fetch_spx_and_ndx_history()
+        if close is None or close.empty:
             return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 50}
 
-        close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
-        if close.empty:
-            return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 50}
-
-        # ── NDX 1개월 히스토리 ──────────────────────────────────────────────
-        ndx_1m_hist = None
-        try:
-            import yfinance as yf
-            ndx_1m_hist = yf.Ticker("^NDX").history(period="1mo")
-        except Exception:
-            pass
-
-        # ── 1. 기술 점수 ─────────────────────────────────────────────────────
         technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
-        # ── 2. VIX 점수 ──────────────────────────────────────────────────────
         if vix is None:
             vix = cls._get_vix()
-        vix_1m_chg = None
-        try:
-            import yfinance as yf
-            vix_h = yf.Ticker("^VIX").history(period="1mo")
-            if len(vix_h) >= 5:
-                vix_prev = float(vix_h["Close"].iloc[0])
-                if vix_prev > 0:
-                    vix_1m_chg = round((vix - vix_prev) / vix_prev * 100, 1)
-        except Exception:
-            pass
+        vix_1m_chg = cls._fetch_vix_1m_change(vix)
         vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
 
-        # ── 3. Fear&Greed 점수 ───────────────────────────────────────────────
         if fear_greed is None:
             fear_greed = cls._get_fear_greed_index()
         fng_20 = cls._calc_fng_20(fear_greed)
 
-        # ── 4. 경제지표 점수 ─────────────────────────────────────────────────
         if economic_indicators is None:
             economic_indicators = cls._get_economic_indicators()
         econ_20 = cls._calc_econ_20(economic_indicators)
 
-        # ── 5. 기타 복합 지표 ────────────────────────────────────────────────
         if us_10y_yield is None:
             us_10y_yield = cls._get_us_10y_yield()
         yield_spread, btc_ret, dxy_ret, gold_ret = cls._fetch_composite_assets(us_10y_yield)
         other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
 
-        # ── 합산 + Bear 지속성 ───────────────────────────────────────────────
-        regime_score  = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
         bear_threshold = cls._get_bear_threshold()
-
-        if regime_score >= 65:
-            status = "Bull"
-        elif regime_score <= bear_threshold:
-            status = "Bear"
-        else:
-            status = "Neutral"
-
-        current_price = float(close.iloc[-1])
-        ema200 = ema_map[200]
-        ma200  = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
-        diff_pct = (current_price - ma200) / ma200 * 100 if ma200 else 0
-
-        return {
-            "status": status,
-            "current": round(current_price, 2),
-            "ma200": round(float(ma200 or 0), 2),
-            "diff_pct": round(float(diff_pct), 2),
-            "regime_score": regime_score,
-            "bear_threshold": bear_threshold,
-            "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
-            "components": {
-                "technical": technical_20,
-                "technical_detail": tech_detail,
-                "vix": vix_20,
-                "fear_greed": fng_20,
-                "economic": econ_20,
-                "other": other_20,
-                "other_detail": {
-                    "us_10y_yield": round(us_10y_yield, 3),
-                    "yield_spread_10y2y": yield_spread,
-                    "vix_1m_chg": vix_1m_chg,
-                    "btc_1m_ret": btc_ret,
-                    "dxy_1m_ret": dxy_ret,
-                    "gold_1m_ret": gold_ret,
-                    **other_scores,
-                },
-            },
-        }
+        return cls._assemble_regime_result(
+            close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
+            other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
+            yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold,
+        )
 
     _CNN_HEADERS = {
         "User-Agent": (
@@ -616,11 +609,29 @@ class MacroService:
         return {} # 필요 시 KIS로 개별 ETF 조회하도록 확장 가능
 
     @classmethod
+    def _score_single_indicator(cls, key: str, series_id: str, latest, prev) -> dict:
+        """지표 하나의 점수·상태 dict를 반환합니다."""
+        rule = cls.MACRO_RULES.get(key, {})
+        name, weight = rule.get("name", key), float(rule.get("weight", 1))
+        higher_is_good = bool(rule.get("higher_is_good", True))
+        if latest is None or prev is None:
+            return {"name": name, "series_id": series_id, "weight": weight,
+                    "latest": None, "previous": None, "delta": None,
+                    "score": 0, "weighted_score": 0, "status": "no_data"}
+        delta = latest - prev
+        raw = (1 if higher_is_good else -1) if delta > 0 else (-1 if higher_is_good else 1) if delta < 0 else 0
+        return {
+            "name": name, "series_id": series_id, "weight": weight,
+            "latest": round(float(latest), 4), "previous": round(float(prev), 4), "delta": round(float(delta), 4),
+            "score": raw, "weighted_score": raw * weight,
+            "status": "positive" if raw > 0 else "negative" if raw < 0 else "neutral",
+        }
+
+    @classmethod
     def _get_economic_indicators(cls) -> dict:
         """FRED 전체 14개 지표를 병렬 조회 후 가중치 기반 점수 산출."""
         all_keys = list(cls.FRED_SERIES.keys())
 
-        # 병렬 FRED 조회 (최대 8 스레드)
         def _fetch(key):
             series_id = cls.FRED_SERIES[key]
             latest, prev = cls._get_fred_latest_pair(series_id)
@@ -636,51 +647,13 @@ class MacroService:
         indicators = {}
         total_weighted_score = 0.0
         max_weighted_score = 0.0
-
         for key in all_keys:
             series_id, latest, prev = fetch_results[key]
-            rule = cls.MACRO_RULES.get(key, {})
-            higher_is_good = bool(rule.get("higher_is_good", True))
-            name = rule.get("name", key)
-            weight = float(rule.get("weight", 1))
-
-            if latest is None or prev is None:
-                indicators[key] = {
-                    "name": name,
-                    "series_id": series_id,
-                    "weight": weight,
-                    "latest": None,
-                    "previous": None,
-                    "delta": None,
-                    "score": 0,
-                    "weighted_score": 0,
-                    "status": "no_data",
-                }
-                continue
-
-            delta = latest - prev
-            raw_score = 0
-            if delta > 0:
-                raw_score = 1 if higher_is_good else -1
-            elif delta < 0:
-                raw_score = -1 if higher_is_good else 1
-
-            weighted_score = raw_score * weight
-            status = "positive" if raw_score > 0 else "negative" if raw_score < 0 else "neutral"
-
-            indicators[key] = {
-                "name": name,
-                "series_id": series_id,
-                "weight": weight,
-                "latest": round(float(latest), 4),
-                "previous": round(float(prev), 4),
-                "delta": round(float(delta), 4),
-                "score": raw_score,
-                "weighted_score": weighted_score,
-                "status": status,
-            }
-            total_weighted_score += weighted_score
-            max_weighted_score += weight
+            ind = cls._score_single_indicator(key, series_id, latest, prev)
+            indicators[key] = ind
+            if ind["status"] != "no_data":
+                total_weighted_score += ind["weighted_score"]
+                max_weighted_score += ind["weight"]
 
         sentiment_ratio = round(total_weighted_score / max_weighted_score, 4) if max_weighted_score > 0 else 0
         available = sum(1 for v in indicators.values() if v["status"] != "no_data")
@@ -688,59 +661,38 @@ class MacroService:
             "indicators": indicators,
             "summary": {
                 "total_weighted_score": round(total_weighted_score, 2),
-                "max_weighted_score": round(max_weighted_score, 2),
-                "total_score": round(total_weighted_score, 2),   # 하위호환
-                "max_score": round(max_weighted_score, 2),       # 하위호환
-                "sentiment_ratio": sentiment_ratio,
-                "available_count": available,
-                "total_count": len(all_keys),
+                "max_weighted_score":   round(max_weighted_score, 2),
+                "total_score":          round(total_weighted_score, 2),  # 하위호환
+                "max_score":            round(max_weighted_score, 2),    # 하위호환
+                "sentiment_ratio":      sentiment_ratio,
+                "available_count":      available,
+                "total_count":          len(all_keys),
             },
         }
 
-    @classmethod
-    def calculate_historical_regime(cls, date_str: str) -> dict:
-        """특정 날짜의 시장 국면을 역사적 데이터로 계산 후 DB 저장.
-
-        - SPX / VIX / BTC / DXY / Gold: yfinance 과거 데이터 사용
-        - FRED 경제지표: 월별이므로 현재값과 동일하게 사용
-        - Fear&Greed: 오늘 기준 7일 이내면 현재값, 그 외 중립(50)으로 추정
-        """
+    @staticmethod
+    def _fetch_historical_spx(start_2y: str, start_1m: str, end_date: str) -> tuple:
+        """과거 SPX 2년치 close + NDX 1개월 히스토리 조회."""
         import yfinance as yf
-        from datetime import datetime, timedelta
-
-        target_dt = datetime.strptime(date_str, "%Y-%m-%d")
-        today_dt  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date  = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-        start_2y  = (target_dt - timedelta(days=730)).strftime("%Y-%m-%d")
-        start_1m  = (target_dt - timedelta(days=32)).strftime("%Y-%m-%d")
-
-        # ── SPX 2년치 ──────────────────────────────────────────────────────
-        hist = pd.DataFrame()
+        close = None
         try:
             raw = yf.Ticker("^GSPC").history(start=start_2y, end=end_date)
             if not raw.empty and "Close" in raw.columns:
-                hist = raw[["Close"]].copy()
+                close = pd.to_numeric(raw["Close"], errors="coerce").dropna() or None
         except Exception:
             pass
-
-        if hist.empty:
-            return {"error": f"SPX 데이터 없음 for {date_str}"}
-
-        close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
-
-        # ── NDX 1개월 히스토리 ────────────────────────────────────────────
         ndx_1m_hist = None
         try:
             ndx_1m_hist = yf.Ticker("^NDX").history(start=start_1m, end=end_date)
         except Exception:
             pass
+        return close, ndx_1m_hist
 
-        # ── 1. 기술 점수 ─────────────────────────────────────────────────
-        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
-
-        # ── 2. VIX 점수 ──────────────────────────────────────────────────
-        vix = 20.0
-        vix_1m_chg = None
+    @staticmethod
+    def _fetch_historical_vix(start_1m: str, end_date: str) -> tuple:
+        """과거 VIX + 1개월 변화율 조회."""
+        import yfinance as yf
+        vix, vix_1m_chg = 20.0, None
         try:
             vix_h = yf.Ticker("^VIX").history(start=start_1m, end=end_date)
             if not vix_h.empty:
@@ -751,27 +703,12 @@ class MacroService:
                         vix_1m_chg = round((vix - vix_prev) / vix_prev * 100, 1)
         except Exception:
             pass
-        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
+        return vix, vix_1m_chg
 
-        # ── 3. Fear&Greed 점수 ─────────────────────────────────────────
-        days_diff  = (today_dt - target_dt).days
-        fear_greed = cls._get_fear_greed_index() if days_diff <= 7 else 50
-        fng_20     = cls._calc_fng_20(fear_greed)
-
-        # ── 4. 경제지표 점수 (FRED 월별, 현재값 사용) ────────────────────
-        economic_indicators = cls._get_economic_indicators()
-        econ_20 = cls._calc_econ_20(economic_indicators)
-
-        # ── 5. 기타 복합 지표 ────────────────────────────────────────────
-        us_10y_yield = cls._get_us_10y_yield()
-        yield_spread = None
-        try:
-            y2_val, _ = cls._get_fred_latest_pair("DGS2")
-            if y2_val is not None:
-                yield_spread = round(us_10y_yield - y2_val, 3)
-        except Exception:
-            pass
-
+    @staticmethod
+    def _fetch_historical_composite_returns(start_1m: str, end_date: str) -> tuple:
+        """과거 BTC/DXY/Gold 1개월 수익률 조회."""
+        import yfinance as yf
         btc_ret = dxy_ret = gold_ret = None
         try:
             for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold")]:
@@ -786,43 +723,55 @@ class MacroService:
                     pass
         except Exception:
             pass
+        return btc_ret, dxy_ret, gold_ret
 
+    @classmethod
+    def calculate_historical_regime(cls, date_str: str) -> dict:
+        """특정 날짜의 시장 국면을 역사적 데이터로 계산 후 DB 저장.
+
+        - SPX / VIX / BTC / DXY / Gold: yfinance 과거 데이터 사용
+        - FRED 경제지표: 월별이므로 현재값과 동일하게 사용
+        - Fear&Greed: 오늘 기준 7일 이내면 현재값, 그 외 중립(50)으로 추정
+        """
+        from datetime import datetime, timedelta
+        target_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        today_dt  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date  = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        start_2y  = (target_dt - timedelta(days=730)).strftime("%Y-%m-%d")
+        start_1m  = (target_dt - timedelta(days=32)).strftime("%Y-%m-%d")
+
+        close, ndx_1m_hist = cls._fetch_historical_spx(start_2y, start_1m, end_date)
+        if close is None or close.empty:
+            return {"error": f"SPX 데이터 없음 for {date_str}"}
+
+        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
+
+        vix, vix_1m_chg = cls._fetch_historical_vix(start_1m, end_date)
+        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
+
+        days_diff  = (today_dt - target_dt).days
+        fear_greed = cls._get_fear_greed_index() if days_diff <= 7 else 50
+        fng_20     = cls._calc_fng_20(fear_greed)
+
+        econ_20 = cls._calc_econ_20(cls._get_economic_indicators())
+
+        us_10y_yield = cls._get_us_10y_yield()
+        yield_spread = None
+        try:
+            y2_val, _ = cls._get_fred_latest_pair("DGS2")
+            if y2_val is not None:
+                yield_spread = round(us_10y_yield - y2_val, 3)
+        except Exception:
+            pass
+
+        btc_ret, dxy_ret, gold_ret = cls._fetch_historical_composite_returns(start_1m, end_date)
         other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
 
-        # ── 합산 ──────────────────────────────────────────────────────────
-        regime_score  = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
-        status = "Bull" if regime_score >= 65 else "Bear" if regime_score <= 40 else "Neutral"
-
-        current_price = float(close.iloc[-1])
-        ema200   = ema_map[200]
-        ma200    = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
-        diff_pct = round((current_price - ma200) / ma200 * 100, 2) if ma200 else 0
-
-        regime_data = {
-            "status":       status,
-            "current":      round(current_price, 2),
-            "ma200":        round(float(ma200), 2),
-            "diff_pct":     diff_pct,
-            "regime_score": regime_score,
-            "ema":          {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
-            "components": {
-                "technical":        technical_20,
-                "technical_detail": tech_detail,
-                "vix":              vix_20,
-                "fear_greed":       fng_20,
-                "economic":         econ_20,
-                "other":            other_20,
-                "other_detail": {
-                    "us_10y_yield":       round(us_10y_yield, 3),
-                    "yield_spread_10y2y": yield_spread,
-                    "vix_1m_chg":         vix_1m_chg,
-                    "btc_1m_ret":         btc_ret,
-                    "dxy_1m_ret":         dxy_ret,
-                    "gold_1m_ret":        gold_ret,
-                    **other_scores,
-                },
-            },
-        }
+        regime_data = cls._assemble_regime_result(
+            close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
+            other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
+            yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold=40,
+        )
 
         try:
             from services.market.stock_meta_service import StockMetaService
@@ -830,13 +779,8 @@ class MacroService:
         except Exception:
             pass
 
-        return {
-            "date":          date_str,
-            "vix":           vix,
-            "fear_greed":    fear_greed,
-            "us_10y_yield":  us_10y_yield,
-            "market_regime": regime_data,
-        }
+        return {"date": date_str, "vix": vix, "fear_greed": fear_greed,
+                "us_10y_yield": us_10y_yield, "market_regime": regime_data}
 
     @classmethod
     def _get_fred_latest_pair(cls, series_id: str | None) -> tuple[float | None, float | None]:

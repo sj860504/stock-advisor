@@ -211,86 +211,85 @@ class PortfolioService:
         
         return SettingsService.get_float("PORTFOLIO_USD_CASH_BALANCE", 0.0)
 
-    @classmethod
-    def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
-        """포트폴리오 수익률 분석 (한국/미국 분리)"""
-        from services.market.macro_service import MacroService
-        
-        holdings = cls.load_portfolio(user_id)  # List[dict]
-        cash = cls.load_cash(user_id)
-        usd_cash = cls.get_usd_cash_balance()
-        exchange_rate = MacroService.get_exchange_rate()
-
-        kr_holdings = filter_kr(holdings)
-        us_holdings = filter_us(holdings)
-
+    @staticmethod
+    def _calc_kr_holding_results(kr_holdings: List[dict]) -> tuple:
+        """KR 보유 종목 투자금/현재가치/결과 리스트를 계산합니다."""
+        invested = current = 0.0
         results = []
-        kr_invested = 0
-        kr_current = 0
-        us_invested_usd = 0
-        us_current_usd = 0
-
         for h in kr_holdings:
             val = h.get("quantity", 0) * (h.get("current_price") or 0.0)
             inv = h.get("quantity", 0) * h.get("buy_price", 0)
-            kr_invested += inv
-            kr_current += val
+            invested += inv
+            current  += val
+            results.append({**h, 'profit': round(val - inv, 2), 'profit_pct': profit_pct(val, inv), 'market': 'KR'})
+        return invested, current, results
 
-            results.append({
-                **h,
-                'profit': round(val - inv, 2),
-                'profit_pct': profit_pct(val, inv),
-                'market': 'KR'
-            })
-
+    @staticmethod
+    def _calc_us_holding_results(us_holdings: List[dict], exchange_rate: float) -> tuple:
+        """US 보유 종목 투자금/현재가치/결과 리스트를 계산합니다."""
+        invested_usd = current_usd = 0.0
+        results = []
         for h in us_holdings:
             val_usd = h.get("quantity", 0) * (h.get("current_price") or 0.0)
             inv_usd = h.get("quantity", 0) * h.get("buy_price", 0)
-            us_invested_usd += inv_usd
-            us_current_usd += val_usd
-
+            invested_usd += inv_usd
+            current_usd  += val_usd
             results.append({
                 **h,
                 'profit_usd': round(val_usd - inv_usd, 2),
                 'profit_krw': round((val_usd - inv_usd) * exchange_rate, 2),
                 'profit_pct': profit_pct(val_usd, inv_usd),
-                'market': 'US'
+                'market': 'US',
             })
-        
+        return invested_usd, current_usd, results
+
+    @classmethod
+    def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
+        """포트폴리오 수익률 분석 (한국/미국 분리)"""
+        from services.market.macro_service import MacroService
+        holdings     = cls.load_portfolio(user_id)
+        cash         = cls.load_cash(user_id)
+        usd_cash     = cls.get_usd_cash_balance()
+        exchange_rate = MacroService.get_exchange_rate()
+
+        kr_invested, kr_current, kr_results = cls._calc_kr_holding_results(filter_kr(holdings))
+        us_invested_usd, us_current_usd, us_results = cls._calc_us_holding_results(filter_us(holdings), exchange_rate)
+
         us_invested_krw = us_invested_usd * exchange_rate
-        us_current_krw = us_current_usd * exchange_rate
-        total_invested = kr_invested + us_invested_krw
-        total_current = kr_current + us_current_krw
-        
+        us_current_krw  = us_current_usd * exchange_rate
+        total_invested  = kr_invested + us_invested_krw
+        total_current   = kr_current + us_current_krw
+        all_results     = kr_results + us_results
+
         return {
-            'holdings': results,
+            'holdings': all_results,
             'summary': {
                 'total_invested': round(total_invested, 2),
-                'total_current': round(total_current, 2),
-                'profit': round(total_current - total_invested, 2),
-                'profit_pct': profit_pct(total_current, total_invested)
+                'total_current':  round(total_current, 2),
+                'profit':         round(total_current - total_invested, 2),
+                'profit_pct':     profit_pct(total_current, total_invested),
             },
             'kr': {
-                'invested': round(kr_invested, 2),
-                'current': round(kr_current, 2),
-                'profit': round(kr_current - kr_invested, 2),
+                'invested':   round(kr_invested, 2),
+                'current':    round(kr_current, 2),
+                'profit':     round(kr_current - kr_invested, 2),
                 'profit_pct': profit_pct(kr_current, kr_invested),
-                'cash': round(cash, 2),
-                'total': round(kr_current + cash, 2)
+                'cash':       round(cash, 2),
+                'total':      round(kr_current + cash, 2),
             },
             'us': {
                 'invested_usd': round(us_invested_usd, 2),
                 'invested_krw': round(us_invested_krw, 2),
-                'current_usd': round(us_current_usd, 2),
-                'current_krw': round(us_current_krw, 2),
-                'profit_usd': round(us_current_usd - us_invested_usd, 2),
-                'profit_krw': round(us_current_krw - us_invested_krw, 2),
-                'profit_pct': profit_pct(us_current_usd, us_invested_usd),
-                'cash_usd': round(usd_cash, 2),
-                'cash_krw': round(usd_cash * exchange_rate, 2),
-                'total_krw': round(us_current_krw + usd_cash * exchange_rate, 2)
+                'current_usd':  round(us_current_usd, 2),
+                'current_krw':  round(us_current_krw, 2),
+                'profit_usd':   round(us_current_usd - us_invested_usd, 2),
+                'profit_krw':   round(us_current_krw - us_invested_krw, 2),
+                'profit_pct':   profit_pct(us_current_usd, us_invested_usd),
+                'cash_usd':     round(usd_cash, 2),
+                'cash_krw':     round(usd_cash * exchange_rate, 2),
+                'total_krw':    round(us_current_krw + usd_cash * exchange_rate, 2),
             },
-            'balances': cls.calculate_balances(results, cash, usd_cash, exchange_rate)
+            'balances': cls.calculate_balances(all_results, cash, usd_cash, exchange_rate),
         }
 
     @classmethod
