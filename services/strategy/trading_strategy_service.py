@@ -141,7 +141,7 @@ class TradingStrategyService:
         """DB에서 user_id 전략 상태 로드. {user_id: {sell_cooldown, ...}} 형태 반환."""
         from repositories.strategy_state_repo import StrategyStateRepo
         user_state = StrategyStateRepo.load(user_id)
-        return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}}}
+        return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}, "split_orders": {}}}
 
     @classmethod
     def _save_state(cls, state: dict) -> None:
@@ -695,6 +695,23 @@ class TradingStrategyService:
         return bool(executed)
 
     @classmethod
+    def _is_buy_cooldown_active(cls, ticker: str, today: str, current_price: float, add_buy_cooldown: dict) -> bool:
+        """쿨다운 활성 여부 판단. 구버전(str) 하위 호환 포함.
+        구매가 대비 -5% 이하 하락 시 쿨다운 예외(당일 재매수 허용).
+        """
+        cd = add_buy_cooldown.get(ticker)
+        if not cd:
+            return False
+        if isinstance(cd, str):             # 구버전: "YYYY-MM-DD"
+            return cd == today
+        if cd.get('date') != today:         # 다른 날 → 쿨다운 만료
+            return False
+        buy_price = cd.get('price', 0)
+        if buy_price > 0 and current_price <= buy_price * 0.95:  # -5% 예외
+            return False
+        return True
+
+    @classmethod
     def _handle_add_buy_signal(
         cls, ticker: str, holding: dict, profit_pct: float, stop_loss_pct: float,
         current_rsi: float, add_rsi_limit: float, add_score_limit: int, score: int,
@@ -714,41 +731,76 @@ class TradingStrategyService:
         if score > add_score_limit:
             logger.info(f"⏭️ {ticker} 추가매수 스코어 불충족({score} > {add_score_limit}). 스킵.")
             return False
-        if add_buy_cooldown.get(ticker) == today:
+        current_price_val = getattr(state, 'current_price', 0)
+        if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
             logger.info(f"⏭️ {ticker} 추가매수 쿨다운 중 (오늘 이미 추매). 내일 재판단.")
             return False
         executed = cls._execute_trade_v2(
             ticker, "buy", f"추가매수({profit_pct:.2f}%)", profit_pct, True, score,
-            getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
+            current_price_val, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
         if executed:
-            add_buy_cooldown[ticker] = today
+            add_buy_cooldown[ticker] = {"date": today, "price": current_price_val}
         return bool(executed)
 
     @classmethod
-    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict, today: str, state, market_total: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float) -> bool:
+    def _handle_score_trade(cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float, buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict, today: str, state, market_total: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, macro_data: dict, target_cash_kr: float, target_cash_us: float, split_orders: dict = None) -> bool:
         """점수 기반 매수/매도 처리. Returns executed."""
         from utils.logger import get_logger
         logger = get_logger("strategy_service")
-        if 0 < score <= buy_max and not holding:  # score=0 은 매수 제외
-            # ETF/기타 섹터 신규 매수 차단
-            sector = getattr(state, 'sector', '') or ''
-            if sector in ('ETF', 'Others', '미분류/ETF'):
-                logger.info(f"⏭️ {ticker} ETF/기타 섹터 신규 매수 차단 (sector={sector}). 스킵.")
-                return False
-            # 당일 신규 매수 쿨다운 (KIS 반영 지연 대비)
-            if add_buy_cooldown.get(ticker) == today:
+        if split_orders is None:
+            split_orders = {}
+        has_pending_splits = ticker in split_orders
+        if 0 < score <= buy_max and (not holding or has_pending_splits):  # score=0 은 매수 제외
+            # ETF/기타 섹터 신규 매수 차단 (분할 진행 중이면 예외)
+            if not has_pending_splits:
+                sector = getattr(state, 'sector', '') or ''
+                if sector in ('ETF', 'Others', '미분류/ETF'):
+                    logger.info(f"⏭️ {ticker} ETF/기타 섹터 신규 매수 차단 (sector={sector}). 스킵.")
+                    return False
+            current_price_val = getattr(state, 'current_price', 0)
+            if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
                 logger.info(f"⏭️ {ticker} 신규매수 쿨다운 중 (오늘 이미 매수). 내일 재판단.")
                 return False
-            executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}]", profit_pct, False, score, getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
-            add_buy_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
+            # 분할 주문 초기화 또는 기존 진행 상황 로드
+            if not has_pending_splits:
+                is_kr_flag = is_kr(ticker)
+                total_qty, _, _ = cls._calculate_buy_quantity(score, cash_balance, current_price_val, exchange_rate, is_kr_flag, market_total)
+                if total_qty <= 0:
+                    logger.warning(f"⚠️ {ticker} 잔고 부족 또는 수량 0. 매수 불가.")
+                    return False
+                split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
+                split_orders[ticker] = {
+                    "total_qty": total_qty,
+                    "remaining_qty": total_qty,
+                    "splits_done": 0,
+                    "split_count": split_count,
+                    "start_date": today,
+                    "entry_price": current_price_val,
+                }
+            so = split_orders[ticker]
+            remaining = so["remaining_qty"]
+            splits_left = so["split_count"] - so["splits_done"]
+            # 올림 나눗셈으로 앞 차수에 더 많이 배분: [2,2,1] 형태
+            this_run_qty = -(-remaining // splits_left) if splits_left > 0 and remaining > 0 else remaining
+            if this_run_qty <= 0:
+                split_orders.pop(ticker, None)
+                return False
+            executed = cls._execute_trade_v2(ticker, "buy", f"점수 {score} [{reason_str}] ({so['splits_done']+1}/{so['split_count']}차)", profit_pct, bool(holding), score, current_price_val, market_total, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us, forced_qty=this_run_qty)
+            if executed:
+                so["splits_done"] += 1
+                so["remaining_qty"] -= this_run_qty
+                if so["remaining_qty"] <= 0:
+                    split_orders.pop(ticker, None)
+                add_buy_cooldown[ticker] = {"date": today, "price": current_price_val}
             return bool(executed)
         if score >= sell_min and holding:
             if sell_cooldown.get(ticker) == today:
                 logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 점수매도). 내일 재판단.")
                 return False
+            split_orders.pop(ticker, None)  # 잔여 분할매수 취소
             executed = cls._execute_trade_v2(ticker, "sell", f"점수 {score} [{reason_str}]", profit_pct, True, score, getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data, target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us)
             sell_cooldown[ticker] = today  # 성공/실패 무관 당일 재시도 방지
             return bool(executed)
@@ -761,6 +813,7 @@ class TradingStrategyService:
         sell_cooldown: dict, add_buy_cooldown: dict, today: str,
         holdings: list, user_id: str, kr_total: float, us_total_krw: float, cash_balance: float,
         exchange_rate: float, macro_data: dict, target_cash_kr: float, target_cash_us: float,
+        split_orders: dict = None,
     ) -> bool:
         """시그널 1건을 처리하여 매매 실행 여부 반환."""
         from utils.logger import get_logger
@@ -784,7 +837,7 @@ class TradingStrategyService:
         current_rsi = getattr(state, 'rsi', 50.0)
         if cls._handle_add_buy_signal(ticker, holding, profit_pct, stop_loss_pct, current_rsi, add_rsi_limit, add_score_limit, score, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, **common_kwargs):
             return True
-        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)
+        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders)
 
     @classmethod
     def _check_unmonitored_holdings(
@@ -843,6 +896,7 @@ class TradingStrategyService:
         exchange_rate = MacroService.get_exchange_rate()
         sell_cooldown: dict = (user_state or {}).setdefault('sell_cooldown', {})
         add_buy_cooldown: dict = (user_state or {}).setdefault('add_buy_cooldown', {})
+        split_orders: dict = (user_state or {}).setdefault('split_orders', {})
         stop_loss_pct = SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0)
         add_rsi_limit = SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0)
         add_score_limit = SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55)
@@ -853,7 +907,7 @@ class TradingStrategyService:
                 sig, buy_max, sell_min, take_profit_pct, stop_loss_pct, add_rsi_limit,
                 add_score_limit, sell_cooldown, add_buy_cooldown, today,
                 holdings, user_id, kr_total, us_total_krw, cash_balance, exchange_rate,
-                macro_data, target_cash_kr, target_cash_us,
+                macro_data, target_cash_kr, target_cash_us, split_orders=split_orders,
             ) or trade_executed
 
         # 모니터링 유니버스 외 보유 종목(ETF 등) 스탑로스/익절 체크
@@ -943,6 +997,7 @@ class TradingStrategyService:
         user_state = state.setdefault(user_id, {})
         if 'panic_locks' not in user_state:
             user_state['panic_locks'] = {}
+        user_state.setdefault('split_orders', {})
         return user_state
 
     @classmethod
@@ -1373,29 +1428,25 @@ class TradingStrategyService:
 
     @classmethod
     def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr: bool, market_total_krw: float = 0.0) -> tuple:
-        """투자 비중에 따른 매수 수량 및 필요 소요 자금(원화) 계산.
+        """투자 비중에 따른 총 매수 수량 및 필요 소요 자금(원화) 계산.
+        반환값은 전체 목표 수량(분할 분배는 caller에서 처리).
         market_total_krw: 해당 시장(KR 또는 US) 포트폴리오 총액(원화).
         """
         per_trade_ratio = SettingsService.get_float("STRATEGY_PER_TRADE_RATIO", 0.05)
-        split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
-        buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 75)
 
         base_assets = market_total_krw
         multiplier = 2.0 if score >= 90 else (1.5 if score >= 80 else 1.0)
         target_invest_krw = base_assets * per_trade_ratio * multiplier
-        one_time_invest_krw = target_invest_krw / split_count
-        actual_invest_krw = min(one_time_invest_krw, cash_balance)
-        
+        actual_invest_krw = min(target_invest_krw, cash_balance)
+
         final_price = current_price if is_kr else current_price * exchange_rate
-        quantity = int(actual_invest_krw // final_price) if final_price > 0 else 0
-        
-        if quantity == 0 and score >= buy_threshold and cash_balance >= final_price:
-            from utils.logger import get_logger
-            logger = get_logger("strategy_service")
+        total_qty = int(actual_invest_krw // final_price) if final_price > 0 else 0
+
+        if total_qty == 0 and cash_balance >= final_price:
             logger.info("💡 소액 자산 보정: 최소 수량(1주) 확보를 위해 비중 상향 조정 집행")
-            quantity = 1
-            
-        return quantity, quantity * final_price, final_price
+            total_qty = 1
+
+        return total_qty, total_qty * final_price, final_price
 
     @classmethod
     def _send_tick_alert(cls, ticker: str, side: str, current_price: float, qty: int, reason: str, pnl_pct: float = 0.0, holding: dict = None) -> None:
@@ -1522,8 +1573,11 @@ class TradingStrategyService:
         current_price: float, market_total: float, cash_balance: float,
         exchange_rate: float, holdings: list, user_id: str, holding: Optional[dict],
         macro: dict, target_cash_ratio_kr: float, target_cash_ratio_us: float,
+        forced_qty: int = None,
     ) -> tuple[bool, int]:
-        """매수 주문 실행 (현금/비중 조건 검사 포함). Returns (executed, trade_qty)."""
+        """매수 주문 실행 (현금/비중 조건 검사 포함). Returns (executed, trade_qty).
+        forced_qty: 지정 시 수량 계산을 건너뛰고 해당 수량으로 직접 주문.
+        """
         if not cls._check_buy_cash_and_entry_conditions(
             ticker, cash_balance, is_holding, profit_pct,
             holdings, exchange_rate,
@@ -1531,8 +1585,12 @@ class TradingStrategyService:
         ):
             return False, 0
         is_kr_flag, holdings, kr_assets, us_assets_krw = cls._compute_buy_market_totals(ticker, holdings, cash_balance, exchange_rate, user_id)
-        market_total_krw = kr_assets if is_kr_flag else us_assets_krw
-        quantity, est_krw, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw)
+        if forced_qty is not None:
+            quantity = forced_qty
+            final_price = current_price if is_kr_flag else current_price * exchange_rate
+        else:
+            market_total_krw = kr_assets if is_kr_flag else us_assets_krw
+            quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw)
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} 잔고 부족 (필요: {final_price:,.0f}원)")
             return False, 0
@@ -1571,7 +1629,7 @@ class TradingStrategyService:
 
     @classmethod
     def _execute_trade_v2(
-        cls, ticker: str, side: str, reason: str, profit_pct: float, is_holding: bool, score: int, current_price: float, market_total: float, cash_balance: float, exchange_rate: float, holdings: list = None, user_id: str = "sean", holding: dict = None, macro: dict = None, target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None
+        cls, ticker: str, side: str, reason: str, profit_pct: float, is_holding: bool, score: int, current_price: float, market_total: float, cash_balance: float, exchange_rate: float, holdings: list = None, user_id: str = "sean", holding: dict = None, macro: dict = None, target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None, forced_qty: int = None
     ) -> bool:
         """분할 매수/매도 실행 로직"""
         logger.info(f"📢 시그널 [{side.upper()}] {ticker} - 사유: {reason}")
@@ -1586,7 +1644,7 @@ class TradingStrategyService:
             executed, trade_qty = cls._execute_buy_order(
                 ticker, score, profit_pct, is_holding, current_price, market_total,
                 cash_balance, exchange_rate, holdings, user_id, holding, macro,
-                target_cash_ratio_kr, target_cash_ratio_us,
+                target_cash_ratio_kr, target_cash_ratio_us, forced_qty=forced_qty,
             )
         elif side == "sell":
             executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id)

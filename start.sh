@@ -41,7 +41,7 @@ echo "======================================================"
 
 # ── 1. 필수 디렉터리 생성 ─────────────────────────────────────────────────────
 mkdir -p data logs
-echo "[1/4] 디렉터리 확인 완료 (data/, logs/)"
+echo "[1/5] 디렉터리 확인 완료 (data/, logs/)"
 
 # ── 2. .env 파일 확인 ─────────────────────────────────────────────────────────
 if [[ ! -f ".env" ]]; then
@@ -53,7 +53,7 @@ if [[ ! -f ".env" ]]; then
     echo ""
     exit 1
 fi
-echo "[2/4] .env 파일 확인 완료"
+echo "[2/5] .env 파일 확인 완료"
 
 # ── 3. Python venv 설정 ───────────────────────────────────────────────────────
 if [[ ! -d "venv" ]]; then
@@ -63,7 +63,7 @@ fi
 
 # shellcheck disable=SC1091
 source venv/bin/activate
-echo "[3/4] venv 활성화 완료 ($(python --version))"
+echo "[3/5] venv 활성화 완료 ($(python --version))"
 
 # requirements.txt 가 venv보다 최신이면 재설치
 REQ="requirements.txt"

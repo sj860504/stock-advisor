@@ -7,7 +7,7 @@ from models.strategy_state import StrategyState
 
 logger = get_logger("strategy_state_repo")
 
-_USER_FIELDS = ("sell_cooldown", "add_buy_cooldown", "panic_locks", "tick_trade")
+_USER_FIELDS = ("sell_cooldown", "add_buy_cooldown", "panic_locks", "tick_trade", "split_orders")
 
 
 class StrategyStateRepo:
