@@ -306,7 +306,7 @@ class KisService:
 
     @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
-        """해외 주식 잔고 조회 (실패 시 None)"""
+        """해외 주식 잔고 조회 - 전 거래소(NYSE/NASD/AMEX 포함) (실패 시 None)"""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -315,7 +315,7 @@ class KisService:
         tr_ids = ["VTTS3012R", "TTTS3012R", "VTTT3012R", "TTTT3012R"]
         params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
-            "OVRS_EXCG_CD": "NASD", "TR_CRCY_CD": "USD",
+            "OVRS_EXCG_CD": "", "TR_CRCY_CD": "USD",
             "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""
         }
 
@@ -335,12 +335,12 @@ class KisService:
         return None
 
     @classmethod
-    def _fetch_overseas_available_cash_raw(cls, tr_id: str, cano: str, acnt_prdt_cd: str, item_cd: str) -> Optional[dict]:
+    def _fetch_overseas_available_cash_raw(cls, tr_id: str, cano: str, acnt_prdt_cd: str, item_cd: str, excg_cd: str = "NASD") -> Optional[dict]:
         """해외 매수가능금액 API 호출 후 output dict 반환. 오류 시 None."""
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount"
         params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
-            "OVRS_EXCG_CD": "NASD", "OVRS_CRCY_CD": "USD",
+            "OVRS_EXCG_CD": excg_cd, "OVRS_CRCY_CD": "USD",
             "OVRS_ORD_UNPR": "0", "ITEM_CD": item_cd
         }
         headers = cls.get_headers(tr_id)
@@ -359,30 +359,32 @@ class KisService:
 
     @classmethod
     def get_overseas_available_cash(cls) -> Optional[float]:
-        """해외 주식 가용 현금 조회 - 매수가능금액 조회 API 사용 (VTTS3007R)"""
+        """해외 주식 실제 현금 조회 - 주문가능외화금액 + T+2 정산 대기금 포함"""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
 
         tr_id = "VTTS3007R" if Config.KIS_IS_VTS else "TTTS3007R"
 
-        # ITEM_CD 파라미터 필요 - 해외 잔고에서 첫 번째 종목 코드 사용
+        # 보유 종목에서 item_cd/거래소 코드 추출 (cash 조회용 임시 종목 필요)
+        # 보유 종목 없으면 AAPL/NASD 기본값으로 API 호출 (현금 잔고는 종목 무관)
         overseas_balance = cls.get_overseas_balance()
-        item_cd = None
-        if overseas_balance and overseas_balance.get("holdings") and len(overseas_balance["holdings"]) > 0:
-            item_cd = overseas_balance["holdings"][0].get("ovrs_pdno")
-        if not item_cd:
-            logger.warning("⚠️ Cannot get USD available cash: no overseas holdings found")
-            return None
+        item_cd = "AAPL"
+        excg_cd = "NASD"
+        if overseas_balance and overseas_balance.get("holdings"):
+            first = overseas_balance["holdings"][0]
+            item_cd = first.get("ovrs_pdno") or item_cd
+            excg_cd = first.get("ovrs_excg_cd") or excg_cd
 
         try:
-            output = cls._fetch_overseas_available_cash_raw(tr_id, cano, acnt_prdt_cd, item_cd)
+            output = cls._fetch_overseas_available_cash_raw(tr_id, cano, acnt_prdt_cd, item_cd, excg_cd)
             if output:
-                # 주문가능외화금액 (ord_psbl_frcr_amt) 사용
-                available_usd = float(output.get("ord_psbl_frcr_amt") or 0)
+                # T+2 정산 포함 실제 현금: 외화인출가능금액2(D+2) 우선, 없으면 주문가능외화금액
+                frcr_drwg2 = float(output.get("frcr_drwg_psbl_amt2") or 0)
+                ord_psbl = float(output.get("ord_psbl_frcr_amt") or 0)
+                available_usd = frcr_drwg2 if frcr_drwg2 > 0 else ord_psbl
                 if available_usd > 0:
-                    logger.info(f"✅ USD 가용 현금 조회 성공: ${available_usd:,.2f}")
-                    # 데이터베이스에 저장
+                    logger.info(f"✅ USD 실제 현금 조회 성공: ${available_usd:,.2f} (T+2 포함)")
                     from services.config.settings_service import SettingsService
                     SettingsService.set_setting("PORTFOLIO_USD_CASH_BALANCE", str(available_usd))
                     return available_usd
