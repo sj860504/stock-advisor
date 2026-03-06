@@ -664,11 +664,6 @@ let tradeMode = 'buy';
 let macroCache = null;
 
 // ─── Auth ───────────────────────────────────────────────────────
-const TOKEN_KEY = 'advisor_token';
-
-function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
-function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
-function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
 
 function showLogin(msg='') {
     document.getElementById('login-overlay').classList.add('show');
@@ -691,11 +686,11 @@ async function doLogin() {
         const res = await fetch(API + '/auth/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
             body: JSON.stringify({username: id, password: pw}),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || '로그인 실패');
-        setToken(data.access_token);
         hideLogin();
         initApp();
     } catch(e) {
@@ -705,8 +700,8 @@ async function doLogin() {
     }
 }
 
-function logout() {
-    clearToken();
+async function logout() {
+    await fetch(API + '/auth/logout', { method: 'POST', credentials: 'include' });
     showLogin();
 }
 
@@ -739,12 +734,8 @@ const getSym = (d) => isKr(d) ? '₩' : '$';
 const fmtKrw = (v) => v == null ? '-' : '₩' + Math.round(Number(v)).toLocaleString();
 
 async function apiFetch(path, opts={}) {
-    const token = getToken();
-    const headers = { ...(opts.headers || {}) };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-    const r = await fetch(API + path, { ...opts, headers });
+    const r = await fetch(API + path, { ...opts, credentials: 'include', headers: opts.headers || {} });
     if (r.status === 401) {
-        clearToken();
         showLogin('세션이 만료되었습니다. 다시 로그인해 주세요.');
         throw new Error('unauthorized');
     }
@@ -1866,11 +1857,13 @@ async function initApp() {
     }, 30000);
 }
 
-// 진입점: 토큰 있으면 앱 시작, 없으면 로그인 화면
-(function bootstrap() {
-    if (getToken()) {
+// 진입점: 서버 ping으로 인증 상태 확인
+(async function bootstrap() {
+    try {
+        await apiFetch('/market/macro');
+        hideLogin();
         initApp();
-    } else {
+    } catch(e) {
         showLogin();
     }
 })();

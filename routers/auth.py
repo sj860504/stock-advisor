@@ -1,5 +1,5 @@
 """인증 라우터 — 로그인 및 토큰 검증."""
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
 import bcrypt
@@ -12,12 +12,6 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 class LoginRequest(BaseModel):
     username: str
     password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int  # seconds
 
 
 class TokenVerifyResponse(BaseModel):
@@ -52,9 +46,9 @@ def verify_token(token: str) -> str:
         raise ValueError("invalid token")
 
 
-@router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest) -> TokenResponse:
-    """아이디/비밀번호 검증 후 JWT 토큰 반환."""
+@router.post("/login")
+def login(body: LoginRequest, response: Response):
+    """아이디/비밀번호 검증 후 httpOnly 쿠키로 JWT 설정."""
     valid_user = body.username == Config.AUTH_USERNAME
     valid_pass = _verify_password(body.password, Config.AUTH_PASSWORD_HASH)
     if not (valid_user and valid_pass):
@@ -63,10 +57,22 @@ def login(body: LoginRequest) -> TokenResponse:
             detail="아이디 또는 비밀번호가 올바르지 않습니다.",
         )
     token = create_access_token(body.username)
-    return TokenResponse(
-        access_token=token,
-        expires_in=Config.JWT_EXPIRE_HOURS * 3600,
+    response.set_cookie(
+        key="session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,  # 30일
+        secure=False,             # HTTP 서버; HTTPS면 True로
     )
+    return {"ok": True}
+
+
+@router.post("/logout")
+def logout(response: Response):
+    """쿠키 삭제."""
+    response.delete_cookie("session")
+    return {"ok": True}
 
 
 @router.get("/verify", response_model=TokenVerifyResponse)

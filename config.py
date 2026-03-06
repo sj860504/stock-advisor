@@ -67,10 +67,14 @@ class Config:
     STRATEGY_OVERSOLD_RSI = float(os.getenv("STRATEGY_OVERSOLD_RSI", "30.0"))
     STRATEGY_OVERBOUGHT_RSI = float(os.getenv("STRATEGY_OVERBOUGHT_RSI", "70.0"))
 
+    # USD/KRW 환율 (실시간 연동 전까지 사용하는 기본값)
+    # macro_service.get_exchange_rate() 및 portfolio_service 공통 사용
+    EXCHANGE_RATE_KRW_USD: float = float(os.getenv("EXCHANGE_RATE_KRW_USD", "1400"))
+
     # 인증 (JWT)
     JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
     JWT_ALGORITHM = "HS256"
-    JWT_EXPIRE_HOURS = 24
+    JWT_EXPIRE_HOURS = 30 * 24  # 720 (30일)
     AUTH_USERNAME = os.getenv("AUTH_USERNAME", "sean")
     AUTH_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
 

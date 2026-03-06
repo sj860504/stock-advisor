@@ -48,7 +48,7 @@ app = FastAPI(
 )
 
 # ── 인증 미들웨어 ────────────────────────────────────────────────
-_PUBLIC_PATHS = {"/api/auth/login", "/api/auth/verify"}
+_PUBLIC_PATHS = {"/api/auth/login", "/api/auth/verify", "/api/auth/logout"}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -59,11 +59,10 @@ async def auth_middleware(request: Request, call_next):
     # 공개 엔드포인트 통과
     if path in _PUBLIC_PATHS:
         return await call_next(request)
-    # Authorization 헤더 검증
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    # 쿠키에서 토큰 읽기
+    token = request.cookies.get("session", "")
+    if not token:
         return JSONResponse(status_code=401, content={"detail": "인증이 필요합니다."})
-    token = auth_header[7:]
     try:
         verify_token(token)
     except ValueError as e:
