@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # 한국투자증권 설정 — VTS(모의투자, 주문용)
+    # 한국투자증권 설정 — VTS(모의투자, 주문용) 3333
     KIS_APP_KEY = os.getenv("KIS_APP_KEY")
     KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
     KIS_BASE_URL = os.getenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
