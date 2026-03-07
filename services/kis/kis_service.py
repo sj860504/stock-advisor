@@ -384,7 +384,7 @@ class KisService:
                 ord_psbl = float(output.get("ord_psbl_frcr_amt") or 0)
                 available_usd = frcr_drwg2 if frcr_drwg2 > 0 else ord_psbl
                 if available_usd > 0:
-                    logger.info(f"✅ USD 실제 현금 조회 성공: ${available_usd:,.2f} (T+2 포함)")
+                    logger.info(f"✅ USD actual cash query succeeded: ${available_usd:,.2f} (incl. T+2)")
                     from services.config.settings_service import SettingsService
                     SettingsService.set_setting("PORTFOLIO_USD_CASH_BALANCE", str(available_usd))
                     return available_usd
@@ -469,8 +469,8 @@ class KisService:
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy") -> dict:
         """국내 주식 주문 (매수/매도)"""
         if Config.DEV_MODE:
-            logger.info(f"[DEV MODE] 실제 주문 차단 → {order_type.upper()} {ticker} {quantity}qty @ {price}")
-            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
+            logger.info(f"[DEV MODE] Live order blocked → {order_type.upper()} {ticker} {quantity}qty @ {price}")
+            return {"status": "dev_blocked", "msg": "DEV MODE: Live order blocked"}
         from services.market.stock_meta_service import StockMetaService
         api_name = "주식주문_매수" if order_type == "buy" else "주식주문_매도"
         tr_id, _ = StockMetaService.get_api_info(api_name)
@@ -494,16 +494,16 @@ class KisService:
         - 모의투자(VTS)에서는 차단
         """
         if Config.DEV_MODE:
-            logger.info(f"[DEV MODE] 사후장 주문 차단 → {order_type.upper()} {ticker} {quantity}qty")
-            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
+            logger.info(f"[DEV MODE] After-hours order blocked → {order_type.upper()} {ticker} {quantity}qty")
+            return {"status": "dev_blocked", "msg": "DEV MODE: Live order blocked"}
         if Config.KIS_IS_VTS:
-            return {"status": "failed", "msg": "사후장 주문은 모의투자(VTS)에서 지원하지 않습니다."}
+            return {"status": "failed", "msg": "After-hours orders are not supported in paper trading (VTS)."}
         if not Config.KIS_ENABLE_AFTER_HOURS_ORDER:
-            return {"status": "failed", "msg": "사후장 주문이 비활성화되어 있습니다. (KIS_ENABLE_AFTER_HOURS_ORDER=false)"}
+            return {"status": "failed", "msg": "After-hours orders are disabled. (KIS_ENABLE_AFTER_HOURS_ORDER=false)"}
         if not is_kr(ticker):
-            return {"status": "failed", "msg": "사후장 주문은 국내 주식 티커만 지원합니다."}
+            return {"status": "failed", "msg": "After-hours orders only support domestic stock tickers."}
         if not MarketHourService.is_kr_after_hours_open():
-            return {"status": "failed", "msg": "한국 사후장 주문 가능 시간이 아닙니다."}
+            return {"status": "failed", "msg": "Not within KR after-hours order window."}
 
         from services.market.stock_meta_service import StockMetaService
         api_name = "주식주문_매수" if order_type == "buy" else "주식주문_매도"
@@ -533,13 +533,13 @@ class KisService:
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD") -> dict:
         """해외 주식 주문 (미국 기준, 초당 거래건수 제한 준수)"""
         if Config.DEV_MODE:
-            logger.info(f"[DEV MODE] 해외 주문 차단 → {order_type.upper()} {ticker} {quantity}qty @ {price}")
-            return {"status": "dev_blocked", "msg": "DEV MODE: 실제 주문 차단됨"}
+            logger.info(f"[DEV MODE] Overseas order blocked → {order_type.upper()} {ticker} {quantity}qty @ {price}")
+            return {"status": "dev_blocked", "msg": "DEV MODE: Live order blocked"}
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
         if price <= 0:
-            return {"status": "error", "msg": "해외 주식 주문 시 지정가(price)를 입력해야 합니다."}
+            return {"status": "error", "msg": "Overseas stock orders require a limit price."}
         from services.market.stock_meta_service import StockMetaService
         api_name = "해외주식_미국매수" if order_type == "buy" else "해외주식_미국매도"
         tr_id, _ = StockMetaService.get_api_info(api_name)

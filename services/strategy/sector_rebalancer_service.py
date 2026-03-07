@@ -61,14 +61,14 @@ class SectorRebalancerService:
         """초과 그룹 내 보유 종목 1건에 대해 매도 시도. Returns (executed, skipped_entry, cash_delta)."""
         ticker = h["ticker"]
         if not TradeExecutorService._check_market_hours(ticker):
-            return False, {"ticker": ticker, "reason": "시장비개장"}, 0.0
+            return False, {"ticker": ticker, "reason": "market_closed"}, 0.0
         current_price = float(h.get("current_price") or 0)
         buy_price     = float(h.get("buy_price") or 0)
         profit_pct    = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
         if profit_pct < 0:
-            return False, {"ticker": ticker, "reason": f"손실중({profit_pct:.1f}%) 리밸런싱 제외"}, 0.0
+            return False, {"ticker": ticker, "reason": f"in_loss({profit_pct:.1f}%) rebalance_excluded"}, 0.0
         executed = TradeExecutorService._execute_trade_v2(
-            ticker, "sell", f"섹터리밸런싱-초과({grp} {dev:+.1%})",
+            ticker, "sell", f"sector_rebalance_overweight({grp} {dev:+.1%})",
             profit_pct, True, 60, current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=h, macro=macro,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -149,11 +149,11 @@ class SectorRebalancerService:
         skipped = []
         for ticker, state, holding, score, reasons in candidates:
             if score > buy_threshold + 10:
-                skipped.append({"ticker": ticker, "reason": f"매수신호미달(score={score})"})
+                skipped.append({"ticker": ticker, "reason": f"buy_signal_not_met(score={score})"})
                 continue
             market_total = kr_total if is_kr(ticker) else us_total_krw
             executed = TradeExecutorService._execute_trade_v2(
-                ticker, "buy", f"섹터리밸런싱-부족({grp} {dev:+.1%})",
+                ticker, "buy", f"sector_rebalance_underweight({grp} {dev:+.1%})",
                 0.0, False, score, getattr(state, "current_price", 0),
                 market_total, cash_balance, exchange_rate,
                 holdings=holdings, user_id=user_id, holding=holding, macro=macro,
@@ -202,18 +202,18 @@ class SectorRebalancerService:
     def _build_rebalance_summary(cls, sold: list, bought: list, weights_before: dict, weights_after: dict) -> str:
         """섹터 리밸런싱 결과 Slack 요약 문자열 생성"""
         summary = (
-            f"🔄 *주간 섹터 리밸런싱 완료*\n"
-            f"매도: {len(sold)}건  |  매수: {len(bought)}건\n"
+            f"🔄 *Weekly Sector Rebalancing Complete*\n"
+            f"Sells: {len(sold)}  |  Buys: {len(bought)}\n"
         )
         if sold:
-            summary += "매도: " + ", ".join(f"{s['ticker']}({s['group']} {s['profit_pct']:+.1f}%)" for s in sold) + "\n"
+            summary += "Sold: " + ", ".join(f"{s['ticker']}({s['group']} {s['profit_pct']:+.1f}%)" for s in sold) + "\n"
         if bought:
-            summary += "매수: " + ", ".join(f"{b['ticker']}({b['group']})" for b in bought) + "\n"
+            summary += "Bought: " + ", ".join(f"{b['ticker']}({b['group']})" for b in bought) + "\n"
         for grp in ["tech", "value", "financial"]:
             bef = weights_before.get(grp, {}).get("weight", 0)
             aft = weights_after.get(grp, {}).get("weight", 0)
             tgt = TradeExecutorService.SECTOR_TARGET_WEIGHT.get(grp, 0)
-            summary += f"  {grp}: {bef:.1%} → {aft:.1%}  (목표 {tgt:.0%})\n"
+            summary += f"  {grp}: {bef:.1%} → {aft:.1%}  (target {tgt:.0%})\n"
         return summary
 
     @classmethod
@@ -257,7 +257,7 @@ class SectorRebalancerService:
         초과 섹터 → 수익 높은 보유 종목 분할 매도
         부족 섹터 → DCF 저평가 + RSI 낮은 후보 매수
         """
-        logger.info("🔄 주간 섹터 리밸런싱 시작...")
+        logger.info("🔄 Weekly sector rebalancing started...")
         exchange_rate = MacroService.get_exchange_rate()
         holdings      = PortfolioService.load_portfolio(user_id)
         macro         = MacroService.get_macro_data()

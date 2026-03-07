@@ -23,20 +23,20 @@ FRED_BASE = "https://api.stlouisfed.org/fred"
 # release_id: FRED 발표 그룹 ID (캘린더 조회용)
 # freq: "monthly" | "weekly" | "monthly_2" (격월)
 SERIES_META: dict[str, dict] = {
-    "CPIAUCSL":      {"release_id": "10",  "name": "소비자물가지수(CPI)",    "time_et": "08:30", "weight": 3, "freq": "monthly"},
-    "PPIACO":        {"release_id": "31",  "name": "생산자물가지수(PPI)",    "time_et": "08:30", "weight": 2, "freq": "monthly"},
-    "PAYEMS":        {"release_id": "50",  "name": "비농업고용(NFP)",        "time_et": "08:30", "weight": 3, "freq": "monthly"},
-    "UNRATE":        {"release_id": "50",  "name": "실업률",                 "time_et": "08:30", "weight": 3, "freq": "monthly"},
-    "CES0500000003": {"release_id": "50",  "name": "시간당평균임금",          "time_et": "08:30", "weight": 1, "freq": "monthly"},
-    "UMCSENT":       {"release_id": "290", "name": "소비자신뢰지수(미시간)", "time_et": "10:00", "weight": 2, "freq": "monthly"},
-    "IPMAN":         {"release_id": "13",  "name": "제조업생산지수(산업생산)",  "time_et": "09:15", "weight": 2, "freq": "monthly"},
-    "RSXFS":         {"release_id": "84",  "name": "소매판매",               "time_et": "08:30", "weight": 2, "freq": "monthly"},
-    "INDPRO":        {"release_id": "13",  "name": "산업생산지수",            "time_et": "09:15", "weight": 1, "freq": "monthly"},
-    "TCU":           {"release_id": "13",  "name": "설비가동률",             "time_et": "09:15", "weight": 1, "freq": "monthly"},
-    "HOUST":         {"release_id": "52",  "name": "주택착공",               "time_et": "08:30", "weight": 1, "freq": "monthly"},
-    "PERMIT":        {"release_id": "52",  "name": "건축허가",               "time_et": "08:30", "weight": 1, "freq": "monthly"},
-    "DGORDER":       {"release_id": "86",  "name": "내구재주문",             "time_et": "08:30", "weight": 2, "freq": "monthly"},
-    "ICSA":          {"release_id": "120", "name": "실업수당청구(주간)",      "time_et": "08:30", "weight": 2, "freq": "weekly"},
+    "CPIAUCSL":      {"release_id": "10",  "name": "CPI",                          "time_et": "08:30", "weight": 3, "freq": "monthly"},
+    "PPIACO":        {"release_id": "31",  "name": "PPI",                          "time_et": "08:30", "weight": 2, "freq": "monthly"},
+    "PAYEMS":        {"release_id": "50",  "name": "Nonfarm Payrolls (NFP)",       "time_et": "08:30", "weight": 3, "freq": "monthly"},
+    "UNRATE":        {"release_id": "50",  "name": "Unemployment Rate",            "time_et": "08:30", "weight": 3, "freq": "monthly"},
+    "CES0500000003": {"release_id": "50",  "name": "Average Hourly Earnings",      "time_et": "08:30", "weight": 1, "freq": "monthly"},
+    "UMCSENT":       {"release_id": "290", "name": "UMich Consumer Sentiment",     "time_et": "10:00", "weight": 2, "freq": "monthly"},
+    "IPMAN":         {"release_id": "13",  "name": "Manufacturing Production",     "time_et": "09:15", "weight": 2, "freq": "monthly"},
+    "RSXFS":         {"release_id": "84",  "name": "Retail Sales",                 "time_et": "08:30", "weight": 2, "freq": "monthly"},
+    "INDPRO":        {"release_id": "13",  "name": "Industrial Production",        "time_et": "09:15", "weight": 1, "freq": "monthly"},
+    "TCU":           {"release_id": "13",  "name": "Capacity Utilization",         "time_et": "09:15", "weight": 1, "freq": "monthly"},
+    "HOUST":         {"release_id": "52",  "name": "Housing Starts",               "time_et": "08:30", "weight": 1, "freq": "monthly"},
+    "PERMIT":        {"release_id": "52",  "name": "Building Permits",             "time_et": "08:30", "weight": 1, "freq": "monthly"},
+    "DGORDER":       {"release_id": "86",  "name": "Durable Goods Orders",         "time_et": "08:30", "weight": 2, "freq": "monthly"},
+    "ICSA":          {"release_id": "120", "name": "Initial Jobless Claims (Wkly)", "time_et": "08:30", "weight": 2, "freq": "weekly"},
 }
 
 # 발표 시각별 그룹 (스케줄러 cron job 등록용)
@@ -98,7 +98,7 @@ class EconomicCalendarService:
                     break
             return deduped
         except Exception as e:
-            logger.debug(f"FRED release/dates 조회 실패 (release_id={release_id}): {e}")
+            logger.debug(f"FRED release/dates query failed (release_id={release_id}): {e}")
             return []
 
     @staticmethod
@@ -193,7 +193,7 @@ class EconomicCalendarService:
                     "new_date":  latest,
                     "prev_date": prev,
                 })
-                logger.info(f"🆕 신규 발표 감지: {meta['name']} ({prev} → {latest})")
+                logger.info(f"🆕 New release detected: {meta['name']} ({prev} → {latest})")
             cls._last_obs_date[series_id] = latest
         return new_releases
 
@@ -254,5 +254,5 @@ class EconomicCalendarService:
             events.append(cls._build_calendar_event(rid, grp, next_date, now_utc))
 
         events.sort(key=lambda e: e["datetime_utc"])
-        logger.info(f"📅 주간 캘린더: {len(events)}개 이벤트 ({today_str} ~ {end_str})")
+        logger.info(f"📅 Weekly calendar: {len(events)} events ({today_str} ~ {end_str})")
         return events

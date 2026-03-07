@@ -406,9 +406,9 @@ class PortfolioService:
         """매도: 수량 차감 후 0 이하이면 목록에서 제거. 잔고 부족 시 ValueError."""
         target = next((h for h in holdings if h.get("ticker") == ticker), None)
         if not target:
-            raise ValueError("보유하지 않은 종목입니다.")
+            raise ValueError("Ticker not found in holdings.")
         if target["quantity"] < quantity:
-            raise ValueError("매도 수량이 보유 수량보다 많습니다.")
+            raise ValueError("Sell quantity exceeds holdings.")
         target["quantity"] -= quantity
         if target["quantity"] <= 0:
             holdings = [h for h in holdings if h.get("ticker") != ticker]
@@ -456,7 +456,7 @@ class PortfolioService:
         holdings = cls.load_portfolio(user_id)
         target = next((h for h in holdings if h.get("ticker") == ticker), None)
         if not target:
-            raise ValueError(f"{ticker} 종목을 찾을 수 없습니다.")
+            raise ValueError(f"Ticker {ticker} not found.")
         target["sector"] = sector
         cls.save_portfolio(user_id, holdings)
         return holdings

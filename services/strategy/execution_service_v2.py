@@ -211,7 +211,7 @@ class TradeExecutorService:
             grp_weight = grp_info.get("weight", 0.0)
             grp_target = cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0)
             if grp_weight > grp_target + cls.SECTOR_REBAL_THRESHOLD:
-                reasons.append(f"섹터그룹비중초과({grp} {grp_weight:.1%} > 목표 {grp_target:.1%})")
+                reasons.append(f"sector_group_weight_exceeded({grp} {grp_weight:.1%} > target {grp_target:.1%})")
         return reasons
 
     @classmethod
@@ -251,7 +251,7 @@ class TradeExecutorService:
         if max_sector > 0:
             ratio = sector_values.get(sector, 0.0) / market_total
             if ratio > max_sector:
-                reasons.append(f"섹터비중초과({sector} {ratio:.2%} > {max_sector:.2%})")
+                reasons.append(f"sector_weight_exceeded({sector} {ratio:.2%} > {max_sector:.2%})")
         reasons.extend(cls._check_sector_group_limit(ticker, holding, holdings, exchange_rate))
         return len(reasons) == 0, reasons
 
@@ -298,7 +298,7 @@ class TradeExecutorService:
         regime_status = macro_data.get('market_regime', {}).get('status', 'Neutral').upper()
         target_cash_kr = cls._get_target_cash_ratio('KR', regime_status)
         target_cash_us = cls._get_target_cash_ratio('US', regime_status)
-        logger.info(f"💰 시장 국면: {regime_status} → KR 총액: {kr_total:,.0f}원, US 총액: {us_total_krw:,.0f}원 | 한국 현금비중 목표: {target_cash_kr:.1%}, 미국 현금비중 목표: {target_cash_us:.1%}")
+        logger.info(f"💰 Market regime: {regime_status} → KR total: {kr_total:,.0f}KRW, US total: {us_total_krw:,.0f}KRW | KR cash ratio target: {target_cash_kr:.1%}, US cash ratio target: {target_cash_us:.1%}")
 
         return kr_total, us_total_krw, target_cash_kr, target_cash_us
 
@@ -372,7 +372,7 @@ class TradeExecutorService:
         total_qty = int(actual_invest_krw // final_price) if final_price > 0 else 0
 
         if total_qty == 0 and cash_balance >= final_price:
-            logger.info("💡 소액 자산 보정: 최소 수량(1주) 확보를 위해 비중 상향 조정 집행")
+            logger.info("💡 Small asset adjustment: increasing allocation to secure minimum qty (1 share)")
             total_qty = 1
 
         return total_qty, total_qty * final_price, final_price
@@ -386,26 +386,26 @@ class TradeExecutorService:
         name = (holding.get("name") if holding and holding.get("name")
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
         is_kr_flag = is_kr(ticker)
-        price_str = f"{current_price:,.0f}원" if is_kr_flag else f"${current_price:,.2f}"
+        price_str = f"{current_price:,.0f}KRW" if is_kr_flag else f"${current_price:,.2f}"
         if side == "buy":
             msg = (
-                f"🔵 *[매수 체결 - 틱매매]*\n"
-                f"• 종목: {ticker} {name}\n"
-                f"• 매수가: {price_str}\n"
-                f"• 수량: {qty}주\n"
-                f"• 사유: {reason}"
+                f"🔵 *[BUY Executed - Tick Trade]*\n"
+                f"• Ticker: {ticker} {name}\n"
+                f"• Buy price: {price_str}\n"
+                f"• Qty: {qty} shares\n"
+                f"• Reason: {reason}"
             )
         else:
             buy_price = float(holding.get("buy_price", 0)) if holding else 0
             profit_amt = (current_price - buy_price) * qty if buy_price else 0
-            profit_amt_str = f"{profit_amt:+,.0f}원" if is_kr_flag else f"${profit_amt:+,.2f}"
+            profit_amt_str = f"{profit_amt:+,.0f}KRW" if is_kr_flag else f"${profit_amt:+,.2f}"
             msg = (
-                f"🔴 *[매도 체결 - 틱매매]*\n"
-                f"• 종목: {ticker} {name}\n"
-                f"• 매도가: {price_str}\n"
-                f"• 수량: {qty}주\n"
-                f"• 수익률: {pnl_pct:+.2f}%  |  수익금: {profit_amt_str}\n"
-                f"• 사유: {reason}"
+                f"🔴 *[SELL Executed - Tick Trade]*\n"
+                f"• Ticker: {ticker} {name}\n"
+                f"• Sell price: {price_str}\n"
+                f"• Qty: {qty} shares\n"
+                f"• PnL: {pnl_pct:+.2f}%  |  Profit: {profit_amt_str}\n"
+                f"• Reason: {reason}"
             )
         AlertService.send_slack_alert(msg)
 
@@ -417,28 +417,28 @@ class TradeExecutorService:
         name = (holding.get("name") if holding and holding.get("name")
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
         is_kr_flag = is_kr(ticker)
-        currency = "원" if is_kr_flag else "USD"
+        currency = "KRW" if is_kr_flag else "USD"
         price_str = f"{current_price:,.0f}{currency}" if is_kr_flag else f"${current_price:,.2f}"
 
         if side == "buy":
             msg = (
-                f"🔵 *[매수 체결]*\n"
-                f"• 종목: {ticker} {name}\n"
-                f"• 매수가: {price_str}\n"
-                f"• 수량: {trade_qty}주\n"
-                f"• 등락률: {change_rate:+.2f}%  |  점수: {score}"
+                f"🔵 *[BUY Executed]*\n"
+                f"• Ticker: {ticker} {name}\n"
+                f"• Buy price: {price_str}\n"
+                f"• Qty: {trade_qty} shares\n"
+                f"• Change: {change_rate:+.2f}%  |  Score: {score}"
             )
         else:
             buy_price = float(holding.get("buy_price", 0)) if holding else 0
             profit_amt = (current_price - buy_price) * trade_qty if buy_price else 0
-            profit_amt_str = (f"{profit_amt:+,.0f}원" if is_kr else f"${profit_amt:+,.2f}")
+            profit_amt_str = (f"{profit_amt:+,.0f}KRW" if is_kr else f"${profit_amt:+,.2f}")
             msg = (
-                f"🔴 *[매도 체결]*\n"
-                f"• 종목: {ticker} {name}\n"
-                f"• 매도가: {price_str}\n"
-                f"• 수량: {trade_qty}주\n"
-                f"• 수익률: {profit_pct:+.2f}%  |  수익금: {profit_amt_str}\n"
-                f"• 등락률: {change_rate:+.2f}%  |  점수: {score}"
+                f"🔴 *[SELL Executed]*\n"
+                f"• Ticker: {ticker} {name}\n"
+                f"• Sell price: {price_str}\n"
+                f"• Qty: {trade_qty} shares\n"
+                f"• PnL: {profit_pct:+.2f}%  |  Profit: {profit_amt_str}\n"
+                f"• Change: {change_rate:+.2f}%  |  Score: {score}"
             )
         AlertService.send_slack_alert(msg)
 
@@ -453,20 +453,20 @@ class TradeExecutorService:
         """현금 잔고 및 진입 조건 검사. 매수 진행 가능하면 True 반환."""
         is_kr_flag = is_kr(ticker)
         if is_kr_flag and cash_balance <= 0:
-            logger.info(f"⏭️ {ticker} 원화 현금 부족 ({cash_balance:,.0f}원). 매수 차단.")
+            logger.info(f"⏭️ {ticker} KRW cash insufficient ({cash_balance:,.0f}KRW). Buy blocked.")
             return False
         if not is_kr_flag:
             _usd_cash = PortfolioService.get_usd_cash_balance()
             if _usd_cash <= 0:
-                logger.info(f"⏭️ {ticker} USD 현금 부족 (${_usd_cash:.2f}). 매수 차단.")
+                logger.info(f"⏭️ {ticker} USD cash insufficient (${_usd_cash:.2f}). Buy blocked.")
                 return False
         if is_holding:
             add_position_below = SettingsService.get_float("STRATEGY_ADD_POSITION_BELOW", -5.0)
             if profit_pct > add_position_below:
-                logger.info(f"⏭️ {ticker} 추가매수 조건 미충족. 주문 스킵.")
+                logger.info(f"⏭️ {ticker} Add-buy condition not met. Order skipped.")
                 return False
         if cls._is_cash_ratio_sufficient(ticker, holdings, cash_balance, exchange_rate, target_cash_ratio_kr, target_cash_ratio_us, macro):
-            logger.info(f"⏭️ {ticker} 현금비중 조건으로 인해 매수 스킵.")
+            logger.info(f"⏭️ {ticker} Cash ratio condition not met. Buy skipped.")
             return False
         return True
 
@@ -492,10 +492,10 @@ class TradeExecutorService:
             fresh = KisFetcher.fetch_overseas_price(token, ticker)
             price = fresh.get("price", 0)
             if price > 0:
-                logger.info(f"🔄 {ticker} 주문 전 가격 재조회: ${price:.2f} (기존: ${fallback:.2f})")
+                logger.info(f"🔄 {ticker} Pre-order price refresh: ${price:.2f} (previous: ${fallback:.2f})")
                 return price
         except Exception as e:
-            logger.warning(f"⚠️ {ticker} 가격 재조회 실패, 기존 가격 사용: {e}")
+            logger.warning(f"⚠️ {ticker} Price refresh failed, using previous price: {e}")
         return fallback
 
     @classmethod
@@ -521,17 +521,17 @@ class TradeExecutorService:
             market_total_krw = kr_assets if is_kr_flag else us_assets_krw
             quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw, usd_cash_krw=usd_cash_krw)
         if quantity <= 0:
-            logger.warning(f"⚠️ {ticker} 잔고 부족 (필요: {final_price:,.0f}원)")
+            logger.warning(f"⚠️ {ticker} Insufficient balance (required: {final_price:,.0f}KRW)")
             return False, 0
-        logger.info(f"⚖️ {ticker} 분할 매수 예정 ({quantity}주)")
+        logger.info(f"⚖️ {ticker} Split buy scheduled ({quantity} shares)")
         if not is_kr_flag:
             current_price = cls._fetch_fresh_us_price(ticker, current_price)
         excg_cd = StockMetaService.get_exchange_code(ticker) if not is_kr_flag else None
         order_result = KisService.send_order(ticker, quantity, 0, "buy") if is_kr_flag else KisService.send_overseas_order(ticker, quantity, round(float(current_price), 2), "buy", market=excg_cd)
         if order_result.get("status") == "success":
-            OrderService.record_trade(ticker, "buy", quantity, final_price, "Strategy execution", "v3_strategy")
+            OrderService.record_trade(ticker, "buy", quantity, final_price, "strategy_execution", "v3_strategy")
             return True, quantity
-        logger.error(f"주문 실패: {order_result}")
+        logger.error(f"Order failed: {order_result}")
         return False, 0
 
     @classmethod
@@ -545,7 +545,7 @@ class TradeExecutorService:
             return False, 0
         holding_qty = current_holding.get("quantity", 0)
         split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
-        sell_qty, msg = max(1, int(holding_qty / split_count)), "분할 매도(익절)"
+        sell_qty, msg = max(1, int(holding_qty / split_count)), "partial_sell(take_profit)"
         buy_price_val = float(current_holding.get("buy_price") or 0) or None
         if not is_kr(ticker):
             current_price = cls._fetch_fresh_us_price(ticker, current_price)
@@ -554,7 +554,7 @@ class TradeExecutorService:
         if order_result.get("status") == "success":
             OrderService.record_trade(ticker, "sell", sell_qty, current_price, msg, "v3_strategy", buy_price=buy_price_val)
             return True, sell_qty
-        logger.error(f"주문 실패: {order_result}")
+        logger.error(f"Order failed: {order_result}")
         return False, 0
 
     # ── 주문 실행 메인 ────────────────────────────────────────────────────────
@@ -569,9 +569,9 @@ class TradeExecutorService:
         forced_qty: int = None
     ) -> bool:
         """분할 매수/매도 실행 로직"""
-        logger.info(f"📢 시그널 [{side.upper()}] {ticker} - 사유: {reason}")
+        logger.info(f"📢 Signal [{side.upper()}] {ticker} - Reason: {reason}")
         if not cls._check_market_hours(ticker):
-            logger.info(f"⏭️ {ticker} 시장 비개장. 주문 스킵.")
+            logger.info(f"⏭️ {ticker} Market closed. Order skipped.")
             return False
 
         state = MarketDataService.get_state(ticker)

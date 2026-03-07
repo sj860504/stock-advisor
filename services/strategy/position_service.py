@@ -36,10 +36,10 @@ class PositionService:
         if not (holding and profit_pct >= take_profit_pct):
             return False
         if sell_cooldown.get(ticker) == today:
-            logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 익절매도). 내일 재판단.")
+            logger.info(f"⏭️ {ticker} Partial sell cooldown active (already took profit today). Re-evaluate tomorrow.")
             return False
         executed = TradeExecutorService._execute_trade_v2(
-            ticker, "sell", f"익절권({profit_pct:.2f}%)", profit_pct, True, score,
+            ticker, "sell", f"take_profit_zone({profit_pct:.2f}%)", profit_pct, True, score,
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -81,17 +81,17 @@ class PositionService:
         if not (holding and profit_pct <= -5.0 and profit_pct > stop_loss_pct):
             return False
         if current_rsi >= add_rsi_limit:
-            logger.info(f"⏭️ {ticker} 추가매수 RSI 과매수({current_rsi:.1f} ≥ {add_rsi_limit}). 스킵.")
+            logger.info(f"⏭️ {ticker} Add-buy RSI overbought ({current_rsi:.1f} >= {add_rsi_limit}). Skip.")
             return False
         if score > add_score_limit:
-            logger.info(f"⏭️ {ticker} 추가매수 스코어 불충족({score} > {add_score_limit}). 스킵.")
+            logger.info(f"⏭️ {ticker} Add-buy score not met ({score} > {add_score_limit}). Skip.")
             return False
         current_price_val = getattr(state, 'current_price', 0)
         if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
-            logger.info(f"⏭️ {ticker} 추가매수 쿨다운 중 (오늘 이미 추매). 내일 재판단.")
+            logger.info(f"⏭️ {ticker} Add-buy cooldown active (already added today). Re-evaluate tomorrow.")
             return False
         executed = TradeExecutorService._execute_trade_v2(
-            ticker, "buy", f"추가매수({profit_pct:.2f}%)", profit_pct, True, score,
+            ticker, "buy", f"add_position({profit_pct:.2f}%)", profit_pct, True, score,
             current_price_val, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -114,12 +114,12 @@ class PositionService:
         has_pending_splits = ticker in split_orders
         if not has_pending_splits:
             sector = getattr(state, 'sector', '') or ''
-            if sector in ('ETF', 'Others', '미분류/ETF'):
-                logger.info(f"⏭️ {ticker} ETF/기타 섹터 신규 매수 차단 (sector={sector}). 스킵.")
+            if sector in ('ETF', 'Others', 'Unclassified/ETF'):
+                logger.info(f"⏭️ {ticker} ETF/Other sector new buy blocked (sector={sector}). Skip.")
                 return False
         current_price_val = getattr(state, 'current_price', 0)
         if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
-            logger.info(f"⏭️ {ticker} 신규매수 쿨다운 중 (오늘 이미 매수). 내일 재판단.")
+            logger.info(f"⏭️ {ticker} New buy cooldown active (already bought today). Re-evaluate tomorrow.")
             return False
         # 분할 주문 초기화 또는 기존 진행 상황 로드
         if not has_pending_splits:
@@ -130,7 +130,7 @@ class PositionService:
                 usd_cash_krw = (_PS.get_usd_cash_balance() or 0) * exchange_rate
             total_qty, _, _ = TradeExecutorService._calculate_buy_quantity(score, cash_balance, current_price_val, exchange_rate, is_kr_flag, market_total, usd_cash_krw=usd_cash_krw)
             if total_qty <= 0:
-                logger.warning(f"⚠️ {ticker} 잔고 부족 또는 수량 0. 매수 불가.")
+                logger.warning(f"⚠️ {ticker} Insufficient balance or qty 0. Cannot buy.")
                 return False
             split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
             split_orders[ticker] = {
@@ -151,7 +151,7 @@ class PositionService:
             return False
         executed = TradeExecutorService._execute_trade_v2(
             ticker, "buy",
-            f"점수 {score} [{reason_str}] ({so['splits_done']+1}/{so['split_count']}차)",
+            f"score {score} [{reason_str}] ({so['splits_done']+1}/{so['split_count']} split)",
             profit_pct, bool(holding), score, current_price_val, market_total, cash_balance,
             exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -177,11 +177,11 @@ class PositionService:
     ) -> bool:
         """점수 기반 매도 로직. 호출자가 score/holding 조건 gate를 보장해야 함."""
         if sell_cooldown.get(ticker) == today:
-            logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 점수매도). 내일 재판단.")
+            logger.info(f"⏭️ {ticker} Partial sell cooldown active (already score-sold today). Re-evaluate tomorrow.")
             return False
         split_orders.pop(ticker, None)  # 잔여 분할매수 취소
         executed = TradeExecutorService._execute_trade_v2(
-            ticker, "sell", f"점수 {score} [{reason_str}]", profit_pct, True, score,
+            ticker, "sell", f"score {score} [{reason_str}]", profit_pct, True, score,
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -277,11 +277,11 @@ class PositionService:
             if buy_price <= 0 or current_price <= 0:
                 continue
             profit_pct = (current_price - buy_price) / buy_price * 100
-            logger.info(f"🔍 [비유니버스 보유] {ticker} ({h.get('name', '')}): PnL={profit_pct:.1f}%")
+            logger.info(f"🔍 [Unmonitored holding] {ticker} ({h.get('name', '')}): PnL={profit_pct:.1f}%")
             market_total = kr_total if is_kr(ticker) else us_total_krw
             if profit_pct <= stop_loss_pct:
                 executed = TradeExecutorService._execute_trade_v2(
-                    ticker, "sell", f"스탑로스({profit_pct:.2f}%)", profit_pct, True, 0,
+                    ticker, "sell", f"stop_loss({profit_pct:.2f}%)", profit_pct, True, 0,
                     current_price, market_total, cash_balance, exchange_rate,
                     holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
                     target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
@@ -289,10 +289,10 @@ class PositionService:
                 trade_executed = bool(executed) or trade_executed
             elif profit_pct >= take_profit_pct:
                 if sell_cooldown.get(ticker) == today:
-                    logger.info(f"⏭️ {ticker} 분할매도 쿨다운 중 (오늘 이미 익절매도). 내일 재판단.")
+                    logger.info(f"⏭️ {ticker} Partial sell cooldown active (already took profit today). Re-evaluate tomorrow.")
                     continue
                 executed = TradeExecutorService._execute_trade_v2(
-                    ticker, "sell", f"익절권({profit_pct:.2f}%)", profit_pct, True, 0,
+                    ticker, "sell", f"take_profit_zone({profit_pct:.2f}%)", profit_pct, True, 0,
                     current_price, market_total, cash_balance, exchange_rate,
                     holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
                     target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,

@@ -22,7 +22,7 @@ class BacktestService:
         print(f"📊 Running backtest for {ticker} (Past {years} years)...")
         df = DataService.get_price_history(ticker, days=years * 365)
         if df.empty:
-            return "데이터 오류", []
+            return "data_error", []
         close_series = df["Close"]
         delta = close_series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()

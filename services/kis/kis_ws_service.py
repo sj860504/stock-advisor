@@ -41,7 +41,7 @@ class KisWsService:
                 "secretkey": Config.KIS_REAL_APP_SECRET,
             }
             self.ws_url = Config.KIS_REAL_WS_URL
-            env_label = "실전"
+            env_label = "live"
         else:
             url = f"{Config.KIS_BASE_URL}/oauth2/Approval"
             body = {

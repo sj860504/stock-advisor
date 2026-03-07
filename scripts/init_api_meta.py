@@ -10,10 +10,10 @@ from services.market.stock_meta_service import StockMetaService
 from models.stock_meta import ApiTrMeta
 
 def populate_tr_ids():
-    print("📦 KIS TR ID 데이터베이스 연동 및 초기화 중...")
+    print("📦 Initializing KIS TR ID database...")
     StockMetaService.init_db()
     count = StockMetaService.init_api_tr_meta()
-    print(f"✅ 총 {count}개의 TR ID 정보가 저장되었습니다.")
+    print(f"✅ {count} TR ID records saved.")
 
 if __name__ == "__main__":
     populate_tr_ids()

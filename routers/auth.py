@@ -54,7 +54,7 @@ def login(body: LoginRequest, response: Response):
     if not (valid_user and valid_pass):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="아이디 또는 비밀번호가 올바르지 않습니다.",
+            detail="Invalid username or password.",
         )
     token = create_access_token(body.username)
     response.set_cookie(

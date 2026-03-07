@@ -12,8 +12,8 @@ MAX_LINES = 2000
 @router.get("", response_model=List[str])
 def get_logs(
     lines: int = Query(default=200, ge=1, le=MAX_LINES),
-    level: str = Query(default="", description="INFO|WARNING|ERROR|DEBUG — 빈 값이면 전체"),
-    search: str = Query(default="", description="검색 키워드"),
+    level: str = Query(default="", description="INFO|WARNING|ERROR|DEBUG — empty for all"),
+    search: str = Query(default="", description="Search keyword"),
 ) -> List[str]:
     """app.log 마지막 N줄 반환. level/search 필터 지원."""
     if not os.path.exists(LOG_PATH):
@@ -29,4 +29,4 @@ def get_logs(
             result = [l for l in result if lw in l.lower()]
         return result[-lines:]
     except Exception as e:
-        return [f"[ERROR] 로그 읽기 실패: {e}"]
+        return [f"[ERROR] Failed to read logs: {e}"]

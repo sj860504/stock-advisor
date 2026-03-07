@@ -20,7 +20,7 @@ class ExecutionService:
         app_secret = os.getenv("KIS_APP_SECRET")
         
         if not app_key or not app_secret:
-            print("KIS API 키가 설정되지 않았습니다.")
+            print("KIS API keys are not configured.")
             return None
 
         url = f"{cls._base_url}/oauth2/tokenP"
@@ -34,10 +34,10 @@ class ExecutionService:
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
             cls._access_token = response.json().get("access_token")
-            print("KIS API 토큰 발급 성공")
+            print("KIS API token issued successfully")
             return cls._access_token
         except Exception as e:
-            print(f"토큰 발급 오류: {e}")
+            print(f"Token issuance error: {e}")
             return None
 
     @classmethod
@@ -62,11 +62,11 @@ class ExecutionService:
         
         # 실제 주문 데이터는 계좌 정보가 필요
         # 계좌 정보가 없으므로 현재는 시뮬레이션으로만 동작
-        print(f"?? [{ticker}] {quantity}二?시장가 매수 주문 ?꾩넚 ?쒕룄...")
-        return {"status": "ready", "message": "API 계좌 정보가 설정되면 실제 주문이 실행됩니다."}
+        print(f"[{ticker}] {quantity} shares market buy order attempt...")
+        return {"status": "ready", "message": "Actual orders will be executed once API account info is configured."}
 
     @classmethod
     def get_balance(cls):
         """계좌 잔고 및 보유 종목 조회"""
-        print("📊 계좌 잔고 조회 중...")
+        print("📊 Fetching account balance...")
         return {"cash": 10000000, "stocks": []} # 테스트용 더미 데이터

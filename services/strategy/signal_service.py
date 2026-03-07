@@ -57,21 +57,21 @@ class SignalService:
         if rsi <= 30:
             rsi_score = -(20 - (rsi / 30) * 10)
             delta += int(rsi_score)
-            reasons.append(f"RSI극과매도({rsi:.1f},{int(rsi_score)})")
+            reasons.append(f"RSI_extreme_oversold({rsi:.1f},{int(rsi_score)})")
         elif rsi < 50:
             rsi_score = -(10 - ((rsi - 30) / 20) * 10)
             if rsi_score <= -5:
                 delta += int(rsi_score)
-                reasons.append(f"RSI과매도({rsi:.1f},{int(rsi_score)})")
+                reasons.append(f"RSI_oversold({rsi:.1f},{int(rsi_score)})")
         elif rsi <= 70:
             rsi_score = ((rsi - 50) / 20) * 10
             if rsi_score >= 5:
                 delta += int(rsi_score)
-                reasons.append(f"RSI과매수({rsi:.1f},+{int(rsi_score)})")
+                reasons.append(f"RSI_overbought({rsi:.1f},+{int(rsi_score)})")
         else:
             rsi_score = 10 + ((rsi - 70) / 30) * 10
             delta += int(rsi_score)
-            reasons.append(f"RSI극과매수({rsi:.1f},+{int(rsi_score)})")
+            reasons.append(f"RSI_extreme_overbought({rsi:.1f},+{int(rsi_score)})")
         return delta, reasons
 
     @classmethod
@@ -84,17 +84,17 @@ class SignalService:
         undervalue_pct = (dcf_value - curr_price) / curr_price * 100
         WEIGHTS = TradeExecutorService.WEIGHTS
         if undervalue_pct >= 20:
-            delta += WEIGHTS['DCF_UNDERVALUE_HIGH']; reasons.append(f"DCF고저평가({undervalue_pct:.1f}%)")
+            delta += WEIGHTS['DCF_UNDERVALUE_HIGH']; reasons.append(f"DCF_high_undervalue({undervalue_pct:.1f}%)")
         elif undervalue_pct >= 10:
-            delta += WEIGHTS['DCF_UNDERVALUE_MID']; reasons.append(f"DCF중저평가({undervalue_pct:.1f}%)")
+            delta += WEIGHTS['DCF_UNDERVALUE_MID']; reasons.append(f"DCF_mid_undervalue({undervalue_pct:.1f}%)")
         elif undervalue_pct >= 5:
-            delta += WEIGHTS['DCF_UNDERVALUE_LOW']; reasons.append(f"DCF저평가({undervalue_pct:.1f}%)")
+            delta += WEIGHTS['DCF_UNDERVALUE_LOW']; reasons.append(f"DCF_undervalue({undervalue_pct:.1f}%)")
         elif undervalue_pct >= -5:
-            delta += WEIGHTS['DCF_FAIR_VALUE']; reasons.append("DCF적정가")
+            delta += WEIGHTS['DCF_FAIR_VALUE']; reasons.append("DCF_fair_value")
         elif undervalue_pct >= -15:
-            delta += WEIGHTS['DCF_OVERVALUE_LOW']; reasons.append(f"DCF고평가({-undervalue_pct:.1f}%)")
+            delta += WEIGHTS['DCF_OVERVALUE_LOW']; reasons.append(f"DCF_overvalue({-undervalue_pct:.1f}%)")
         else:
-            delta += WEIGHTS['DCF_OVERVALUE_HIGH']; reasons.append(f"DCF고고평가({-undervalue_pct:.1f}%)")
+            delta += WEIGHTS['DCF_OVERVALUE_HIGH']; reasons.append(f"DCF_high_overvalue({-undervalue_pct:.1f}%)")
         return delta, reasons
 
     @classmethod
@@ -108,16 +108,16 @@ class SignalService:
 
         change_rate = getattr(state, 'change_rate', 0)
         if change_rate <= dip_buy_pct:
-            delta += WEIGHTS['DIP_BUY_5PCT']; reasons.append(f"급락({change_rate:.1f}%)")
+            delta += WEIGHTS['DIP_BUY_5PCT']; reasons.append(f"sharp_drop({change_rate:.1f}%)")
         elif change_rate >= 5.0:
-            delta += WEIGHTS['SURGE_SELL_5PCT']; reasons.append(f"급등({change_rate:.1f}%)")
+            delta += WEIGHTS['SURGE_SELL_5PCT']; reasons.append(f"sharp_surge({change_rate:.1f}%)")
 
         dcf_d, dcf_r = cls._score_dcf(state.dcf_value, curr_price)
         delta += dcf_d; reasons.extend(dcf_r)
 
         ema200 = state.ema.get(200) if state.ema else None
         if ema200 and ema200 > 0 and (ema200 <= curr_price <= ema200 * 1.02):
-            delta += WEIGHTS['SUPPORT_EMA']; reasons.append("EMA200지지")
+            delta += WEIGHTS['SUPPORT_EMA']; reasons.append("EMA200_support")
         return delta, reasons
 
     @classmethod
@@ -129,11 +129,11 @@ class SignalService:
         delta = 0
         reasons = []
         if profit_pct >= take_profit_pct:
-            delta += WEIGHTS['PROFIT_TAKE_TARGET']; reasons.append(f"익절권({profit_pct:.1f}%)")
+            delta += WEIGHTS['PROFIT_TAKE_TARGET']; reasons.append(f"take_profit_zone({profit_pct:.1f}%)")
         elif profit_pct <= -5.0 and profit_pct > stop_loss_pct:
-            delta += WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"추매권({profit_pct:.1f}%)")
+            delta += WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"add_position_zone({profit_pct:.1f}%)")
         elif profit_pct <= stop_loss_pct:
-            return 0, ["손절도달"], True  # forced_sell: score=100
+            return 0, ["stop_loss_hit"], True  # forced_sell: score=100
         return delta, reasons, False
 
     @classmethod
@@ -145,13 +145,13 @@ class SignalService:
         vix = macro.get('vix', 20.0)
         fng = macro.get('fear_greed', 50)
         if vix >= 25 or fng <= 30:
-            delta += WEIGHTS['PANIC_MARKET_BUY']; reasons.append("극도의공포(매수기회)")
+            delta += WEIGHTS['PANIC_MARKET_BUY']; reasons.append("extreme_fear_buy_opportunity")
         elif vix <= 15 or fng >= 70:
-            delta += WEIGHTS['PROFIT_TAKE_TARGET'] // 2; reasons.append("시장과열(분할익절)")
+            delta += WEIGHTS['PROFIT_TAKE_TARGET'] // 2; reasons.append("market_overheated_partial_profit")
         if regime == 'BULL':
-            delta += WEIGHTS['BULL_MARKET_SECTOR']; reasons.append("상승장어드밴티지")
+            delta += WEIGHTS['BULL_MARKET_SECTOR']; reasons.append("bull_market_advantage")
         elif regime == 'BEAR':
-            delta += 10; reasons.append("하락장리스크관리")
+            delta += 10; reasons.append("bear_market_risk")
         return delta, reasons
 
     @classmethod
@@ -162,9 +162,9 @@ class SignalService:
         target_buy = getattr(state, 'target_buy_price', 0)
         target_sell = getattr(state, 'target_sell_price', 0)
         if target_buy > 0 and curr_price <= target_buy:
-            delta -= 30; reasons.append(f"목표진입가도달(${target_buy})")
+            delta -= 30; reasons.append(f"target_entry_price_hit(${target_buy})")
         if target_sell > 0 and curr_price >= target_sell:
-            delta += 30; reasons.append(f"목표매도가도달(${target_sell})")
+            delta += 30; reasons.append(f"target_sell_price_hit(${target_sell})")
         return delta, reasons
 
     @classmethod
@@ -174,13 +174,13 @@ class SignalService:
         reasons = []
         top10_bonus = SettingsService.get_int("STRATEGY_TOP10_BONUS", 10)
         if top10_bonus and ticker in cls._get_top10_market_cap_tickers():
-            delta -= top10_bonus; reasons.append(f"시총상위10(-{top10_bonus})")
+            delta -= top10_bonus; reasons.append(f"top10_market_cap(-{top10_bonus})")
 
         overrides = TradeExecutorService.get_top_weight_overrides()
         if ticker in overrides:
             custom_bonus = int(overrides[ticker])
             if custom_bonus != 0:
-                delta += custom_bonus; reasons.append(f"가중치사용자설정({custom_bonus:+d})")
+                delta += custom_bonus; reasons.append(f"user_weight_override({custom_bonus:+d})")
 
         try:
             grp = TradeExecutorService._get_sector_group(ticker, holding)
@@ -190,9 +190,9 @@ class SignalService:
                 sw = TradeExecutorService._get_sector_group_weights(all_holdings, exchange_rate_g)
                 dev = sw["weights"].get(grp, {}).get("dev", 0.0)
                 if dev < -TradeExecutorService.SECTOR_REBAL_THRESHOLD:
-                    delta -= 10; reasons.append(f"섹터부족매수우선({grp} {dev:+.1%})")
+                    delta -= 10; reasons.append(f"sector_underweight_buy_priority({grp} {dev:+.1%})")
                 elif dev > TradeExecutorService.SECTOR_REBAL_THRESHOLD:
-                    delta += 10; reasons.append(f"섹터초과매도우선({grp} {dev:+.1%})")
+                    delta += 10; reasons.append(f"sector_overweight_sell_priority({grp} {dev:+.1%})")
         except Exception:
             pass
         return delta, reasons
@@ -243,7 +243,7 @@ class SignalService:
     def calculate_score(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, market_cash_ratio: float = None, market_total_krw: float = 0.0) -> tuple:
         """개별 종목의 투자 점수 계산 ([A]~[G] 헬퍼 통합)"""
         curr_price = state.current_price
-        if curr_price <= 0: return 0, ["가격정보없음"]
+        if curr_price <= 0: return 0, ["no_price_data"]
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         cash_ratio = cash_balance / market_total_krw if market_total_krw > 0 else 0
         panic_locks = user_state.get('panic_locks', {})
@@ -253,12 +253,12 @@ class SignalService:
         target_cash_ratio = market_cash_ratio
         thresholds = cls._load_score_thresholds()
         if ticker in panic_locks:
-            return (20, ["3일룰회복대기"]) if state.rsi < thresholds["oversold_rsi"] else (50, ["패닉락구간"])
+            return (20, ["3day_recovery_wait"]) if state.rsi < thresholds["oversold_rsi"] else (50, ["panic_lock_zone"])
         score, reasons, forced_sell = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
         if forced_sell:
             return 100, reasons
         if cash_ratio < target_cash_ratio and score > 50:
-            score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("현금부족")
+            score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("cash_shortage")
         return max(0, min(100, score)), reasons
 
     # ── 분석 인터페이스 ───────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ class SignalService:
         """_analyze_stock_v3 에서 매수/매도 _execute_trade_v2 호출을 위임."""
         is_holding = bool(holding)
         TradeExecutorService._execute_trade_v2(
-            ticker, side, f"점수 {score} [{reason_str}]", profit_pct, is_holding, score,
+            ticker, side, f"score {score} [{reason_str}]", profit_pct, is_holding, score,
             state.current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro,
         )
@@ -324,7 +324,7 @@ class SignalService:
 
         analyze_kr = not is_us_open
         analyze_us = not is_kr_open
-        logger.info(f"📊 시장 상태: KR개장={is_kr_open}, US개장={is_us_open} → KR분석={analyze_kr}, US분석={analyze_us}")
+        logger.info(f"📊 Market status: KR_open={is_kr_open}, US_open={is_us_open} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
 
         all_states = MarketDataService.get_all_states()
         prepared_signals = []

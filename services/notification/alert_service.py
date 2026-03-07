@@ -25,12 +25,12 @@ class AlertService:
     
     # 개발 모드에서 차단할 키워드 (매수/매도 실행 알림)
     _DEV_BLOCK_KEYWORDS = (
-        "매수 체결", "매도 체결",   # 전략 실행 체결 메시지
-        "틱매매",                    # 틱매매 알림
-        "분할매수", "분할매도",      # 분할 매매
-        "익절", "손절",              # 손익 실행
-        "리밸런싱", "rebalance",     # 섹터 리밸런싱
-        "KIS 주문",                  # KIS API 주문
+        "BUY Executed", "SELL Executed",  # trade execution alerts
+        "Tick Trade",                      # tick trade alerts
+        "split_buy", "split_sell",         # split orders
+        "take_profit", "stop_loss",        # P&L execution
+        "rebalance", "Rebalancing",        # sector rebalancing
+        "KIS order",                       # KIS API orders
     )
 
     @classmethod
@@ -38,7 +38,7 @@ class AlertService:
         """슬랙으로 실제 알림을 전송합니다."""
         # 개발 모드: 모든 Slack 발송 차단 (거래 및 리포트 포함)
         if Config.DEV_MODE:
-            logger.info(f"[DEV MODE] Slack 발송 차단 → {message[:80]}...")
+            logger.info(f"[DEV MODE] Slack send blocked → {message[:80]}...")
             return False
 
         webhook_url = cls._webhook_url or Config.SLACK_WEBHOOK_URL
@@ -85,9 +85,9 @@ class AlertService:
             current_price = getattr(state, 'current_price', None) if state else DataService.get_current_price(alert.ticker)
             if current_price:
                 if alert.condition == "above" and current_price >= alert.target_price:
-                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} >= 목표가: {alert.target_price}")
+                    triggered.append(f"🔔 {alert.ticker} reached! Current: {current_price} >= Target: {alert.target_price}")
                 elif alert.condition == "below" and current_price <= alert.target_price:
-                    triggered.append(f"🔔 {alert.ticker} 도달! 현재가: {current_price} <= 목표가: {alert.target_price}")
+                    triggered.append(f"🔔 {alert.ticker} reached! Current: {current_price} <= Target: {alert.target_price}")
         return triggered
     
     @classmethod
@@ -110,22 +110,22 @@ class AlertService:
     def generate_daily_summary(cls, data: dict) -> str:
         """현 시점의 시장 요약 리포트를 생성합니다."""
         if not data:
-            return "분석 데이터가 아직 수집되지 않았습니다."
+            return "Analysis data has not been collected yet."
             
-        summary = "📊 **실시간 시장 분석 요약**\n\n"
+        summary = "📊 **Real-time Market Analysis Summary**\n\n"
         
         oversold_tickers = [ticker for ticker, info in data.items() if info.get("rsi", 50) < 35]
         if oversold_tickers:
-            summary += "🔵 **RSI 과매도 (매수 기회)**:\n"
+            summary += "🔵 **RSI Oversold (Buy Opportunity)**:\n"
             for ticker in oversold_tickers[:5]:
                 summary += f"- {ticker}: RSI {data[ticker]['rsi']:.1f}\n"
         overbought_tickers = [ticker for ticker, info in data.items() if info.get("rsi", 50) > 65]
         if overbought_tickers:
-            summary += "\n🔴 **RSI 과매수 (단기 과열)**:\n"
+            summary += "\n🔴 **RSI Overbought (Short-term Overheated)**:\n"
             for ticker in overbought_tickers[:5]:
                 summary += f"- {ticker}: RSI {data[ticker]['rsi']:.1f}\n"
         gainers = sorted(data.items(), key=lambda item: item[1].get("change_pct", 0), reverse=True)[:5]
-        summary += "\n📈 **실시간 급등 Top 5**:\n"
+        summary += "\n📈 **Real-time Top 5 Gainers**:\n"
         for ticker, info in gainers:
             summary += f"- {ticker}: {info['change_pct']:+.2f}% (${info['price']})\n"
             
@@ -146,17 +146,17 @@ class AlertService:
         msg = ""
         
         if change_ratio >= 2.5:
-            msg = f"🚀 **{ticker}** 1분 만에 급등! (+{change_ratio:.1f}%) - 현재가: ${price}"
+            msg = f"🚀 **{ticker}** surged in 1 min! (+{change_ratio:.1f}%) - Current: ${price}"
             is_urgent = True
         elif change_ratio <= -2.5:
-            msg = f"📉 **{ticker}** 긴급! 패닉 셀 감지 (-{change_ratio:.1f}%) - 현재가: ${price}"
+            msg = f"📉 **{ticker}** Alert! Panic sell detected (-{change_ratio:.1f}%) - Current: ${price}"
             is_urgent = True
             
         if is_urgent:
             try:
                 news = NewsService.get_latest_news(ticker, limit=2)
                 summary = NewsService.summarize_news(ticker, news)
-                msg += f"\n\n📰 **Why? (관련 뉴스)**\n{summary}"
+                msg += f"\n\n📰 **Why? (Related News)**\n{summary}"
             except:
                 pass
             alerts.append(msg)
@@ -174,11 +174,11 @@ class AlertService:
         
         if rsi < 30:
             if f"{alert_key}_oversold" not in cls._sent_alerts:
-                alerts.append(f"💎 **{ticker}** 줍줍 찬스! (RSI: {rsi:.1f}) - 저가 매수 구간")
+                alerts.append(f"💎 **{ticker}** Bargain opportunity! (RSI: {rsi:.1f}) - Buy zone")
                 cls._sent_alerts.add(f"{alert_key}_oversold")
         elif rsi > 70:
             if f"{alert_key}_overbought" not in cls._sent_alerts:
-                alerts.append(f"🔥 **{ticker}** 단기 과열! (RSI: {rsi:.1f}) - 익절 고려")
+                alerts.append(f"🔥 **{ticker}** Short-term overheated! (RSI: {rsi:.1f}) - Consider taking profit")
                 cls._sent_alerts.add(f"{alert_key}_overbought")
         
         return alerts
@@ -196,7 +196,7 @@ class AlertService:
         
         if f"{alert_key}_undervalued" not in cls._sent_alerts:
             upside = ((dcf - price) / price) * 100
-            alerts.append(f"🎁 **{ticker}** 저평가 우량주! 적정가 ${dcf:.2f} (상승여력 {upside:.1f}%)")
+            alerts.append(f"🎁 **{ticker}** Undervalued quality stock! Fair value ${dcf:.2f} (upside {upside:.1f}%)")
             cls._sent_alerts.add(f"{alert_key}_undervalued")
             
         return alerts
@@ -212,12 +212,12 @@ class AlertService:
         if not (prev_price and price): return []
         
         ema_list = [
-            (data.get('ema5'), "EMA5(단기)"), 
-            (data.get('ema10'), "EMA10(단기)"), 
-            (data.get('ema20'), "EMA20(생명선)"), 
-            (data.get('ema60'), "EMA60(수급선)"), 
-            (data.get('ema120'), "EMA120(경기선)"), 
-            (data.get('ema200'), "EMA200(추세선)")
+            (data.get('ema5'), "EMA5(short)"),
+            (data.get('ema10'), "EMA10(short)"),
+            (data.get('ema20'), "EMA20(lifeline)"),
+            (data.get('ema60'), "EMA60(supply)"),
+            (data.get('ema120'), "EMA120(cycle)"),
+            (data.get('ema200'), "EMA200(trend)")
         ]
         
         for ema_val, name in ema_list:
@@ -226,11 +226,11 @@ class AlertService:
             
             # 골든크로스
             if prev_price <= prev_ema and price > ema_val:
-                alerts.append(f"✨ **{ticker}** {name} 상향 돌파! (지지선: ${ema_val:.2f}, 현재가: ${price})")
+                alerts.append(f"✨ **{ticker}** {name} breakout above! (Support: ${ema_val:.2f}, Current: ${price})")
             
             # 데드크로스
             elif prev_price >= prev_ema and price < ema_val:
-                alerts.append(f"🚨 **{ticker}** {name} 하향 이탈! (지지선: ${ema_val:.2f}, 현재가: ${price})")
+                alerts.append(f"🚨 **{ticker}** {name} breakdown below! (Support: ${ema_val:.2f}, Current: ${price})")
                 
         return alerts
 

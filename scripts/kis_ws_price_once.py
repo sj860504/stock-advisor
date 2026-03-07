@@ -15,7 +15,7 @@ from services.kis.kis_ws_service import KisWsService
 async def main(ticker: str = "005930", timeout_sec: int = 30):
     ws_service = KisWsService()
     if not ws_service.get_approval_key():
-        print("approval_key 발급 실패")
+        print("approval_key issuance failed")
         return
 
     ws_url = ws_service.ws_url

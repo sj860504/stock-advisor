@@ -41,20 +41,20 @@ class MacroService:
     # 주요 선행/심리(2): PMI, 소비자신뢰, PPI, 소매판매, 내구재주문
     # 보조(1): 나머지
     MACRO_RULES = {
-        "cpi":                   {"higher_is_good": False, "name": "소비자 물가 지수(CPI)",   "weight": 3},
-        "unemployment_rate":     {"higher_is_good": False, "name": "실업률",                  "weight": 3},
-        "nonfarm_payrolls":      {"higher_is_good": True,  "name": "비농업 고용(NFP)",         "weight": 3},
-        "pmi":                   {"higher_is_good": True,  "name": "제조업 생산 지수(IPMAN)", "weight": 2},
-        "consumer_confidence":   {"higher_is_good": True,  "name": "소비자 신뢰 지수",         "weight": 2},
-        "ppi":                   {"higher_is_good": False, "name": "생산자 물가 지수(PPI)",    "weight": 2},
-        "retail_sales":          {"higher_is_good": True,  "name": "소매 판매",                "weight": 2},
-        "durable_goods_orders":  {"higher_is_good": True,  "name": "내구재 주문",              "weight": 2},
-        "initial_jobless_claims":{"higher_is_good": False, "name": "실업 수당 청구",           "weight": 2},
-        "industrial_production": {"higher_is_good": True,  "name": "산업 생산 지수",           "weight": 1},
-        "capacity_utilization":  {"higher_is_good": True,  "name": "설비 가동률",              "weight": 1},
-        "avg_hourly_earnings":   {"higher_is_good": False, "name": "시간당 평균 임금",          "weight": 1},
-        "housing_starts":        {"higher_is_good": True,  "name": "주택 착공",                "weight": 1},
-        "building_permits":      {"higher_is_good": True,  "name": "건축 허가",                "weight": 1},
+        "cpi":                   {"higher_is_good": False, "name": "CPI",                    "weight": 3},
+        "unemployment_rate":     {"higher_is_good": False, "name": "Unemployment Rate",      "weight": 3},
+        "nonfarm_payrolls":      {"higher_is_good": True,  "name": "Nonfarm Payrolls (NFP)", "weight": 3},
+        "pmi":                   {"higher_is_good": True,  "name": "ISM Manufacturing (IPMAN)", "weight": 2},
+        "consumer_confidence":   {"higher_is_good": True,  "name": "Consumer Confidence",    "weight": 2},
+        "ppi":                   {"higher_is_good": False, "name": "PPI",                    "weight": 2},
+        "retail_sales":          {"higher_is_good": True,  "name": "Retail Sales",           "weight": 2},
+        "durable_goods_orders":  {"higher_is_good": True,  "name": "Durable Goods Orders",   "weight": 2},
+        "initial_jobless_claims":{"higher_is_good": False, "name": "Initial Jobless Claims",  "weight": 2},
+        "industrial_production": {"higher_is_good": True,  "name": "Industrial Production",  "weight": 1},
+        "capacity_utilization":  {"higher_is_good": True,  "name": "Capacity Utilization",   "weight": 1},
+        "avg_hourly_earnings":   {"higher_is_good": False, "name": "Avg Hourly Earnings",    "weight": 1},
+        "housing_starts":        {"higher_is_good": True,  "name": "Housing Starts",         "weight": 1},
+        "building_permits":      {"higher_is_good": True,  "name": "Building Permits",       "weight": 1},
     }
 
     @classmethod
@@ -95,14 +95,18 @@ class MacroService:
         cls._cache['macro'] = (data, now)
 
         # 오늘 날짜로 레짐 스냅샷 DB 저장 (이력 추적용)
-        try:
-            from services.market.stock_meta_service import StockMetaService
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            StockMetaService.save_market_regime(
-                today_str, market_regime, vix or 0, fear_greed or 50
-            )
-        except Exception as _e:
-            pass  # DB 저장 실패가 응답을 막지 않도록
+        # SPX fetch 실패 시 불완전 데이터 저장 방지
+        if market_regime.get("_fetch_failed"):
+            logger.warning("SPX fetch failed — skipping regime DB save")
+        else:
+            try:
+                from services.market.stock_meta_service import StockMetaService
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                StockMetaService.save_market_regime(
+                    today_str, market_regime, vix or 0, fear_greed or 50
+                )
+            except Exception as _e:
+                logger.warning(f"Regime DB save failed: {_e}")
 
         return data
 
@@ -114,7 +118,7 @@ class MacroService:
     @classmethod
     def refresh_on_release(cls, release_name: str, series_ids: list) -> dict:
         """경제지표 발표 트리거 → 캐시 초기화 + 재계산 + DB 저장 + Slack 알림."""
-        logger.info(f"📊 경제지표 발표 감지: {release_name} → regime 재계산 중...")
+        logger.info(f"Economic release detected: {release_name} — recalculating regime...")
         cls.invalidate_cache()
         data = cls.get_macro_data()   # 캐시 없으므로 전체 재계산 & DB auto-save
         regime = data.get("market_regime", {})
@@ -125,13 +129,13 @@ class MacroService:
         try:
             from services.notification.alert_service import AlertService
             AlertService.send_slack_alert(
-                f"📊 *경제지표 발표* — {release_name}\n"
-                f"시장 국면 갱신: *{status}* ({score}/100)\n"
+                f"*Economic Release* — {release_name}\n"
+                f"Regime update: *{status}* ({score}/100)\n"
                 f"VIX: {vix}  |  Fear&Greed: {fng}"
             )
         except Exception:
             pass
-        logger.info(f"✅ regime 갱신 완료: {status} ({score}/100)")
+        logger.info(f"Regime update complete: {status} ({score}/100)")
         return data
 
     @classmethod
@@ -361,6 +365,97 @@ class MacroService:
         econ_score   = int(round((econ_total / econ_max_val) * 10)) if econ_max_val > 0 else 0
         return MacroService._to_20(max(-10, min(10, econ_score)), 10)
 
+    # ── 5-Phase 경제 국면 판별 ────────────────────────────────────────────
+
+    @staticmethod
+    def _calc_inflation_pressure(oil_1m_ret: float | None, economic_indicators: dict | None) -> tuple:
+        """유가·CPI·PPI MoM 기반 인플레이션 압력 점수 (-10 ~ +10)."""
+        pressure = 0
+        detail = {}
+
+        # Oil 1M return
+        if oil_1m_ret is not None:
+            detail["oil_1m_ret"] = oil_1m_ret
+            if oil_1m_ret > 20:     pressure += 4
+            elif oil_1m_ret > 10:   pressure += 2
+            elif oil_1m_ret > 5:    pressure += 1
+            elif oil_1m_ret < -10:  pressure -= 2
+            elif oil_1m_ret < -5:   pressure -= 1
+
+        # CPI / PPI MoM (FRED indicators에서 추출)
+        indicators = (economic_indicators or {}).get("indicators", {})
+        for key, weight in [("cpi", 3), ("ppi", 2)]:
+            ind = indicators.get(key, {})
+            latest, prev = ind.get("latest"), ind.get("previous")
+            if latest and prev and prev > 0:
+                mom = round((latest - prev) / prev * 100, 3)
+                detail[f"{key}_mom"] = mom
+                if mom > 0.4:    pressure += weight
+                elif mom > 0.2:  pressure += (weight - 1)
+                elif mom > 0.1:  pressure += 1
+                elif mom < 0:    pressure -= (weight - 1)
+
+        return max(-10, min(10, pressure)), detail
+
+    @staticmethod
+    def _calc_growth_signal(tech_detail: dict, vix: float, fear_greed: int, econ_20: int) -> tuple:
+        """SPX 모멘텀·VIX·F&G·경제지표 기반 성장 신호 (-10 ~ +10)."""
+        signal = 0
+        detail = {}
+
+        # SPX 1M momentum
+        spx_1m = tech_detail.get("spx_1m_ret")
+        if spx_1m is not None:
+            detail["spx_1m_ret"] = spx_1m
+            if spx_1m > 3:      signal += 3
+            elif spx_1m > 1:    signal += 1
+            elif spx_1m < -5:   signal -= 3
+            elif spx_1m < -3:   signal -= 2
+            elif spx_1m < -1:   signal -= 1
+
+        # VIX level
+        if vix >= 30:           signal -= 3
+        elif vix >= 25:         signal -= 2
+        elif vix >= 20:         signal -= 1
+        elif vix <= 13:         signal += 3
+        elif vix <= 18:         signal += 1
+
+        # Fear & Greed
+        if fear_greed <= 20:    signal -= 2
+        elif fear_greed <= 35:  signal -= 1
+        elif fear_greed >= 80:  signal += 2
+        elif fear_greed >= 65:  signal += 1
+
+        # FRED econ (10 = 중립)
+        signal += (econ_20 - 10)
+
+        return max(-10, min(10, signal)), detail
+
+    ECONOMIC_PHASES = {
+        "Stagflation":  {"modifier": -15, "label": "Stagflation"},
+        "Deflation":    {"modifier": -10, "label": "Deflation"},
+        "Inflation":    {"modifier":  -8, "label": "Inflation"},
+        "Reflation":    {"modifier":  +3, "label": "Reflation"},
+        "Goldilocks":   {"modifier": +10, "label": "Goldilocks"},
+    }
+
+    @classmethod
+    def _determine_economic_phase(cls, inflation_pressure: int, growth_signal: int) -> tuple:
+        """인플레 압력 × 성장 신호 → (phase_name, modifier)."""
+        if inflation_pressure >= 3 and growth_signal <= -2:
+            phase = "Stagflation"
+        elif inflation_pressure >= 3 and growth_signal > -2:
+            phase = "Inflation"
+        elif inflation_pressure <= -3 and growth_signal <= -2:
+            phase = "Deflation"
+        elif inflation_pressure <= 0 and growth_signal >= 2:
+            phase = "Goldilocks"
+        elif inflation_pressure > 0 and growth_signal >= 0:
+            phase = "Reflation"
+        else:
+            return "Neutral", 0
+        return phase, cls.ECONOMIC_PHASES[phase]["modifier"]
+
     @staticmethod
     def _calc_composite_20(
         us_10y_yield: float,
@@ -368,8 +463,9 @@ class MacroService:
         btc_ret: float | None,
         dxy_ret: float | None,
         gold_ret: float | None,
+        oil_ret: float | None = None,
     ) -> tuple:
-        """금리레벨(±8)+수익률곡선(±6)+DXY(±4)+BTC(±3)+Gold(±4) → (other_20: 0~20, score_detail)."""
+        """금리레벨(±8)+수익률곡선(±6)+DXY(±4)+BTC(±3)+Gold(±4)+Oil(±5) → (other_20: 0~20, score_detail)."""
         yield_score = 0
         if us_10y_yield <= 3.5:    yield_score = +8
         elif us_10y_yield <= 4.0:  yield_score = +4
@@ -405,16 +501,25 @@ class MacroService:
             elif gold_ret < -5: gold_score = +4
             elif gold_ret < -2: gold_score = +2
 
-        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score
-        other_20  = MacroService._to_20(other_raw, 26)
+        oil_score = 0
+        if oil_ret is not None:
+            if oil_ret > 20:     oil_score = -5
+            elif oil_ret > 10:   oil_score = -3
+            elif oil_ret > 5:    oil_score = -1
+            elif oil_ret < -15:  oil_score = +3
+            elif oil_ret < -5:   oil_score = +1
+
+        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score + oil_score
+        other_20  = MacroService._to_20(other_raw, 31)
         return other_20, {
             "yield_score": yield_score, "curve_score": curve_score,
-            "dxy_score": dxy_score, "btc_score": btc_score, "gold_score": gold_score,
+            "dxy_score": dxy_score, "btc_score": btc_score,
+            "gold_score": gold_score, "oil_score": oil_score,
         }
 
     @classmethod
     def _fetch_composite_assets(cls, us_10y_yield: float) -> tuple:
-        """수익률 곡선 스프레드 + BTC/DXY/Gold 1M 수익률 조회 → (yield_spread, btc_ret, dxy_ret, gold_ret)."""
+        """수익률 곡선 스프레드 + BTC/DXY/Gold/Oil 1M 수익률 조회."""
         yield_spread = None
         try:
             y2_val, _ = cls._get_fred_latest_pair("DGS2")
@@ -423,10 +528,10 @@ class MacroService:
         except Exception:
             pass
 
-        btc_ret = dxy_ret = gold_ret = None
+        btc_ret = dxy_ret = gold_ret = oil_ret = None
         try:
             import yfinance as yf
-            for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold")]:
+            for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold"), ("CL=F", "oil")]:
                 try:
                     h = yf.Ticker(sym).history(period="1mo")
                     if len(h) >= 5:
@@ -434,11 +539,12 @@ class MacroService:
                         if key == "btc":    btc_ret  = ret
                         elif key == "dxy":  dxy_ret  = ret
                         elif key == "gold": gold_ret = ret
+                        elif key == "oil":  oil_ret  = ret
                 except Exception:
                     pass
         except Exception:
             pass
-        return yield_spread, btc_ret, dxy_ret, gold_ret
+        return yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret
 
     @classmethod
     def _get_bear_threshold(cls) -> int:
@@ -467,8 +573,10 @@ class MacroService:
             raw = yf.Ticker("^GSPC").history(period="2y")
             if not raw.empty and "Close" in raw.columns:
                 close = pd.to_numeric(raw["Close"], errors="coerce").dropna() or None
-        except Exception:
-            pass
+            if close is None or (hasattr(close, 'empty') and close.empty):
+                logger.warning("SPX 2y fetch failed — yfinance returned empty data")
+        except Exception as e:
+            logger.error(f"SPX 2y fetch exception: {e}")
         ndx_1m_hist = None
         try:
             ndx_1m_hist = yf.Ticker("^NDX").history(period="1mo")
@@ -499,9 +607,16 @@ class MacroService:
         vix: float, vix_1m_chg, us_10y_yield: float,
         yield_spread, btc_ret, dxy_ret, gold_ret,
         bear_threshold: int = 40,
+        economic_phase: str = "Neutral",
+        phase_modifier: int = 0,
+        inflation_pressure: int = 0,
+        growth_signal: int = 0,
+        inflation_detail: dict | None = None,
+        oil_ret: float | None = None,
     ) -> dict:
         """컴포넌트 점수를 합산해 시장 국면 결과 dict를 반환합니다."""
-        regime_score = max(0, min(100, technical_20 + vix_20 + fng_20 + econ_20 + other_20))
+        base_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
+        regime_score = max(0, min(100, base_score + phase_modifier))
         if regime_score >= 65:
             status = "Bull"
         elif regime_score <= bear_threshold:
@@ -519,6 +634,8 @@ class MacroService:
             "diff_pct": float(diff_pct),
             "regime_score": regime_score,
             "bear_threshold": bear_threshold,
+            "economic_phase": economic_phase,
+            "phase_modifier": phase_modifier,
             "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
             "components": {
                 "technical": technical_20, "technical_detail": tech_detail,
@@ -527,8 +644,16 @@ class MacroService:
                     "us_10y_yield": round(us_10y_yield, 3),
                     "yield_spread_10y2y": yield_spread,
                     "vix_1m_chg": vix_1m_chg,
-                    "btc_1m_ret": btc_ret, "dxy_1m_ret": dxy_ret, "gold_1m_ret": gold_ret,
+                    "btc_1m_ret": btc_ret, "dxy_1m_ret": dxy_ret,
+                    "gold_1m_ret": gold_ret, "oil_1m_ret": oil_ret,
                     **other_scores,
+                },
+                "economic_phase_detail": {
+                    "phase": economic_phase,
+                    "modifier": phase_modifier,
+                    "inflation_pressure": inflation_pressure,
+                    "growth_signal": growth_signal,
+                    **(inflation_detail or {}),
                 },
             },
         }
@@ -541,10 +666,11 @@ class MacroService:
         economic_indicators: dict | None = None,
         us_10y_yield: float | None = None,
     ) -> dict:
-        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산."""
+        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산 (5-Phase 경제 국면 반영)."""
         close, ndx_1m_hist = cls._fetch_spx_and_ndx_history()
         if close is None or close.empty:
-            return {"status": "Neutral", "current": 0, "ma200": 0, "diff_pct": 0, "regime_score": 50}
+            return {"status": "Unknown", "current": 0, "ma200": 0, "diff_pct": 0,
+                    "regime_score": -1, "_fetch_failed": True}
 
         technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
@@ -563,14 +689,24 @@ class MacroService:
 
         if us_10y_yield is None:
             us_10y_yield = cls._get_us_10y_yield()
-        yield_spread, btc_ret, dxy_ret, gold_ret = cls._fetch_composite_assets(us_10y_yield)
-        other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
+        yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret = cls._fetch_composite_assets(us_10y_yield)
+        other_20, other_scores = cls._calc_composite_20(
+            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+        )
+
+        # 5-Phase 경제 국면 판별
+        inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
+        growth_signal, _growth_detail = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
+        economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
 
         bear_threshold = cls._get_bear_threshold()
         return cls._assemble_regime_result(
             close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
             other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
             yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold,
+            economic_phase=economic_phase, phase_modifier=phase_modifier,
+            inflation_pressure=inflation_pressure, growth_signal=growth_signal,
+            inflation_detail=inflation_detail, oil_ret=oil_ret,
         )
 
     _CNN_HEADERS = {
@@ -707,11 +843,11 @@ class MacroService:
 
     @staticmethod
     def _fetch_historical_composite_returns(start_1m: str, end_date: str) -> tuple:
-        """과거 BTC/DXY/Gold 1개월 수익률 조회."""
+        """과거 BTC/DXY/Gold/Oil 1개월 수익률 조회."""
         import yfinance as yf
-        btc_ret = dxy_ret = gold_ret = None
+        btc_ret = dxy_ret = gold_ret = oil_ret = None
         try:
-            for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold")]:
+            for sym, key in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy"), ("GC=F", "gold"), ("CL=F", "oil")]:
                 try:
                     h = yf.Ticker(sym).history(start=start_1m, end=end_date)
                     if len(h) >= 5:
@@ -719,11 +855,12 @@ class MacroService:
                         if key == "btc":    btc_ret  = ret
                         elif key == "dxy":  dxy_ret  = ret
                         elif key == "gold": gold_ret = ret
+                        elif key == "oil":  oil_ret  = ret
                 except Exception:
                     pass
         except Exception:
             pass
-        return btc_ret, dxy_ret, gold_ret
+        return btc_ret, dxy_ret, gold_ret, oil_ret
 
     @classmethod
     def calculate_historical_regime(cls, date_str: str) -> dict:
@@ -742,7 +879,7 @@ class MacroService:
 
         close, ndx_1m_hist = cls._fetch_historical_spx(start_2y, start_1m, end_date)
         if close is None or close.empty:
-            return {"error": f"SPX 데이터 없음 for {date_str}"}
+            return {"error": f"No SPX data for {date_str}"}
 
         technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
@@ -753,8 +890,6 @@ class MacroService:
         fear_greed = cls._get_fear_greed_index() if days_diff <= 7 else 50
         fng_20     = cls._calc_fng_20(fear_greed)
 
-        econ_20 = cls._calc_econ_20(cls._get_economic_indicators())
-
         us_10y_yield = cls._get_us_10y_yield()
         yield_spread = None
         try:
@@ -764,13 +899,25 @@ class MacroService:
         except Exception:
             pass
 
-        btc_ret, dxy_ret, gold_ret = cls._fetch_historical_composite_returns(start_1m, end_date)
-        other_20, other_scores = cls._calc_composite_20(us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret)
+        economic_indicators = cls._get_economic_indicators()
+        econ_20 = cls._calc_econ_20(economic_indicators)
+
+        btc_ret, dxy_ret, gold_ret, oil_ret = cls._fetch_historical_composite_returns(start_1m, end_date)
+        other_20, other_scores = cls._calc_composite_20(
+            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+        )
+
+        inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
+        growth_signal, _growth_detail = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
+        economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
 
         regime_data = cls._assemble_regime_result(
             close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
             other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
             yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold=40,
+            economic_phase=economic_phase, phase_modifier=phase_modifier,
+            inflation_pressure=inflation_pressure, growth_signal=growth_signal,
+            inflation_detail=inflation_detail, oil_ret=oil_ret,
         )
 
         try:

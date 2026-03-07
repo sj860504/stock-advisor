@@ -131,8 +131,9 @@ class MasterDataService:
                 }
                 for _, row in top_stocks.iterrows()
             ]
-            logger.info(f"🏆 Local Ranking created: {len(result)} stocks selected.")
+            logger.info(f"🏆 Local ranking created: {len(result)} tickers selected.")
             return result
         except Exception as e:
             logger.error(f"❌ Error creating local ranking: {e}")
+
             return []

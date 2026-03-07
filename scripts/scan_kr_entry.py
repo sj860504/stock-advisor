@@ -22,13 +22,13 @@ class TickerState:
         self.change_rate = change_rate
 
 def scan_kr_market():
-    print(f"🔍 [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 한국 시장 핵심 우량주 스캔 시작 (VTS 대응 모드)...")
+    print(f"🔍 [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting KR market blue-chip scan (VTS mode)...")
     
     # 1. 기초 데이터 확보
     macro_data = MacroService.get_macro_data()
     # 랭킹 API가 불안정할 수 있으므로 상위 5개 우량주 직접 지정
     tickers = ["005930", "000660", "373220", "207940", "005380"]
-    print(f"✅ {len(tickers)}개의 핵심 종목 분석을 시작합니다. (호출 제한 준수를 위해 지연 발생)")
+    print(f"✅ Starting analysis of {len(tickers)} core tickers. (Delays due to API rate limits)")
 
     token = KisService.get_access_token()
     total_assets = 100000000.0
@@ -49,7 +49,7 @@ def scan_kr_market():
             time.sleep(1.2) # API 제한 준수
             hist = DataService.get_price_history(ticker, days=250)
             if hist.empty:
-                print(f"⚠️ 데이터 부족: {ticker}")
+                print(f"⚠️ Insufficient data: {ticker}")
                 continue
             
             indicators = IndicatorService.get_latest_indicators(hist['Close'])
@@ -65,26 +65,26 @@ def scan_kr_market():
             
             result['name'] = price_info.get('name', ticker)
             opportunities.append(result)
-            print(f"📊 {result['name']} 분석 완료 (점수: {result['score']})")
+            print(f"📊 {result['name']} analysis complete (score: {result['score']})")
             
         except Exception as e:
-            print(f"❌ {ticker} 분석 중 오류: {e}")
+            print(f"❌ {ticker} analysis error: {e}")
             continue
             
     print("\n" + "="*50)
-    print("📊 [한국 시장 매매 알고리즘 분석 최종 보고]")
+    print("📊 [KR Market Trading Algorithm Analysis Final Report]")
     print("="*50)
     
     opportunities.sort(key=lambda x: x['score'], reverse=True)
     
     for o in opportunities:
-        recommend = "🟢 매수 권장" if o['score'] >= 75 else "⚪ 관망"
-        if o['score'] <= 25: recommend = "🔴 매도/주의"
+        recommend = "🟢 Buy recommended" if o['score'] >= 75 else "⚪ Hold/Watch"
+        if o['score'] <= 25: recommend = "🔴 Sell/Caution"
         
         print(f"[{recommend}] {o['name']} ({o['ticker']})")
-        print(f"  - 종합 점수: {o['score']}점 / 100점")
-        print(f"  - 현재가: {o['current_price']:,}원 (RSI: {o['rsi']:.1f})")
-        print(f"  - 매매 사유: {', '.join(o['reasons']) if o['reasons'] else '특이사항 없음'}")
+        print(f"  - Total score: {o['score']} pts / 100 pts")
+        print(f"  - Current price: {o['current_price']:,} KRW (RSI: {o['rsi']:.1f})")
+        print(f"  - Trade reason: {', '.join(o['reasons']) if o['reasons'] else 'Nothing notable'}")
         print("-" * 30)
 
 if __name__ == "__main__":

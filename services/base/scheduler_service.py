@@ -102,7 +102,7 @@ class SchedulerService:
             try:
                 cls._init_economic_baselines()
             except Exception as e:
-                logger.warning(f"⚠️ 경제지표 기준점 초기화 실패 (무시): {e}")
+                logger.warning(f"⚠️ Economic indicator baseline init failed (ignored): {e}")
 
             # 4. 기동 시 KIS 잔고 동기화 + Slack 알림
             try:
@@ -117,12 +117,12 @@ class SchedulerService:
     def _send_start_inquiry(cls) -> None:
         """슬랙으로 자동 매매 시작 여부를 문의합니다."""
         msg = (
-            "🤖 **자동 매매 엔진이 준비되었습니다.**\n"
-            "현재 모든 분석 및 매매 프로세스가 **대기(DISABLED)** 상태입니다.\n\n"
-            "자동 매매를 시작하시겠습니까?\n"
-            "- [시작하기](http://localhost:8000/api/trading/start)\n"
-            "- [중지하기](http://localhost:8000/api/trading/stop)\n\n"
-            "*직접 매매를 원하시면 위 링크를 활성화하지 마세요.*"
+            "🤖 **Auto-trading engine is ready.**\n"
+            "All analysis and trading processes are currently **DISABLED**.\n\n"
+            "Would you like to start auto-trading?\n"
+            "- [Start](http://localhost:8000/api/trading/start)\n"
+            "- [Stop](http://localhost:8000/api/trading/stop)\n\n"
+            "*Do not activate the links above if you prefer manual trading.*"
         )
         AlertService.send_slack_alert(msg)
 
@@ -183,7 +183,7 @@ class SchedulerService:
         high_set = kr_high_set | us_high_set
         low_set = target_universe - high_set
         MarketDataService.set_tiers(high_set, low_set)
-        logger.info(f"📊 Tier 분류: KR HIGH {len(kr_high_set)}/20, US HIGH {len(us_high_set)}/20, LOW {len(low_set)}")
+        logger.info(f"📊 Tier classification: KR HIGH {len(kr_high_set)}/20, US HIGH {len(us_high_set)}/20, LOW {len(low_set)}")
         return kr_high_set, us_high_set, high_set, low_set
 
     @classmethod
@@ -223,8 +223,8 @@ class SchedulerService:
             watch_kr = not is_us_open
             watch_us = not is_kr_open
             logger.info(
-                f"📺 KR 개장={is_kr_open}, US 개장={is_us_open} | "
-                f"HIGH {len(high_set)}종목 (WebSocket), LOW {len(low_set)}종목 (5분 폴링)"
+                f"📺 KR open={is_kr_open}, US open={is_us_open} | "
+                f"HIGH {len(high_set)} tickers (WebSocket), LOW {len(low_set)} tickers (5min polling)"
             )
             MarketDataService.register_batch(all_kr + all_us)  # UI 표시용 전체 등록
             if watch_kr:
@@ -232,7 +232,7 @@ class SchedulerService:
             if watch_us:
                 await cls._subscribe_us_tickers_async(all_us, us_high_set)
             logger.info(
-                f"✅ Subscriptions: WS HIGH {len(high_set)}종목, LOW poll {len(low_set)}종목 | "
+                f"✅ Subscriptions: WS HIGH {len(high_set)} tickers, LOW poll {len(low_set)} tickers | "
                 f"KR={len(all_kr)}, US={len(all_us)}, Holdings={len(holdings_raw)}"
             )
         except Exception as e:
@@ -329,12 +329,12 @@ class SchedulerService:
         - 편차 5~10% → 절반 리밸런싱
         - 편차 > 10% → 전체 리밸런싱
         """
-        logger.info("🔄 주간 섹터 리밸런싱 시작 (매주 월요일)...")
+        logger.info("🔄 Weekly sector rebalancing started (every Monday)...")
         try:
             result = TradingStrategyService.run_sector_rebalance(user_id="sean")
-            logger.info(f"✅ 섹터 리밸런싱 완료: 매도 {len(result.get('sold',[]))}건, 매수 {len(result.get('bought',[]))}건")
+            logger.info(f"✅ Sector rebalancing complete: {len(result.get('sold',[]))} sells, {len(result.get('bought',[]))} buys")
         except Exception as e:
-            logger.error(f"❌ 섹터 리밸런싱 오류: {e}")
+            logger.error(f"❌ Sector rebalancing error: {e}")
 
     @classmethod
     def _filter_active_low_tickers(cls, low_tickers: list, is_kr_open: bool, is_us_open: bool) -> list:
@@ -381,9 +381,9 @@ class SchedulerService:
                 if cls._poll_ticker_price(ticker, token, us_meta_map):
                     success += 1
             except Exception as e:
-                logger.debug(f"LOW tier poll 실패 {ticker}: {e}")
+                logger.debug(f"LOW tier poll failed {ticker}: {e}")
                 fail += 1
-        logger.info(f"✅ Tier LOW 가격 갱신 완료: 성공 {success}, 실패 {fail}")
+        logger.info(f"✅ Tier LOW price refresh complete: success {success}, fail {fail}")
 
     @classmethod
     def _refresh_low_tier_prices(cls) -> None:
@@ -405,11 +405,11 @@ class SchedulerService:
         if not active_tickers:
             return
         high_active = len([t for t in high_tickers if t in set(active_tickers)])
-        logger.info(f"⏱️ 가격 갱신 시작: {len(active_tickers)}종목 (HIGH {high_active} + LOW {len(active_tickers)-high_active})")
+        logger.info(f"⏱️ Price refresh started: {len(active_tickers)} tickers (HIGH {high_active} + LOW {len(active_tickers)-high_active})")
         try:
             cls._poll_active_tickers(active_tickers)
         except Exception as e:
-            logger.error(f"❌ _refresh_low_tier_prices 오류: {e}")
+            logger.error(f"❌ _refresh_low_tier_prices error: {e}")
 
     @classmethod
     def sync_portfolio_periodic(cls) -> None:
@@ -460,7 +460,7 @@ class SchedulerService:
             )
             if not holding:
                 logger.info(f"ℹ️ Tick trade report: no holding for {ticker}")
-                AlertService.send_slack_alert(f"⏱️ [틱매매 10분 리포트] {ticker} 보유 수량 없음")
+                AlertService.send_slack_alert(f"⏱️ [Tick Trade 10min Report] {ticker} no holdings")
                 return
             qty, buy_price, current_price = cls._extract_holding_financial_data(holding, ticker)
             if qty <= 0 or buy_price <= 0 or current_price <= 0:
@@ -469,7 +469,7 @@ class SchedulerService:
             profit_amt = (current_price - buy_price) * qty
             profit_pct = ((current_price - buy_price) / buy_price) * 100
             AlertService.send_slack_alert(
-                f"⏱️ [틱매매 10분 리포트] {ticker} 수익율 {profit_pct:+.2f}%, 수익금 {profit_amt:,.0f}원"
+                f"⏱️ [Tick Trade 10min Report] {ticker} return {profit_pct:+.2f}%, profit {profit_amt:,.0f} KRW"
             )
             logger.info(f"✅ Tick trade report sent: {ticker} profit={profit_pct:+.2f}% amount={profit_amt:,.0f}")
         except Exception as e:
@@ -484,7 +484,7 @@ class SchedulerService:
         """
         from services.market.economic_calendar_service import EconomicCalendarService
         EconomicCalendarService.check_for_new_releases()  # 초기화 (변경 감지 없이 기준점 세팅)
-        logger.info("✅ 경제지표 FRED 기준점(baseline) 초기화 완료")
+        logger.info("✅ Economic indicator FRED baseline initialization complete")
 
     @classmethod
     def _check_economic_releases(cls) -> None:
@@ -492,18 +492,18 @@ class SchedulerService:
         FRED 관측일이 이전 기준보다 최신이면 신규 발표로 판단하여 macro 재계산.
         """
         from services.market.economic_calendar_service import EconomicCalendarService
-        logger.info("🔍 경제지표 신규 발표 확인 중...")
+        logger.info("🔍 Checking for new economic indicator releases...")
         try:
             new_releases = EconomicCalendarService.check_for_new_releases()
             if not new_releases:
-                logger.info("ℹ️ 신규 경제지표 발표 없음")
+                logger.info("ℹ️ No new economic indicator releases")
                 return
             names = ", ".join(r["name"] for r in new_releases)
             series_ids = [r["series_id"] for r in new_releases]
-            logger.info(f"🆕 신규 발표 {len(new_releases)}개 감지: {names}")
+            logger.info(f"🆕 {len(new_releases)} new releases detected: {names}")
             MacroService.refresh_on_release(names, series_ids)
         except Exception as e:
-            logger.error(f"❌ _check_economic_releases 오류: {e}")
+            logger.error(f"❌ _check_economic_releases error: {e}")
 
     # ── VIX 스파이크 감지 ─────────────────────────────────────────────────
     # 마지막 알림 시각 (24h 쿨다운용)
@@ -528,12 +528,12 @@ class SchedulerService:
         cls._vix_alert_last["spike"] = now
         MacroService.invalidate_cache()
         msg = (
-            f"🚨 *VIX 비상경보* — VIX {vix_cur:.1f} (>35)\n"
-            f"5거래일 변화: {vix_5d_chg:+.1f}%\n"
-            f"➡️ 포지션 긴급 점검 필요. Regime 캐시 초기화됨."
+            f"🚨 *VIX Emergency Alert* — VIX {vix_cur:.1f} (>35)\n"
+            f"5-day change: {vix_5d_chg:+.1f}%\n"
+            f"➡️ Urgent position review required. Regime cache invalidated."
         )
         AlertService.send_slack_alert(msg)
-        logger.warning(f"🚨 VIX 비상: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+        logger.warning(f"🚨 VIX emergency: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
 
     @classmethod
     def _send_spike_alert(cls, vix_cur: float, vix_5d_chg: float, now: datetime) -> None:
@@ -542,24 +542,24 @@ class SchedulerService:
         MacroService.invalidate_cache()
         regime = MacroService.get_macro_data().get("market_regime", {})
         msg = (
-            f"🔴 *VIX 급등 경보* — VIX {vix_cur:.1f}\n"
-            f"5거래일 급등: *{vix_5d_chg:+.1f}%*\n"
-            f"시장 국면: {regime.get('status','?')} ({regime.get('regime_score','?')}/100)\n"
-            f"➡️ 단기 변동성 확대. 신규 매수 신중."
+            f"🔴 *VIX Spike Alert* — VIX {vix_cur:.1f}\n"
+            f"5-day surge: *{vix_5d_chg:+.1f}%*\n"
+            f"Market regime: {regime.get('status','?')} ({regime.get('regime_score','?')}/100)\n"
+            f"➡️ Short-term volatility expansion. Be cautious with new buys."
         )
         AlertService.send_slack_alert(msg)
-        logger.warning(f"🔴 VIX 급등: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+        logger.warning(f"🔴 VIX spike: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
 
     @classmethod
     def _send_recovery_alert(cls, vix_cur: float, now: datetime) -> None:
         """VIX 정상화(<18) 알림 발송 및 상태 기록."""
         cls._vix_alert_last["recovery"] = now
         msg = (
-            f"✅ *VIX 정상화* — VIX {vix_cur:.1f} (<18)\n"
-            f"이전 경보 이후 변동성 안정. 정상 운용 복귀."
+            f"✅ *VIX Normalized* — VIX {vix_cur:.1f} (<18)\n"
+            f"Volatility stabilized since last alert. Returning to normal operations."
         )
         AlertService.send_slack_alert(msg)
-        logger.info(f"✅ VIX 정상화: {vix_cur:.1f}")
+        logger.info(f"✅ VIX normalized: {vix_cur:.1f}")
 
     @classmethod
     def _check_vix_recovery(cls, vix_cur: float, now: datetime, cooldown_ok_fn: object) -> None:
@@ -600,9 +600,9 @@ class SchedulerService:
             elif vix_cur < 18:
                 cls._check_vix_recovery(vix_cur, now, _cooldown_ok)
             else:
-                logger.debug(f"VIX 정상: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
+                logger.debug(f"VIX normal: {vix_cur:.1f} (5d: {vix_5d_chg:+.1f}%)")
         except Exception as e:
-            logger.error(f"❌ _check_vix_spike 오류: {e}")
+            logger.error(f"❌ _check_vix_spike error: {e}")
 
     @classmethod
     def get_all_cached_prices(cls, limit: int = 1000) -> dict:

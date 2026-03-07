@@ -30,9 +30,9 @@ class NewsService:
         뉴스 목록을 시각적으로 요약합니다.
         """
         if not news_list:
-            return f"{ticker}에 대한 최신 뉴스가 없습니다."
+            return f"No latest news available for {ticker}."
             
-        summary = f"📰 **{ticker} 최신 뉴스 요약**\n"
+        summary = f"📰 **{ticker} Latest News Summary**\n"
         for idx, item in enumerate(news_list, 1):
             summary += f"{idx}. {item.get('title', '')} ({item.get('publisher', '')})\n"
             summary += f"   🔗 {item.get('link', '')}\n"

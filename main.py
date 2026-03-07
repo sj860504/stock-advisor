@@ -15,7 +15,7 @@ from services.trading.portfolio_service import PortfolioService
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 앱 시작 시
-    AlertService.send_slack_alert("🚀 [시스템 알림] Sean's Stock Advisor 서버가 시작되었습니다. 실시간 감시 및 매매 전략 가동을 시작합니다.")
+    AlertService.send_slack_alert("🚀 [System Alert] Sean's Stock Advisor server has started. Real-time monitoring and trading strategy are now active.")
     
     # 스케줄러 실행 (웹소켓 서비스 포함)
     SchedulerService.start()
@@ -33,16 +33,16 @@ async def lifespan(app: FastAPI):
         msg = ReportService.format_portfolio_report(holdings, cash, states, summary)
         AlertService.send_slack_alert(msg)
     except Exception as e:
-        AlertService.send_slack_alert(f"⚠️ 포트폴리오 알림 실패: {e}")
+        AlertService.send_slack_alert(f"⚠️ Portfolio notification failed: {e}")
     
     yield
     
     # 앱 종료 시
-    AlertService.send_slack_alert("🛑 [시스템 알림] 서버가 종료되었습니다. 모든 실시간 감시 및 스케줄러가 중단됩니다.")
+    AlertService.send_slack_alert("🛑 [System Alert] Server has been shut down. All real-time monitoring and schedulers have stopped.")
 
 app = FastAPI(
     title="Sean's Stock Advisor",
-    description="한국투자증권(KIS) API 및 WebSocket 기반 주식 분석 및 알림 API",
+    description="Stock analysis and alert API based on KIS (Korea Investment & Securities) API and WebSocket",
     version="2.0.0",
     lifespan=lifespan
 )
@@ -62,7 +62,7 @@ async def auth_middleware(request: Request, call_next):
     # 쿠키에서 토큰 읽기
     token = request.cookies.get("session", "")
     if not token:
-        return JSONResponse(status_code=401, content={"detail": "인증이 필요합니다."})
+        return JSONResponse(status_code=401, content={"detail": "Authentication required."})
     try:
         verify_token(token)
     except ValueError as e:

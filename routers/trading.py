@@ -171,5 +171,5 @@ async def sell_all_and_rebuy() -> SellAllRebuResponse:
         result = TradingStrategyService.sell_all_and_rebuy()
         return SellAllRebuResponse(**result)
     except Exception as e:
-        logger.error(f"❌ sell_all_and_rebuy 오류: {e}")
+        logger.error(f"❌ sell_all_and_rebuy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

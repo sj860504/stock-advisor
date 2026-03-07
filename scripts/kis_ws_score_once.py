@@ -19,7 +19,7 @@ from services.strategy.trading_strategy_service import TradingStrategyService
 async def main(ticker: str = "005930", timeout_sec: int = 30, user_id: str = "sean"):
     ws_service = KisWsService()
     if not ws_service.get_approval_key():
-        print("approval_key 발급 실패")
+        print("approval_key issuance failed")
         return
 
     ws_url = ws_service.ws_url
@@ -76,7 +76,7 @@ async def main(ticker: str = "005930", timeout_sec: int = 30, user_id: str = "se
 
     state = MarketDataService.get_state(ticker)
     if not state:
-        print("state 로드 실패")
+        print("state load failed")
         return
 
     holdings = PortfolioService.load_portfolio(user_id)

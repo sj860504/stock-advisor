@@ -51,7 +51,7 @@ class YFinanceService:
         try:
             import yfinance as yf
         except ImportError:
-            logger.warning("yfinance 패키지가 설치되지 않았습니다. pip install yfinance")
+            logger.warning("yfinance package is not installed. pip install yfinance")
             return None
 
         yf_tickers = cls._build_yf_tickers(ticker, market_type)
@@ -98,10 +98,10 @@ class YFinanceService:
                 )
 
             except Exception as e:
-                logger.debug(f"[yfinance] {yf_ticker} 조회 실패: {e}")
+                logger.debug(f"[yfinance] {yf_ticker} lookup failed: {e}")
                 continue
 
-        logger.warning(f"[yfinance] {ticker} 모든 티커 조회 실패: {yf_tickers}")
+        logger.warning(f"[yfinance] {ticker} all ticker lookups failed: {yf_tickers}")
         return None
 
     @staticmethod

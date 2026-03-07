@@ -90,10 +90,10 @@ class MarketDataService:
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
         is_kr_ticker = is_kr(ticker)
         if is_kr_ticker and is_us_open:
-            logger.debug(f"⏭️ {ticker} 한국 종목 스킵 (미국 시장 개장 중)")
+            logger.debug(f"⏭️ {ticker} KR ticker skipped (US market is open)")
             return True
         if not is_kr_ticker and is_kr_open:
-            logger.debug(f"⏭️ {ticker} 미국 종목 스킵 (한국 시장 개장 중)")
+            logger.debug(f"⏭️ {ticker} US ticker skipped (KR market is open)")
             return True
         return False
 
@@ -215,7 +215,7 @@ class MarketDataService:
             if (is_kr(t) and analyze_kr) or (not is_kr(t) and analyze_us)
         ]
         if not filtered:
-            logger.info(f"⏭️ 모든 신규 종목이 시장 개장 필터로 제외됨 (KR={is_kr_open}, US={is_us_open})")
+            logger.info(f"⏭️ All new tickers excluded by market-hours filter (KR={is_kr_open}, US={is_us_open})")
             return
 
         logger.info(f"🆕 Batch registering {len(filtered)} tickers (KR={is_kr_open}, US={is_us_open})...")

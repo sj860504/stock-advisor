@@ -16,7 +16,7 @@ from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 HARDCODED_TOKEN = "" 
 
 def verify_kis_integration():
-    print("=== KIS 서비스 통합 검증 시작 ===")
+    print("=== KIS Service Integration Verification Start ===")
     
     # 환경 변수 로드 확인
     print(f"Base URL: {Config.KIS_BASE_URL}")
@@ -24,7 +24,7 @@ def verify_kis_integration():
     
     try:
         # 1. 엑세스 토큰 확인 (재사용 테스트)
-        print("\n1. KIS 엑세스 토큰 확인...")
+        print("\n1. KIS access token check...")
         token1 = KisService.get_access_token()
         token2 = KisService.get_access_token()
         
@@ -32,41 +32,41 @@ def verify_kis_integration():
         file_exists = os.path.exists(cache_path)
         
         if token1 == token2:
-            print(f"✅ 토큰 재사용 성공 (메모리/파일 캐시 작동)")
-            print(f"   - 토큰 앞부분: {token1[:10]}...")
-            print(f"   - 캐시 파일 존재: {file_exists}")
+            print(f"✅ Token reuse success (memory/file cache working)")
+            print(f"   - Token prefix: {token1[:10]}...")
+            print(f"   - Cache file exists: {file_exists}")
         else:
-            print("❌ 토큰 재사용 실패 (중복 발급됨)")
+            print("❌ Token reuse failed (duplicate issuance)")
 
         # 2. 국내 주식 시세/지표 데이터 (삼성전자)
-        print("\n2. 국내 주식(삼성전자) 데이터 수집 및 분석...")
+        print("\n2. Domestic stock (삼성전자 005930) data collection & analysis...")
         raw_kr = KisService.get_financials("005930")
         if raw_kr and raw_kr.get('rt_cd') == '0':
             metrics_kr = FinancialAnalyzer.analyze_domestic_metrics(raw_kr)
-            print(f"✅ 국내 데이터 분석 완료: {metrics_kr}")
+            print(f"✅ Domestic data analysis complete: {metrics_kr}")
         else:
-            print(f"❌ 국내 데이터 수집 실패: {raw_kr.get('msg1') if raw_kr else 'No Response'}")
+            print(f"❌ Domestic data collection failed: {raw_kr.get('msg1') if raw_kr else 'No Response'}")
 
         # 3. 해외 주식 상세 시세/지표 (TSLA)
-        print("\n3. 해외 주식(TSLA) 데이터 수집 및 분석...")
+        print("\n3. Overseas stock (TSLA) data collection & analysis...")
         # NASD, NYSE, AMEX 등 시장 코드 확인 필요 (기본 NASD)
         raw_us = KisService.get_overseas_financials("TSLA", market="NASD")
         if raw_us and raw_us.get('rt_cd') == '0':
             metrics_us = FinancialAnalyzer.analyze_overseas_metrics(raw_us)
-            print(f"✅ 해외 데이터 분석 완료: {metrics_us}")
+            print(f"✅ Overseas data analysis complete: {metrics_us}")
         else:
-            print(f"❌ 해외 데이터 수집 실패: {raw_us.get('msg1') if raw_us else 'No Response'}")
+            print(f"❌ Overseas data collection failed: {raw_us.get('msg1') if raw_us else 'No Response'}")
 
         # 4. DCF 계산 파이프라인 (AAPL)
-        print("\n4. DCF 계산 파이프라인 테스트(AAPL)...")
+        print("\n4. DCF calculation pipeline test (AAPL)...")
         dcf_val = DcfService.calculate_dcf("AAPL")
         if dcf_val > 0:
-            print(f"✅ DCF 적정가 계산 성공: ${dcf_val:.2f}")
+            print(f"✅ DCF fair value calculation success: ${dcf_val:.2f}")
         else:
-            print("⚠️ DCF 계산 결과 없음 (기초 지표 부족)")
+            print("⚠️ No DCF result (insufficient base metrics)")
 
     except Exception as e:
-        print(f"💥 검증 중 치명적 오류 발생: {e}")
+        print(f"💥 Critical error during verification: {e}")
         import traceback
         traceback.print_exc()
 

@@ -21,7 +21,7 @@ async def upload_portfolio(
         content = await file.read()
         holdings = PortfolioService.upload_portfolio(content, file.filename, user_id)
         return PortfolioUploadResponse(
-            message=f"포트폴리오 업로드 성공! {len(holdings)}개 종목 등록됨",
+            message=f"Portfolio upload successful! {len(holdings)} tickers registered",
             holdings=holdings,
         )
     except Exception as e:
@@ -33,7 +33,7 @@ def get_portfolio(user_id: str = "default") -> PortfolioListResponse:
     """저장된 포트폴리오를 조회합니다."""
     holdings = PortfolioService.load_portfolio(user_id)
     if not holdings:
-        return PortfolioListResponse(message="등록된 포트폴리오가 없습니다.", holdings=[])
+        return PortfolioListResponse(message="No registered portfolio found.", holdings=[])
     return PortfolioListResponse(holdings=holdings)
 
 
@@ -62,7 +62,7 @@ def add_holding(
     """수동으로 보유 종목을 추가합니다."""
     resolved_ticker = TickerService.resolve_ticker(ticker)
     holdings = PortfolioService.add_holding_manual(user_id, resolved_ticker, quantity, buy_price, name)
-    return HoldingActionResponse(message=f"{resolved_ticker} 추가 완료", holdings=holdings)
+    return HoldingActionResponse(message=f"{resolved_ticker} added", holdings=holdings)
 
 
 @router.patch("/{user_id}/{ticker}/sector", response_model=HoldingActionResponse)
@@ -70,7 +70,7 @@ def update_sector(user_id: str, ticker: str, sector: str) -> HoldingActionRespon
     """보유 종목의 섹터를 수동으로 업데이트합니다."""
     try:
         holdings = PortfolioService.update_holding_sector(user_id, ticker, sector)
-        return HoldingActionResponse(message=f"{ticker} 섹터 → {sector} 업데이트 완료", holdings=holdings)
+        return HoldingActionResponse(message=f"{ticker} sector updated to {sector}", holdings=holdings)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -81,7 +81,7 @@ def remove_holding(user_id: str, ticker: str) -> HoldingActionResponse:
     holdings = PortfolioService.load_portfolio(user_id)
     new_holdings = [h for h in holdings if h.get("ticker") != ticker]
     PortfolioService.save_portfolio(user_id, new_holdings)
-    return HoldingActionResponse(message=f"{ticker} 제거 완료", holdings=new_holdings)
+    return HoldingActionResponse(message=f"{ticker} removed", holdings=new_holdings)
 
 
 @router.post("/{user_id}/trade", response_model=HoldingActionResponse)

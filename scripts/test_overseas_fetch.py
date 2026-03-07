@@ -32,7 +32,7 @@ def run_overseas_test():
     
     # 데이터 확인
     tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
-    print(f"📊 해외주식_기간별시세 (VTS): TR={tr_id}, Path={path}")
+    print(f"📊 Overseas stock daily price (VTS): TR={tr_id}, Path={path}")
     
     # 2. 토큰 획득
     print("\n--- 2. Getting Access Token ---")
@@ -44,7 +44,7 @@ def run_overseas_test():
 
     # 3. 해외주식 랭킹 조회 (시총 상위 종목 조회용)
     print("\n--- 3. Overseas Ranking (Market Cap Top Items) ---")
-    print("💡 이 API는 해당 시장의 시가총액 순위(보통 상위 100개)를 가져옵니다.")
+    print("💡 This API fetches market cap rankings (typically top 100) for each exchange.")
     for excd in ["NAS", "NYS"]:
         res = KisFetcher.fetch_overseas_ranking(token, excd=excd)
         if res and res.get('output'):

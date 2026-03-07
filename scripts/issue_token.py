@@ -8,13 +8,13 @@ sys.path.append(project_root)
 from services.kis.kis_service import KisService
 
 def issue_and_print_token():
-    print("🔑 KIS 엑세스 토큰 발급 중...")
+    print("🔑 Issuing KIS access token...")
     try:
         token = KisService.get_access_token()
-        print(f"\n발급된 토큰:\n{token}\n")
-        print("💡 이 토큰을 scripts/verify_kis_services.py의 HARDCODED_TOKEN 변수에 붙여넣어 사용할 수 있습니다.")
+        print(f"\nIssued token:\n{token}\n")
+        print("💡 You can paste this token into the HARDCODED_TOKEN variable in scripts/verify_kis_services.py.")
     except Exception as e:
-        print(f"❌ 토큰 발급 실패: {e}")
+        print(f"❌ Token issuance failed: {e}")
 
 if __name__ == "__main__":
     issue_and_print_token()

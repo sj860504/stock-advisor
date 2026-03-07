@@ -25,7 +25,7 @@ class StrategyStateRepo:
                     for field in _USER_FIELDS
                 }
         except Exception as e:
-            logger.error(f"StrategyStateRepo.load({user_id}) 오류: {e}")
+            logger.error(f"StrategyStateRepo.load({user_id}) error: {e}")
             return {}
 
     @classmethod
@@ -40,7 +40,7 @@ class StrategyStateRepo:
                 for field in _USER_FIELDS:
                     setattr(row, field, json.dumps(user_state.get(field, {}), ensure_ascii=False))
         except Exception as e:
-            logger.error(f"StrategyStateRepo.save({user_id}) 오류: {e}")
+            logger.error(f"StrategyStateRepo.save({user_id}) error: {e}")
 
     @classmethod
     def get_field(cls, user_id: str, field: str) -> dict:
@@ -52,7 +52,7 @@ class StrategyStateRepo:
                     return {}
                 return json.loads(getattr(row, field) or "{}")
         except Exception as e:
-            logger.error(f"StrategyStateRepo.get_field({user_id}, {field}) 오류: {e}")
+            logger.error(f"StrategyStateRepo.get_field({user_id}, {field}) error: {e}")
             return {}
 
     @classmethod
@@ -66,4 +66,4 @@ class StrategyStateRepo:
                     session.add(row)
                 setattr(row, field, json.dumps(value, ensure_ascii=False))
         except Exception as e:
-            logger.error(f"StrategyStateRepo.set_field({user_id}, {field}) 오류: {e}")
+            logger.error(f"StrategyStateRepo.set_field({user_id}, {field}) error: {e}")

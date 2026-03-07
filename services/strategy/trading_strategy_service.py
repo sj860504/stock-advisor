@@ -82,7 +82,7 @@ class TradingStrategyService:
                     continue
                 StrategyStateRepo.save(key, val)
                 migrated = True
-                logger.info(f"✅ strategy_state 마이그레이션 완료: user={key}")
+                logger.info(f"strategy_state migration complete: user={key}")
             if "_enabled" in old and SettingsService.get_setting("STRATEGY_ENABLED", None) is None:
                 SettingsService.set_setting("STRATEGY_ENABLED", "true" if old["_enabled"] else "false")
             overrides = old.get("_global", {}).get("top_weight_overrides")
@@ -91,9 +91,9 @@ class TradingStrategyService:
             if migrated:
                 bak = json_path + ".migrated"
                 os.rename(json_path, bak)
-                logger.info(f"📦 마이그레이션 완료. JSON 백업: {bak}")
+                logger.info(f"Migration done. JSON backup: {bak}")
         except Exception as e:
-            logger.warning(f"⚠️ strategy_state JSON 마이그레이션 실패: {e}")
+            logger.warning(f"strategy_state JSON migration failed: {e}")
 
     # ── 상태 저장/로드 ────────────────────────────────────────────────────────
 
@@ -165,14 +165,14 @@ class TradingStrategyService:
         us_stock_ratio = 1.0 - us_cash_ratio
 
         logger.info(
-            f"📊 [포트폴리오 비중] "
-            f"🇰🇷 주식 {kr_stock_ratio:.1%} / 현금 {kr_cash_ratio:.1%} (목표 현금 {target_cash_kr:.1%}) | "
-            f"🇺🇸 주식 {us_stock_ratio:.1%} / 현금 {us_cash_ratio:.1%} (목표 현금 {target_cash_us:.1%})"
+            f"[Portfolio Allocation] "
+            f"KR Stock {kr_stock_ratio:.1%} / Cash {kr_cash_ratio:.1%} (Target {target_cash_kr:.1%}) | "
+            f"US Stock {us_stock_ratio:.1%} / Cash {us_cash_ratio:.1%} (Target {target_cash_us:.1%})"
         )
         if kr_cash_ratio < target_cash_kr - 0.05 and kr_total > 0:
-            logger.warning(f"⚠️ KR 현금 부족 ({kr_cash_ratio:.1%} < 목표 {target_cash_kr:.1%}). 익절 후 현금 확보 권장.")
+            logger.warning(f"KR cash low ({kr_cash_ratio:.1%} < target {target_cash_kr:.1%}). Consider taking profit.")
         if us_cash_ratio < target_cash_us - 0.05 and us_total_usd > 0:
-            logger.warning(f"⚠️ US 현금 부족 ({us_cash_ratio:.1%} < 목표 {target_cash_us:.1%}). 익절 후 현금 확보 권장.")
+            logger.warning(f"US cash low ({us_cash_ratio:.1%} < target {target_cash_us:.1%}). Consider taking profit.")
 
     # ── 틱 매매 ──────────────────────────────────────────────────────────────
 
@@ -334,14 +334,14 @@ class TradingStrategyService:
         target_universe = set(all_kr + all_us)
 
         MarketDataService.prune_states(target_universe)
-        logger.info(f"🧹 Top 100 변경 감지: 현재 유니버스 {len(target_universe)}개 (KR={len(all_kr)}, US={len(all_us)})")
+        logger.info(f"Top 100 change detected: universe {len(target_universe)} (KR={len(all_kr)}, US={len(all_us)})")
         return target_universe
 
     # ── 포트폴리오 리포트 ─────────────────────────────────────────────────────
 
     @classmethod
     def _send_portfolio_report(cls, user_id: str, before_snapshot: dict) -> None:
-        """매매 전후 잔고를 비교하여 변동이 있으면 포트폴리오 리포트 전송"""
+        """매매 전후 잔고를 비교하여 변동된 종목만 리포트 전송"""
         try:
             from services.notification.report_service import ReportService
             PortfolioService.sync_with_kis(user_id)
@@ -351,23 +351,27 @@ class TradingStrategyService:
 
             after_snapshot = {h["ticker"]: h.get("quantity", 0) for h in latest_holdings}
             if before_snapshot == after_snapshot:
-                logger.info("ℹ️ 체결 변경 없음. 포트폴리오 리포트 전송 스킵.")
+                logger.info("No position changes. Skipping trade report.")
                 return
 
+            # 변동된 종목만 필터링 (신규 매수, 수량 변경, 전량 매도)
+            changed_tickers = set()
+            all_tickers = set(before_snapshot.keys()) | set(after_snapshot.keys())
+            for ticker in all_tickers:
+                before_qty = before_snapshot.get(ticker, 0)
+                after_qty = after_snapshot.get(ticker, 0)
+                if before_qty != after_qty:
+                    changed_tickers.add(ticker)
+
+            changed_holdings = [h for h in latest_holdings if h["ticker"] in changed_tickers]
             states = MarketDataService.get_all_states()
-            allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-            is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
-            is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-            if is_kr_open and not is_us_open:
-                report_holdings = filter_kr(latest_holdings)
-            elif is_us_open and not is_kr_open:
-                report_holdings = filter_us(latest_holdings)
-            else:
-                report_holdings = latest_holdings
-            msg = ReportService.format_portfolio_report(report_holdings, latest_cash, states, summary)
+            msg = ReportService.format_trade_result_report(
+                changed_holdings, changed_tickers, before_snapshot, after_snapshot,
+                latest_cash, states, summary,
+            )
             AlertService.send_slack_alert(msg)
         except Exception as e:
-            logger.warning(f"⚠️ 포트폴리오 리포트 전송 실패: {e}")
+            logger.warning(f"Trade report send failed: {e}")
 
     # ── sell_all_and_rebuy ────────────────────────────────────────────────────
 
@@ -377,14 +381,14 @@ class TradingStrategyService:
         if strategy_error is None:
             return {
                 "status": "success",
-                "message": f"전량 매도 및 전략 재매수 완료 (매도 성공: {success_count}, 실패: {fail_count})",
+                "message": f"Sell all & rebuy complete (sold: {success_count}, failed: {fail_count})",
                 "sold": success_count,
                 "failed": fail_count,
                 "failed_tickers": failed_tickers or None,
             }
         return {
             "status": "partial",
-            "message": f"매도 완료 (성공: {success_count}, 실패: {fail_count}), 전략 실행 실패",
+            "message": f"Sell done (success: {success_count}, failed: {fail_count}), strategy execution failed",
             "sold": success_count,
             "failed": fail_count,
             "failed_tickers": failed_tickers or None,
@@ -394,19 +398,19 @@ class TradingStrategyService:
     @classmethod
     def sell_all_and_rebuy(cls, user_id: str = "sean") -> dict:
         """보유 종목 전량 매도 후 전략대로 재매수."""
-        logger.info("🔄 보유 종목 전량 매도 후 전략 재매수 시작")
+        logger.info("Sell all holdings & rebuy with strategy starting")
         holdings = PortfolioService.sync_with_kis(user_id)
         if not holdings:
-            return {"status": "success", "message": "보유 종목이 없습니다.", "sold": 0, "failed": 0}
-        logger.info(f"📊 보유 종목 {len(holdings)}개 확인")
+            return {"status": "success", "message": "No holdings to sell.", "sold": 0, "failed": 0}
+        logger.info(f"Found {len(holdings)} holdings to sell")
         success_count, fail_count, failed_tickers = OrderService.execute_mass_sell(holdings)
         PortfolioService.sync_with_kis(user_id)
         try:
             cls.run_strategy(user_id)
-            logger.info("✅ 전략 실행 완료")
+            logger.info("Strategy execution complete")
             return cls._build_sell_rebuy_result(success_count, fail_count, failed_tickers)
         except Exception as e:
-            logger.error(f"❌ 전략 실행 중 오류: {e}")
+            logger.error(f"Strategy execution error: {e}")
             return cls._build_sell_rebuy_result(success_count, fail_count, failed_tickers, str(e))
 
     # ── 전략 실행 ─────────────────────────────────────────────────────────────
@@ -466,7 +470,7 @@ class TradingStrategyService:
 
         trade_executed = cls._run_signals_and_tick(user_id, holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us)
         cls._save_state(state)
-        logger.info("✅ 전략 실행 및 매매 판단 완료.")
+        logger.info("Strategy execution and trade decisions complete.")
         if trade_executed:
             cls._send_portfolio_report(user_id, before_snapshot)
 
@@ -527,7 +531,7 @@ class TradingStrategyService:
         holding = next((h for h in holdings if h['ticker'] == ticker), None)
 
         if not holding:
-            return {"status": "failed", "msg": "보유 주식이 아닙니다."}
+            return {"status": "failed", "msg": "Not a held stock."}
 
         max_qty = (getattr(holding, "quantity", None) if not isinstance(holding, dict) else holding.get("quantity", None))
         if quantity <= 0 or quantity > max_qty:

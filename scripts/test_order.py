@@ -2,29 +2,29 @@ from services.kis.kis_service import KisService
 import time
 
 def test_connection():
-    print("🔌 API 연결 테스트 (잔고 조회)...")
+    print("🔌 API connection test (balance inquiry)...")
     balance = KisService.get_balance()
     if balance:
         print("✅ Connection Successful!")
         summary = balance['summary'][0]
-        print(f"💰 예수금 총액: {summary['dnca_tot_amt']}")
-        print(f"📈 평가 손익: {summary['evlu_pfls_smtl_amt']}")
+        print(f"💰 Total deposit: {summary['dnca_tot_amt']}")
+        print(f"📈 Eval P&L: {summary['evlu_pfls_smtl_amt']}")
     else:
         print("❌ Connection Failed.")
 
 def test_buy_samsung():
-    print("\n🛒 삼성전자 1주 시장가 매수 테스트...")
+    print("\n🛒 삼성전자 1 share market-price buy test...")
     # 삼성전자: 005930
     ticker = "005930"
     qty = 1
     price = 0 # 0 = 시장가
     
-    confirm = input(f"⚠️ {ticker} {qty}주를 시장가로 매수할까요? (y/n): ")
+    confirm = input(f"⚠️ Buy {qty} shares of {ticker} at market price? (y/n): ")
     if confirm.lower() == 'y':
         result = KisService.send_order(ticker, qty, price, order_type="buy")
-        print(f"결과: {result}")
+        print(f"Result: {result}")
     else:
-        print("주문 취소")
+        print("Order cancelled")
 
 if __name__ == "__main__":
     test_connection()

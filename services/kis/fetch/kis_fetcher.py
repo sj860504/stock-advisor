@@ -421,7 +421,7 @@ class KisFetcher:
             if tr_id != "FHKST03030100" and not response_data.get("output") and "EXCD" in params:
                 alt_excd = "NYS" if params["EXCD"] == "NAS" else ("NAS" if params["EXCD"] == "NYS" else None)
                 if alt_excd:
-                    logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} 폴백 조회 (빈 응답)")
+                    logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} fallback query (empty response)")
                     alt_params = {**params, "EXCD": alt_excd}
                     alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
                     if alt_response and alt_response.status_code == 200:
@@ -432,7 +432,7 @@ class KisFetcher:
                             try:
                                 from services.market.stock_meta_service import StockMetaService
                                 StockMetaService.update_market_code(ticker, alt_excd)
-                                logger.info(f"✅ {ticker} api_market_code 자동 수정: {params['EXCD']} → {alt_excd}")
+                                logger.info(f"✅ {ticker} api_market_code auto-corrected: {params['EXCD']} → {alt_excd}")
                             except Exception:
                                 pass
                             return alt_data

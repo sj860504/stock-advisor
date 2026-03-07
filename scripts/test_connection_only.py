@@ -12,7 +12,7 @@ APP_SECRET = os.getenv("KIS_APP_SECRET")
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 def test_token():
-    print("🔑 토큰 발급 테스트(실서버)...")
+    print("🔑 Token issuance test (production server)...")
     print(f"Target URL: {BASE_URL}")
     print(f"App Key (Start): {APP_KEY[:5]}...")
     

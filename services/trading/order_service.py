@@ -30,12 +30,12 @@ class OrderService:
                 fresh = KisFetcher.fetch_overseas_price(token, ticker)
                 fresh_price = fresh.get("price", 0)
                 if fresh_price > 0:
-                    logger.info(f"🔄 {ticker} 매도 전 가격 재조회: ${fresh_price:.2f} (기존: ${current_price:.2f})")
+                    logger.info(f"🔄 {ticker} pre-sell price refresh: ${fresh_price:.2f} (previous: ${current_price:.2f})")
                     current_price = fresh_price
             except Exception as e:
-                logger.warning(f"⚠️ {ticker} 가격 재조회 실패, 기존 가격 사용: {e}")
+                logger.warning(f"⚠️ {ticker} price refresh failed, using previous price: {e}")
             if current_price <= 0:
-                return False, f"{ticker} 현재가 정보 없음"
+                return False, f"{ticker} current price unavailable"
             res = KisService.send_overseas_order(
                 ticker=ticker, quantity=quantity,
                 price=round(float(current_price), 2), order_type="sell",
@@ -56,18 +56,18 @@ class OrderService:
             quantity = holding["quantity"]
             if quantity <= 0:
                 continue
-            logger.info(f"📤 {ticker} ({name}) {quantity}주 매도 시도...")
+            logger.info(f"📤 {ticker} ({name}) attempting to sell {quantity} shares...")
             try:
                 ok, err = cls.sell_single_holding(ticker, name, quantity, holding.get("current_price", 0))
                 if ok:
-                    logger.info(f"✅ {ticker} ({name}) {quantity}주 매도 성공")
+                    logger.info(f"✅ {ticker} ({name}) sold {quantity} shares successfully")
                     success_count += 1
                 else:
-                    logger.error(f"❌ {ticker} 매도 실패: {err}")
+                    logger.error(f"❌ {ticker} sell failed: {err}")
                     fail_count += 1
                     failed_tickers.append(ticker)
             except Exception as e:
-                logger.error(f"❌ {ticker} 매도 중 오류: {e}")
+                logger.error(f"❌ {ticker} error during sell: {e}")
                 fail_count += 1
                 failed_tickers.append(ticker)
         return success_count, fail_count, failed_tickers

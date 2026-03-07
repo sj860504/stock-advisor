@@ -6,12 +6,12 @@ try:
     stats, trades = BacktestService.run_rsi_backtest('AAPL', years=3)
 
     print('\n=== RSI Backtest Result (AAPL) ===')
-    print(f"📊 초기 자본: ${stats['initial_capital']:,.0f}")
-    print(f"💰 최종 가치: ${stats['final_value']:,.0f}")
-    print(f"📈 누적 수익률: {stats['total_return_pct']}%")
-    print(f"🎯 승률: {stats['win_rate']}%")
-    print(f"📉 MDD (최대낙폭): {stats['mdd']}%")
-    print(f"🔄 총 매매 횟수: {stats['trade_count']}회")
+    print(f"📊 Initial capital: ${stats['initial_capital']:,.0f}")
+    print(f"💰 Final value: ${stats['final_value']:,.0f}")
+    print(f"📈 Cumulative return: {stats['total_return_pct']}%")
+    print(f"🎯 Win rate: {stats['win_rate']}%")
+    print(f"📉 MDD (Max Drawdown): {stats['mdd']}%")
+    print(f"🔄 Total trades: {stats['trade_count']}")
 
     print('\n=== Trade Log (Last 5) ===')
     for t in trades[-5:]:
