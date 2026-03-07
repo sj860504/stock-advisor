@@ -61,6 +61,14 @@ class StockMetaService:
         return StockMetaRepo.get_stock_meta(ticker)
 
     @classmethod
+    def get_exchange_code(cls, ticker: str) -> str:
+        """종목의 거래소 코드 반환 (NASD, NYSE 등). 미조회 시 기본값 NASD."""
+        meta = cls.get_stock_meta(ticker)
+        if meta and meta.exchange_code:
+            return meta.exchange_code
+        return "NASD"
+
+    @classmethod
     def get_stock_meta_bulk(cls, tickers: list) -> list:
         """여러 종목 메타 정보 일괄 조회"""
         return StockMetaRepo.get_stock_meta_bulk(tickers)
