@@ -245,14 +245,18 @@ class EconomicCalendarService:
         seen_keys: set[tuple] = set()
 
         for rid, grp in release_groups.items():
-            next_date = cls._estimate_next_release_date(rid, grp["freq"])
-            if not next_date or not (today_str <= next_date <= end_str):
+            try:
+                next_date = cls._estimate_next_release_date(rid, grp["freq"])
+                if not next_date or not (today_str <= next_date <= end_str):
+                    continue
+                key = (next_date, rid)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                events.append(cls._build_calendar_event(rid, grp, next_date, now_utc))
+            except Exception as e:
+                logger.warning(f"Calendar event build failed (release_id={rid}): {e}")
                 continue
-            key = (next_date, rid)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            events.append(cls._build_calendar_event(rid, grp, next_date, now_utc))
 
         events.sort(key=lambda e: e.datetime_utc)
         logger.info(f"📅 Weekly calendar: {len(events)} events ({today_str} ~ {end_str})")
