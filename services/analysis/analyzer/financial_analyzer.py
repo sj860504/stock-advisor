@@ -8,14 +8,14 @@ logger = get_logger("financial_analyzer")
 
 class FinancialAnalyzer:
     """
-    수집된 원시 데이터를 분석하여 지표를 산출하는 헬퍼 클래스
+    Helper class that analyzes raw collected data to produce financial metrics.
     """
 
     @staticmethod
     def analyze_domestic_metrics(raw_data) -> Optional[AnalyzedFinancialMetrics]:
         """
-        국내 주식 원시 데이터를 분석하여 표준 지표 반환 (FHKST01010100 기준).
-        raw_data: KisFinancialsResponse DTO 또는 output/raw 키를 가진 dict.
+        Analyze domestic stock raw data and return standard metrics (based on FHKST01010100).
+        raw_data: KisFinancialsResponse DTO or dict with output/raw keys.
         """
         output = (
             getattr(raw_data, "output", None)
@@ -45,8 +45,8 @@ class FinancialAnalyzer:
     @staticmethod
     def analyze_overseas_metrics(raw_data) -> Optional[AnalyzedFinancialMetrics]:
         """
-        해외 주식 원시 데이터를 분석하여 표준 지표 반환 (HHDFS70200200 기준).
-        raw_data: KisFinancialsResponse DTO 또는 output/raw 키를 가진 dict.
+        Analyze overseas stock raw data and return standard metrics (based on HHDFS70200200).
+        raw_data: KisFinancialsResponse DTO or dict with output/raw keys.
         """
         output = (
             getattr(raw_data, "output", None)
@@ -74,8 +74,8 @@ class FinancialAnalyzer:
     @staticmethod
     def analyze_dcf_inputs(domestic_data: dict = None, overseas_data: dict = None) -> dict:
         """
-        DCF 계산을 위한 입력 데이터 추출
-        - KIS quotation 데이터에서 최대한 추출
+        Extract input data for DCF calculation.
+        - Extracts as much as possible from KIS quotation data.
         """
         result = {
             "fcf_per_share": None,
@@ -85,8 +85,8 @@ class FinancialAnalyzer:
         
         if domestic_data:
             output = domestic_data.get('output', {})
-            # 국내의 경우 EPS를 FCF의 대용치로 사용하거나 (단순화), 
-            # 실제 재무제표 API가 작동하지 않을 경우를 대비한 Fallback
+            # For domestic stocks, use EPS as FCF proxy (simplified),
+            # Fallback in case the actual financial statement API is unavailable
             result["fcf_per_share"] = float(output.get('eps', 0) or 0) 
             
         if overseas_data:

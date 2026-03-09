@@ -1,4 +1,4 @@
-"""인증 라우터 — 로그인 및 토큰 검증."""
+"""Auth router -- login and token verification."""
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
@@ -33,7 +33,7 @@ def create_access_token(username: str) -> str:
 
 
 def verify_token(token: str) -> str:
-    """토큰 검증 후 username 반환. 실패 시 ValueError."""
+    """Verify token and return username. Raises ValueError on failure."""
     try:
         payload = jwt.decode(token, Config.JWT_SECRET, algorithms=[Config.JWT_ALGORITHM])
         username: str = payload.get("sub")
@@ -48,7 +48,7 @@ def verify_token(token: str) -> str:
 
 @router.post("/login")
 def login(body: LoginRequest, response: Response):
-    """아이디/비밀번호 검증 후 httpOnly 쿠키로 JWT 설정."""
+    """Verify username/password and set JWT via httpOnly cookie."""
     valid_user = body.username == Config.AUTH_USERNAME
     valid_pass = _verify_password(body.password, Config.AUTH_PASSWORD_HASH)
     if not (valid_user and valid_pass):
@@ -62,22 +62,22 @@ def login(body: LoginRequest, response: Response):
         value=token,
         httponly=True,
         samesite="lax",
-        max_age=30 * 24 * 3600,  # 30일
-        secure=False,             # HTTP 서버; HTTPS면 True로
+        max_age=30 * 24 * 3600,  # 30 days
+        secure=False,             # HTTP server; set True for HTTPS
     )
     return {"ok": True}
 
 
 @router.post("/logout")
 def logout(response: Response):
-    """쿠키 삭제."""
+    """Delete cookie."""
     response.delete_cookie("session")
     return {"ok": True}
 
 
 @router.get("/verify", response_model=TokenVerifyResponse)
 def verify(token: str) -> TokenVerifyResponse:
-    """토큰 유효성 확인 (선택적 사용)."""
+    """Verify token validity (optional use)."""
     try:
         username = verify_token(token)
         return TokenVerifyResponse(valid=True, username=username)

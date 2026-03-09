@@ -1,10 +1,10 @@
 """
-TradeExecutorService: 주문 실행, 비중 계산, 알림 등 실행 관련 로직
+TradeExecutorService: order execution, weight calculation, alerts and related logic.
 - TradeContext dataclass
-- 섹터/시장 비중 계산 헬퍼
-- 현금 비중 / 진입 조건 검사
-- 매수/매도 주문 실행 (_execute_trade_v2)
-- 거래 알림 (Slack)
+- Sector/market weight calculation helpers
+- Cash ratio / entry condition checks
+- Buy/sell order execution (_execute_trade_v2)
+- Trade alerts (Slack)
 """
 import json
 from typing import Optional
@@ -27,7 +27,7 @@ TOP10_CACHE_TTL_SEC = 6 * 60 * 60
 
 
 class TradeExecutorService:
-    """주문 실행 + 비중·현금 조건 검사 + 알림"""
+    """Order execution + weight/cash condition checks + alerts."""
 
     WEIGHTS = {
         'RSI_OVERSOLD': -20, 'RSI_OVERBOUGHT': +15,
@@ -61,7 +61,7 @@ class TradeExecutorService:
     SECTOR_TARGET_WEIGHT: dict = {"tech": 0.50, "value": 0.30, "financial": 0.20}
     SECTOR_REBAL_THRESHOLD: float = 0.05
 
-    # ── 티커 분류 헬퍼 ────────────────────────────────────────────────────────
+    # ── Ticker Classification Helpers ────────────────────────────────────────────────────────
 
     @classmethod
     def _get_ticker_market(cls, ticker: str) -> str:
@@ -76,11 +76,11 @@ class TradeExecutorService:
 
     @classmethod
     def _get_sector_group(cls, ticker: str, holding: Optional[dict] = None) -> str:
-        """SECTOR_GROUP_MAP 기반 섹터 그룹 반환 ('tech'/'value'/'financial'/'other')."""
+        """Return sector group based on SECTOR_GROUP_MAP ('tech'/'value'/'financial'/'other')."""
         sector = cls._get_ticker_sector(ticker, holding)
         return cls.SECTOR_GROUP_MAP.get(sector, "other")
 
-    # ── 보유 가치 ─────────────────────────────────────────────────────────────
+    # ── Holding Value ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _get_holding_value(cls, holding: dict) -> float:
@@ -91,11 +91,11 @@ class TradeExecutorService:
                 price = state.current_price
         return max(0.0, float(price)) * float(holding.get("quantity", 0))
 
-    # ── 섹터 그룹 비중 ────────────────────────────────────────────────────────
+    # ── Sector Group Weights ────────────────────────────────────────────────────────
 
     @classmethod
     def _get_sector_target_weights(cls, market: str) -> dict:
-        """시장별 섹터 목표 비중 (Settings 우선, 없으면 기본값)."""
+        """Per-market sector target weights (Settings priority, otherwise defaults)."""
         prefix = f"SECTOR_TARGET_{market.upper()}_"
         return {
             grp: SettingsService.get_float(f"{prefix}{grp.upper()}", cls.SECTOR_TARGET_WEIGHT.get(grp, 0.0))
@@ -104,7 +104,7 @@ class TradeExecutorService:
 
     @classmethod
     def _compute_group_values(cls, holdings: list, exchange_rate: float) -> dict:
-        """보유 종목 루프를 돌며 섹터 그룹별 KRW 평가액 dict 반환."""
+        """Loop through holdings and return sector group KRW valuation dict."""
         group_values: dict = {"tech": 0.0, "value": 0.0, "financial": 0.0, "other": 0.0}
         for h in holdings:
             if h.get("quantity", 0) <= 0:
@@ -121,7 +121,7 @@ class TradeExecutorService:
 
     @classmethod
     def _get_sector_group_weights(cls, holdings: list, exchange_rate: float = 1400.0, market: str = "all") -> dict:
-        """주식 자산 내 섹터 그룹 현재 비중 및 목표 대비 편차 반환.
+        """Return current sector group weights within stock assets and deviation from targets.
         market: 'kr' | 'us' | 'all'
         """
         if market == "kr":
@@ -157,7 +157,7 @@ class TradeExecutorService:
 
     @classmethod
     def _classify_holdings_by_deviation(cls, holdings: list, weights: dict) -> tuple:
-        """보유 종목을 섹터 편차 기준으로 underweight/overweight 리스트로 분류."""
+        """Classify holdings into underweight/overweight lists by sector deviation."""
         underweight, overweight = [], []
         for h in holdings:
             if h.get("quantity", 0) <= 0:
@@ -183,11 +183,11 @@ class TradeExecutorService:
                 overweight.append(entry)
         return underweight, overweight
 
-    # ── 배분 한도 검사 ────────────────────────────────────────────────────────
+    # ── Allocation Limit Checks ────────────────────────────────────────────────────────
 
     @classmethod
     def _compute_sector_value_map(cls, holdings: list, ticker: str, add_value: float, sector: str, exchange_rate: float) -> dict:
-        """보유 종목 기반 섹터별 평가액 dict 계산 (추가 매수 반영)."""
+        """Calculate per-sector valuation dict based on holdings (reflecting additional buy)."""
         sector_values: dict = {}
         for h in holdings:
             if h.get("quantity", 0) <= 0:
@@ -202,7 +202,7 @@ class TradeExecutorService:
 
     @classmethod
     def _check_sector_group_limit(cls, ticker: str, holding, holdings: list, exchange_rate: float) -> list:
-        """섹터 그룹 목표 비중 소프트 경고 이유 목록 반환 (초과 시 1건)."""
+        """Return soft warning reasons list for sector group target weight (1 entry if exceeded)."""
         reasons = []
         grp = cls._get_sector_group(ticker, holding)
         if grp != "other":
@@ -219,7 +219,7 @@ class TradeExecutorService:
         cls, holdings: list, cash_balance: float, exchange_rate: float,
         kr_assets: float, us_assets_krw: float, add_value: float, market: str
     ) -> tuple:
-        """한국/미국 시장별 평가액 및 현금 잔고 계산."""
+        """Calculate per-market (KR/US) valuations and cash balances."""
         kr_holdings = filter_kr(holdings)
         us_holdings = filter_us(holdings)
         kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings if h.get("quantity", 0) > 0)
@@ -237,7 +237,7 @@ class TradeExecutorService:
 
     @classmethod
     def _passes_allocation_limits(cls, ticker: str, add_value: float, holdings: list, cash_balance: float, holding: Optional[dict] = None, kr_assets: float = 0.0, us_assets_krw: float = 0.0) -> tuple:
-        """시장/섹터 비중 제한 검사 (한국/미국 분리)"""
+        """Check market/sector weight limits (KR/US separated)."""
         market = cls._get_ticker_market(ticker)
         market_total = kr_assets if market == 'KR' else us_assets_krw
         if market_total <= 0:
@@ -255,7 +255,7 @@ class TradeExecutorService:
         reasons.extend(cls._check_sector_group_limit(ticker, holding, holdings, exchange_rate))
         return len(reasons) == 0, reasons
 
-    # ── 목표 현금 비중 ────────────────────────────────────────────────────────
+    # ── Target Cash Ratio ────────────────────────────────────────────────────────
 
     @classmethod
     def _is_panic_market(cls, macro: dict) -> bool:
@@ -265,7 +265,7 @@ class TradeExecutorService:
 
     @classmethod
     def _get_target_cash_ratio(cls, market: str, regime_status: str) -> float:
-        """시장 국면에 따른 목표 현금 비중 조회 (한국/미국 분리)"""
+        """Get target cash ratio based on market regime (KR/US separated)."""
         regime_key = regime_status.upper()
         if regime_key not in ['BEAR', 'NEUTRAL', 'BULL']:
             regime_key = 'NEUTRAL'
@@ -280,7 +280,7 @@ class TradeExecutorService:
 
     @classmethod
     def _calculate_total_assets(cls, holdings: list, cash_balance: float, macro_data: dict) -> tuple:
-        """시장별 자산 및 시장 국면별 현금 비중 목표 계산. Returns (kr_total, us_total_krw, target_cash_kr, target_cash_us)."""
+        """Calculate per-market assets and regime-based cash ratio targets. Returns (kr_total, us_total_krw, target_cash_kr, target_cash_us)."""
         usd_cash = PortfolioService.get_usd_cash_balance()
         exchange_rate = MacroService.get_exchange_rate()
 
@@ -295,7 +295,8 @@ class TradeExecutorService:
         kr_total = kr_market_value + max(0.0, cash_balance)
         us_total_krw = us_market_value_krw + usd_cash_krw
 
-        regime_status = macro_data.get('market_regime', {}).get('status', 'Neutral').upper()
+        regime = macro_data.get('market_regime') if macro_data else None
+        regime_status = getattr(regime, 'status', 'Neutral').upper()
         target_cash_kr = cls._get_target_cash_ratio('KR', regime_status)
         target_cash_us = cls._get_target_cash_ratio('US', regime_status)
         logger.info(f"💰 Market regime: {regime_status} → KR total: {kr_total:,.0f}KRW, US total: {us_total_krw:,.0f}KRW | KR cash ratio target: {target_cash_kr:.1%}, US cash ratio target: {target_cash_us:.1%}")
@@ -306,7 +307,7 @@ class TradeExecutorService:
 
     @classmethod
     def get_top_weight_overrides(cls) -> dict:
-        """티커별 사용자 가중치 오버라이드 조회"""
+        """Get per-ticker user weight overrides."""
         raw = SettingsService.get_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", "{}")
         try:
             return json.loads(raw or "{}")
@@ -315,26 +316,27 @@ class TradeExecutorService:
 
     @classmethod
     def set_top_weight_overrides(cls, overrides: dict) -> dict:
-        """티커별 사용자 가중치 오버라이드 저장"""
+        """Save per-ticker user weight overrides."""
         value = overrides or {}
         SettingsService.set_setting("STRATEGY_TOP_WEIGHT_OVERRIDES", json.dumps(value, ensure_ascii=False))
         return value
 
-    # ── 시장 운영 시간 ────────────────────────────────────────────────────────
+    # ── Market Hours ────────────────────────────────────────────────────────
 
     @classmethod
     def _check_market_hours(cls, ticker: str) -> bool:
-        """시장 운영 시간 체크"""
+        """Check market operating hours."""
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         return MarketHourService.is_kr_market_open(allow_extended=allow_extended) if is_kr(ticker) else MarketHourService.is_us_market_open(allow_extended=allow_extended)
 
-    # ── 현금 비중 조건 ────────────────────────────────────────────────────────
+    # ── Cash Ratio Conditions ────────────────────────────────────────────────────────
 
     @classmethod
     def _is_cash_ratio_sufficient(cls, ticker: str, holdings: list, cash_balance: float, exchange_rate: float, target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict) -> bool:
-        """목표 현금 비중 조건 충족 여부 검사"""
+        """Check if target cash ratio condition is met."""
         is_kr_ticker = is_kr(ticker)
-        regime_status = (macro or {}).get('market_regime', {}).get('status', 'Neutral').upper()
+        regime = (macro or {}).get('market_regime')
+        regime_status = getattr(regime, 'status', 'Neutral').upper()
         target_cash_ratio = target_cash_ratio_kr if is_kr_ticker else target_cash_ratio_us
 
         if target_cash_ratio is None:
@@ -355,11 +357,11 @@ class TradeExecutorService:
 
         return cash_ratio <= target_cash_ratio and not cls._is_panic_market(macro or {})
 
-    # ── 매수 수량 계산 ────────────────────────────────────────────────────────
+    # ── Buy Quantity Calculation ────────────────────────────────────────────────────────
 
     @classmethod
     def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr_flag: bool, market_total_krw: float = 0.0, usd_cash_krw: float = 0.0) -> tuple:
-        """투자 비중에 따른 총 매수 수량 및 필요 소요 자금(원화) 계산."""
+        """Calculate total buy quantity and required capital (KRW) based on investment weight."""
         per_trade_ratio = SettingsService.get_float("STRATEGY_PER_TRADE_RATIO", 0.05)
 
         base_assets = market_total_krw
@@ -377,11 +379,11 @@ class TradeExecutorService:
 
         return total_qty, total_qty * final_price, final_price
 
-    # ── 알림 ─────────────────────────────────────────────────────────────────
+    # ── Alerts ─────────────────────────────────────────────────────────────────
 
     @classmethod
     def _send_tick_alert(cls, ticker: str, side: str, current_price: float, qty: int, reason: str, pnl_pct: float = 0.0, holding: dict = None) -> None:
-        """틱매매 체결 알림 (구조화 슬랙 메시지)."""
+        """Tick trade execution alert (structured Slack message)."""
         meta = StockMetaService.get_stock_meta(ticker)
         name = (holding.get("name") if holding and holding.get("name")
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
@@ -442,7 +444,7 @@ class TradeExecutorService:
             )
         AlertService.send_slack_alert(msg)
 
-    # ── 주문 실행 헬퍼 ────────────────────────────────────────────────────────
+    # ── Order Execution Helpers ────────────────────────────────────────────────────────
 
     @classmethod
     def _check_buy_cash_and_entry_conditions(
@@ -450,7 +452,7 @@ class TradeExecutorService:
         holdings: list, exchange_rate: float,
         target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: dict,
     ) -> bool:
-        """현금 잔고 및 진입 조건 검사. 매수 진행 가능하면 True 반환."""
+        """Check cash balance and entry conditions. Returns True if buy is allowed."""
         is_kr_flag = is_kr(ticker)
         if is_kr_flag and cash_balance <= 0:
             logger.info(f"⏭️ {ticker} KRW cash insufficient ({cash_balance:,.0f}KRW). Buy blocked.")
@@ -472,7 +474,7 @@ class TradeExecutorService:
 
     @classmethod
     def _compute_buy_market_totals(cls, ticker: str, holdings: list, cash_balance: float, exchange_rate: float, user_id: str) -> tuple:
-        """매수 시 시장별 총액(KRW) 계산. Returns (is_kr_flag, holdings, kr_assets, us_assets_krw, usd_cash_krw)."""
+        """Calculate per-market totals (KRW) for buy. Returns (is_kr_flag, holdings, kr_assets, us_assets_krw, usd_cash_krw)."""
         holdings = holdings or PortfolioService.load_portfolio(user_id)
         is_kr_flag = is_kr(ticker)
         kr_market_value = sum(cls._get_holding_value(h) for h in filter_kr(holdings) if h.get("quantity", 0) > 0)
@@ -485,7 +487,7 @@ class TradeExecutorService:
 
     @classmethod
     def _fetch_fresh_us_price(cls, ticker: str, fallback: float) -> float:
-        """US 주문 직전 실시간 가격 재조회. 실패 시 fallback 반환."""
+        """Refresh real-time price before US order. Returns fallback on failure."""
         try:
             from services.kis.fetch.kis_fetcher import KisFetcher
             token = KisService.get_access_token()
@@ -506,7 +508,7 @@ class TradeExecutorService:
         macro: dict, target_cash_ratio_kr: float, target_cash_ratio_us: float,
         forced_qty: int = None,
     ) -> tuple:
-        """매수 주문 실행 (현금/비중 조건 검사 포함). Returns (executed, trade_qty)."""
+        """Execute buy order (includes cash/weight condition checks). Returns (executed, trade_qty)."""
         if not cls._check_buy_cash_and_entry_conditions(
             ticker, cash_balance, is_holding, profit_pct,
             holdings, exchange_rate,
@@ -538,7 +540,7 @@ class TradeExecutorService:
     def _execute_sell_order(
         cls, ticker: str, score: int, current_price: float, holdings: list, user_id: str,
     ) -> tuple:
-        """매도 주문 실행. Returns (executed, trade_qty)."""
+        """Execute sell order. Returns (executed, trade_qty)."""
         portfolio = holdings or PortfolioService.load_portfolio(user_id)
         current_holding = next((h for h in portfolio if h["ticker"] == ticker), None)
         if not current_holding:
@@ -557,7 +559,7 @@ class TradeExecutorService:
         logger.error(f"Order failed: {order_result}")
         return False, 0
 
-    # ── 주문 실행 메인 ────────────────────────────────────────────────────────
+    # ── Main Order Execution ────────────────────────────────────────────────────────
 
     @classmethod
     def _execute_trade_v2(
@@ -568,7 +570,7 @@ class TradeExecutorService:
         target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None,
         forced_qty: int = None
     ) -> bool:
-        """분할 매수/매도 실행 로직"""
+        """Split buy/sell execution logic."""
         logger.info(f"📢 Signal [{side.upper()}] {ticker} - Reason: {reason}")
         if not cls._check_market_hours(ticker):
             logger.info(f"⏭️ {ticker} Market closed. Order skipped.")

@@ -11,15 +11,14 @@ from repositories.stock_meta_repo import StockMetaRepo
 logger = get_logger("stock_meta_service")
 
 class StockMetaService:
-    """
-    주식 메타 정보 및 재무 데이터 DB 연동 서비스.
-    DB 연결은 repositories.database 싱글톤에 위임합니다.
-    실제 CRUD 로직은 StockMetaRepo 에 위임합니다.
+    """Stock meta info and financial data DB integration service.
+    DB connection is delegated to repositories.database singleton.
+    Actual CRUD logic is delegated to StockMetaRepo.
     """
 
     @classmethod
     def init_db(cls) -> None:
-        """데이터베이스 및 테이블 초기화 (repositories.database 위임)."""
+        """Initialize database and tables (delegated to repositories.database)."""
         _db.init_db()
 
     @classmethod
@@ -29,9 +28,9 @@ class StockMetaService:
     @classmethod
     @contextmanager
     def session_scope(cls) -> Generator[Session, None, None]:
-        """DB 세션 자동 관리 (commit/rollback/close).
+        """Auto-managed DB session (commit/rollback/close).
 
-        쓰기 작업에 사용:
+        For write operations:
             with StockMetaService.session_scope() as s:
                 s.add(obj); ...
         """
@@ -41,9 +40,9 @@ class StockMetaService:
     @classmethod
     @contextmanager
     def session_ro(cls) -> Generator[Session, None, None]:
-        """읽기 전용 세션 (commit 없음).
+        """Read-only session (no commit).
 
-        조회 전용:
+        For queries:
             with StockMetaService.session_ro() as s:
                 return s.query(...).first()
         """
@@ -52,17 +51,17 @@ class StockMetaService:
 
     @classmethod
     def upsert_stock_meta(cls, ticker: str, **kwargs) -> Optional[StockMeta]:
-        """종목 메타 정보 저장 또는 업데이트"""
+        """Save or update stock meta info."""
         return StockMetaRepo.upsert_stock_meta(ticker, **kwargs)
 
     @classmethod
     def get_stock_meta(cls, ticker: str) -> Optional[StockMeta]:
-        """종목 메타 정보 조회"""
+        """Get stock meta info."""
         return StockMetaRepo.get_stock_meta(ticker)
 
     @classmethod
     def get_exchange_code(cls, ticker: str) -> str:
-        """종목의 거래소 코드 반환 (NASD, NYSE 등). 미조회 시 기본값 NASD."""
+        """Return exchange code for ticker (NASD, NYSE, etc.). Defaults to NASD."""
         meta = cls.get_stock_meta(ticker)
         if meta and meta.exchange_code:
             return meta.exchange_code
@@ -70,22 +69,22 @@ class StockMetaService:
 
     @classmethod
     def get_stock_meta_bulk(cls, tickers: list) -> list:
-        """여러 종목 메타 정보 일괄 조회"""
+        """Batch get stock meta info for multiple tickers."""
         return StockMetaRepo.get_stock_meta_bulk(tickers)
 
     @classmethod
     def find_ticker_by_name(cls, name: str) -> Optional[str]:
-        """종목명으로 티커 조회 (name_ko 또는 name_en 대소문자 무시 검색)."""
+        """Find ticker by stock name (case-insensitive search on name_ko or name_en)."""
         return StockMetaRepo.find_ticker_by_name(name)
 
     @classmethod
     def save_financials(cls, ticker: str, metrics: dict, base_date: datetime = None) -> Optional[Financials]:
-        """재무 지표 저장 (최신 데이터 갱신 또는 이력 추가)"""
+        """Save financial metrics (update latest data or append history)."""
         return StockMetaRepo.save_financials(ticker, metrics, base_date)
 
     @classmethod
     def initialize_default_meta(cls, ticker: str) -> Optional[StockMeta]:
-        """기본 메타 정보 초기화. TR ID/Path는 DB api_tr_meta 에서 환경(VTS/실전)에 맞게 조회."""
+        """Initialize default meta info. TR ID/Path from DB api_tr_meta (auto-selects VTS/live)."""
         if is_kr(ticker):
             tr_id, api_path = cls.get_api_info("주식현재가_시세")
             return cls.upsert_stock_meta(
@@ -107,41 +106,41 @@ class StockMetaService:
 
     @classmethod
     def get_latest_financials(cls, ticker: str) -> Optional[Financials]:
-        """가장 최근 재무 지표 조회"""
+        """Get most recent financial metrics."""
         return StockMetaRepo.get_latest_financials(ticker)
 
     @classmethod
     def get_all_latest_dcf(cls, limit: int = 1000) -> list:
-        """전 종목 최신 DCF 값 및 관련 지표 일괄 조회 (dcf_overrides 병합 포함)."""
+        """Batch get latest DCF values and related metrics for all tickers (incl. dcf_overrides merge)."""
         return StockMetaRepo.get_all_latest_dcf(limit=limit)
 
     @classmethod
     def get_financials_history(cls, ticker: str, limit: int = 2500) -> list:
-        """종목 재무 지표 이력 조회 (최신순)"""
+        """Get financial metrics history for a ticker (newest first)."""
         return StockMetaRepo.get_financials_history(ticker, limit)
 
     @classmethod
     def get_batch_latest_financials(cls, tickers: list) -> dict:
-        """여러 종목의 최신 재무 지표를 일괄 조회"""
+        """Batch get latest financial metrics for multiple tickers."""
         return StockMetaRepo.get_batch_latest_financials(tickers)
 
     @classmethod
     def upsert_api_tr_meta(cls, api_name: str, **kwargs) -> Optional[ApiTrMeta]:
-        """API별 TR ID 정보 저장"""
+        """Save TR ID info per API."""
         return StockMetaRepo.upsert_api_tr_meta(api_name, **kwargs)
 
     @classmethod
     def init_api_tr_meta(cls) -> int:
-        """KIS API TR ID 및 경로 정보 초기 설정 및 업데이트"""
+        """Initialize and update KIS API TR ID and path info."""
         tr_data = [
-            # 1. 국내주식
+            # 1. Domestic stocks
             {"category": "국내주식", "api_name": "주식주문_매도", "tr_id_real": "TTTC0801U", "tr_id_vts": "VTTC0801U", "api_path": "/uapi/domestic-stock/v1/trading/order-cash"},
             {"category": "국내주식", "api_name": "주식주문_매수", "tr_id_real": "TTTC0802U", "tr_id_vts": "VTTC0802U", "api_path": "/uapi/domestic-stock/v1/trading/order-cash"},
             {"category": "국내주식", "api_name": "주식잔고조회", "tr_id_real": "TTTC8434R", "tr_id_vts": "VTTC8434R", "api_path": "/uapi/domestic-stock/v1/trading/inquire-balance"},
             {"category": "국내주식", "api_name": "주식현재가_시세", "tr_id_real": "FHKST01010100", "tr_id_vts": "FHKST01010100", "api_path": "/uapi/domestic-stock/v1/quotations/inquire-price"},
             {"category": "국내주식", "api_name": "국내주식_시가총액순위", "tr_id_real": "FHPST01700000", "tr_id_vts": "FHPST01700000", "api_path": "/uapi/domestic-stock/v1/ranking/market-cap"},
 
-            # 2. 해외주식
+            # 2. Overseas stocks
             {"category": "해외주식", "api_name": "해외주식_미국매수", "tr_id_real": "TTTT1002U", "tr_id_vts": "VTTT1002U", "api_path": "/uapi/overseas-stock/v1/trading/order"},
             {"category": "해외주식", "api_name": "해외주식_미국매도", "tr_id_real": "TTTT1006U", "tr_id_vts": "VTTT1006U", "api_path": "/uapi/overseas-stock/v1/trading/order"},
             {"category": "해외주식", "api_name": "해외주식_현재가", "tr_id_real": "HHDFS00000300", "tr_id_vts": "HHDFS00000300", "api_path": "/uapi/overseas-price/v1/quotations/price", "api_path_vts": "/uapi/overseas-price/v1/quotations/price"},
@@ -150,7 +149,7 @@ class StockMetaService:
             {"category": "해외주식", "api_name": "해외주식_기간별시세", "tr_id_real": "HHDFS76240000", "tr_id_vts": "HHDFS76240000", "api_path": "/uapi/overseas-price/v1/quotations/dailyprice", "api_path_vts": "/uapi/overseas-price/v1/quotations/dailyprice"},
             {"category": "해외주식", "api_name": "해외주식_종목지수환율기간별", "tr_id_real": "FHKST03030100", "tr_id_vts": "FHKST03030100", "api_path": "/uapi/overseas-stock/v1/quotations/inquire-daily-chartprice"},
 
-            # 3. 공통/인증
+            # 3. Common/auth
             {"category": "공통", "api_name": "접근토큰발급", "tr_id_real": "tokenP", "tr_id_vts": "tokenP", "api_path": "/oauth2/tokenP"},
             {"category": "공통", "api_name": "접근토큰폐기", "tr_id_real": "revokeP", "tr_id_vts": "revokeP", "api_path": "/oauth2/revokeP"},
             {"category": "공통", "api_name": "Hashkey", "tr_id_real": "hashkey", "tr_id_vts": "hashkey", "api_path": "/uapi/hashkey"},
@@ -165,18 +164,18 @@ class StockMetaService:
 
     @classmethod
     def get_api_meta(cls, api_name: str) -> Optional[ApiTrMeta]:
-        """API명으로 메타 정보 전체 조회"""
+        """Get full API meta info by API name."""
         return StockMetaRepo.get_api_meta(api_name)
 
     @classmethod
     def get_api_info(cls, api_name: str, is_vts: bool = None) -> tuple[Optional[str], Optional[str]]:
-        """환경에 맞는 TR ID와 경로 조회"""
+        """Get TR ID and path for current environment."""
         if is_vts is None:
             from config import Config
             is_vts = Config.KIS_IS_VTS
 
         meta = cls.get_api_meta(api_name)
-        # DB 복구 직후 api_tr_meta가 비어있을 수 있어 1회 자동 초기화
+        # api_tr_meta may be empty right after DB recovery; auto-initialize once
         if not meta:
             try:
                 cls.init_api_tr_meta()
@@ -192,13 +191,13 @@ class StockMetaService:
 
     @classmethod
     def get_tr_id(cls, api_name: str, is_vts: bool = None) -> Optional[str]:
-        """환경에 맞는 TR ID 조회 (하위 호환)"""
+        """Get TR ID for current environment (backward compatible)."""
         tr_id, _ = cls.get_api_info(api_name, is_vts)
         return tr_id
 
     @classmethod
     def update_market_code(cls, ticker: str, market_code: str) -> None:
-        """stock_meta의 api_market_code를 업데이트합니다."""
+        """Update api_market_code in stock_meta."""
         from repositories.stock_meta_repo import StockMetaRepo
         StockMetaRepo.upsert_stock_meta(ticker, api_market_code=market_code)
 
@@ -211,8 +210,8 @@ class StockMetaService:
         growth_rate: float = None,
         fair_value: float = None,
     ) -> Optional[DcfOverride]:
-        """사용자 지정 DCF 입력값 저장/업데이트.
-        fair_value 를 지정하면 FCF 계산 없이 해당 값을 DCF 적정가로 직접 사용.
+        """Save/update user-specified DCF input values.
+        If fair_value is set, it is used directly as DCF fair value without FCF calculation.
         """
         return StockMetaRepo.upsert_dcf_override(
             ticker, fcf_per_share=fcf_per_share, beta=beta,
@@ -221,32 +220,32 @@ class StockMetaService:
 
     @classmethod
     def get_dcf_override(cls, ticker: str) -> Optional[DcfOverride]:
-        """사용자 지정 DCF 입력값 조회"""
+        """Get user-specified DCF input values."""
         return StockMetaRepo.get_dcf_override(ticker)
 
     @classmethod
     def get_all_dcf_overrides(cls, limit: int = 1000) -> dict:
-        """DcfOverride 전체 조회. {ticker: {fcf_per_share, beta, growth_rate, updated_at}}"""
+        """Get all DCF overrides. {ticker: {fcf_per_share, beta, growth_rate, updated_at}}"""
         return StockMetaRepo.get_all_dcf_overrides(limit=limit)
 
     @classmethod
     def get_kr_individual_stocks(cls, existing: set, limit: int) -> list:
-        """KR 시장 개별 종목 티커 목록 조회 (ETF/펀드성 제외, 6자리 숫자 필터)."""
+        """Get KR market individual stock tickers (excluding ETF/funds, 6-digit filter)."""
         return StockMetaRepo.get_kr_individual_stocks(existing=existing, limit=limit)
 
     # ── Market Regime History ──────────────────────────────────────────────
 
     @classmethod
     def save_market_regime(cls, date_str: str, regime_data: dict, vix: float, fear_greed: int) -> bool:
-        """일별 시장 국면 스냅샷을 DB에 저장 (이미 있으면 업데이트)."""
+        """Save daily market regime snapshot to DB (update if exists)."""
         return StockMetaRepo.save_market_regime(date_str, regime_data, vix, fear_greed)
 
     @classmethod
     def get_market_regime_history(cls, days: int = 30) -> list:
-        """최근 N일 레짐 이력 반환 (최신순)."""
+        """Return last N days of regime history (newest first)."""
         return StockMetaRepo.get_market_regime_history(days)
 
     @classmethod
     def get_regime_for_date(cls, date_str: str) -> dict | None:
-        """특정 날짜 레짐 반환."""
+        """Return regime for a specific date."""
         return StockMetaRepo.get_regime_for_date(date_str)

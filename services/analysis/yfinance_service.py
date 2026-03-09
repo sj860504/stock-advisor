@@ -1,8 +1,8 @@
 """
-Yahoo Finance 기반 재무 데이터 수집 서비스.
-- FCF per share, Beta, 성장률을 수집하여 DCF 계산에 활용합니다.
-- KR 종목: ticker + '.KS' (KOSPI), 실패 시 '.KQ' (KOSDAQ) 순으로 시도합니다.
-- 인메모리 캐시 (TTL: 24시간) 로 API 호출을 최소화합니다.
+Yahoo Finance-based financial data collection service.
+- Collects FCF per share, Beta, growth rate for DCF calculations.
+- KR stocks: tries ticker + '.KS' (KOSPI) first, then '.KQ' (KOSDAQ) on failure.
+- In-memory cache (TTL: 24h) to minimize API calls.
 """
 import time
 from typing import Optional
@@ -11,21 +11,21 @@ from utils.logger import get_logger
 
 logger = get_logger("yfinance_service")
 
-_CACHE_TTL_SEC = 86400  # 24시간
+_CACHE_TTL_SEC = 86400  # 24 hours
 
 
 @dataclass
 class YFinanceFundamentals:
-    """yfinance 에서 추출한 DCF 입력용 재무 기초 데이터."""
-    fcf_per_share: Optional[float]  # 주당 잉여현금흐름 (FCF / shares)
+    """DCF input fundamentals extracted from yfinance."""
+    fcf_per_share: Optional[float]  # Free cash flow per share (FCF / shares)
     beta: float = 1.0
-    growth_rate: float = 0.05       # earnings/revenue growth (소수, e.g. 0.15)
+    growth_rate: float = 0.05       # earnings/revenue growth (decimal, e.g. 0.15)
     currency: str = "USD"
-    source_ticker: str = ""         # yfinance 에 요청한 실제 티커 (e.g. "005930.KS")
+    source_ticker: str = ""         # Actual ticker sent to yfinance (e.g. "005930.KS")
 
 
 class YFinanceService:
-    """Yahoo Finance 에서 재무 기초 데이터를 조회하는 서비스."""
+    """Service for querying fundamental financial data from Yahoo Finance."""
 
     # { original_ticker: (YFinanceFundamentals, fetched_at) }
     _cache: dict = {}
@@ -33,8 +33,8 @@ class YFinanceService:
     @classmethod
     def get_fundamentals(cls, ticker: str, market_type: str = "US") -> Optional[YFinanceFundamentals]:
         """
-        ticker 기준 FCF·Beta·성장률 반환.
-        캐시 유효(24h) 시 캐시 반환, 아니면 yfinance 조회.
+        Return FCF, Beta, growth rate for ticker.
+        Returns cache if valid (24h), otherwise fetches from yfinance.
         """
         cached = cls._cache.get(ticker)
         if cached:
@@ -70,8 +70,8 @@ class YFinanceService:
                     fcf_per_share = round(fcf_total / shares, 4)
 
                 beta = float(info.get("beta") or 1.0)
-                # 성장률: 매출 성장률(안정적) 70% + 이익 성장률(변동성 큼) 30% 블렌딩
-                # 매출 성장률이 없으면 이익 성장률만 사용, 둘 다 없으면 5% 기본값
+                # Growth rate: 70% revenue growth (stable) + 30% earnings growth (volatile) blending
+                # If no revenue growth, use earnings growth only; if neither, default 5%
                 revenue_growth = float(info.get("revenueGrowth") or 0.0)
                 earnings_growth = float(info.get("earningsGrowth") or 0.0)
                 earnings_growth_clamped = max(-0.20, min(0.30, earnings_growth))
@@ -107,9 +107,9 @@ class YFinanceService:
     @staticmethod
     def _build_yf_tickers(ticker: str, market_type: str) -> list[str]:
         """
-        yfinance 요청용 티커 목록 생성.
-        - US: 그대로 사용
-        - KR: '{ticker}.KS' 우선, 실패 시 '{ticker}.KQ'
+        Build ticker list for yfinance requests.
+        - US: use as-is
+        - KR: try '{ticker}.KS' first, then '{ticker}.KQ'
         """
         if market_type == "KR":
             return [f"{ticker}.KS", f"{ticker}.KQ"]
@@ -117,10 +117,10 @@ class YFinanceService:
 
     @classmethod
     def invalidate_cache(cls, ticker: str) -> None:
-        """특정 종목 캐시 강제 만료."""
+        """Force-expire cache for a specific ticker."""
         cls._cache.pop(ticker, None)
 
     @classmethod
     def clear_cache(cls) -> None:
-        """전체 캐시 초기화."""
+        """Clear all cache."""
         cls._cache.clear()

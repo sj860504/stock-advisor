@@ -11,17 +11,16 @@ from utils.market import is_kr
 
 logger = get_logger("kis_ws_service")
 
-# WebSocket 상수
+# WebSocket constants
 WS_RETRY_DELAY_INITIAL = 5
 WS_RETRY_DELAY_MAX = 60
 WS_APPROVAL_REQUEST_TIMEOUT = 5
 
 
 class KisWsService:
-    """
-    한국투자증권 WebSocket 서비스
-    - 실시간 체결가 수신
-    - MarketDataService로 데이터 푸시
+    """KIS WebSocket service.
+    - Receives real-time execution prices
+    - Pushes data to MarketDataService
     """
     
     def __init__(self):
@@ -32,7 +31,7 @@ class KisWsService:
         self.subscribed_markets = {}
         
     def get_approval_key(self):
-        """웹소켓 접속키 발급 (실전 크레덴셜 설정 시 실전 서버 사용)"""
+        """Get WebSocket approval key (uses live server if real credentials configured)."""
         if Config.has_real_credentials():
             url = f"{Config.KIS_REAL_BASE_URL}/oauth2/Approval"
             body = {
@@ -65,7 +64,7 @@ class KisWsService:
             return False
 
     async def connect(self):
-        """웹소켓 연결 및 자동 재연결 루프"""
+        """WebSocket connection with auto-reconnect loop."""
         retry_delay = 5
         while True:
             try:
@@ -74,7 +73,7 @@ class KisWsService:
                         await asyncio.sleep(retry_delay)
                         continue
 
-                # VTS 환경에서만 포트 31000으로 전환 (실전 계좌는 21000 유지)
+                # Switch to port 31000 in VTS environment only (live account keeps 21000)
                 ws_url = self.ws_url
                 if not Config.has_real_credentials() and "vts" in Config.KIS_BASE_URL.lower() and ":21000" in ws_url:
                     ws_url = ws_url.replace(":21000", ":31000")
@@ -87,14 +86,14 @@ class KisWsService:
                     ping_interval=30, 
                     ping_timeout=20,
                     close_timeout=20,
-                    open_timeout=60 # 핸드쉐이크 타임아웃 60초로 연장
+                    open_timeout=60  # Extended handshake timeout to 60s
                 ) as websocket:
                     self.connected = True
                     self.websocket = websocket
-                    retry_delay = 5 # 연결 성공 시 대기시간 초기화
+                    retry_delay = 5  # Reset delay on successful connection
                     logger.info("✅ WebSocket Connected!")
                     
-                    # 기존 구독 티커 재요구
+                    # Re-subscribe to previously subscribed tickers
                     if self.subscribed_tickers:
                         logger.info(f"🔄 Re-subscribing to {len(self.subscribed_tickers)} tickers...")
                         saved_items = [(t, self.subscribed_markets.get(t)) for t in self.subscribed_tickers]
@@ -103,7 +102,7 @@ class KisWsService:
                             if not market:
                                 market = "KRX" if is_kr(ticker) else "NAS"
                             await self.subscribe(ticker, market=market)
-                            await asyncio.sleep(1.0) # 재구독 속도 조절 (TPS 준수)
+                            await asyncio.sleep(1.0)  # Throttle re-subscription (TPS compliance)
 
                     while True:
                         try:
@@ -122,11 +121,11 @@ class KisWsService:
             self.websocket = None
             logger.info(f"🔄 Retrying in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            # 지수 백오프 적용 (최대 60초)
+            # Exponential backoff (max 60s)
             retry_delay = min(retry_delay * 2, 60)
 
     async def subscribe(self, ticker: str, market: str = "KRX"):
-        """종목 실시간 체결가 구독"""
+        """Subscribe to real-time execution price for a ticker."""
         MarketDataService.register_ticker(ticker)
         market = (market or "KRX").upper()
         
@@ -166,7 +165,7 @@ class KisWsService:
         logger.info(f"➕ Subscribed to {ticker} ({market})")
 
     async def handle_message(self, msg):
-        """수신 메시지 처리 및 파싱"""
+        """Handle and parse incoming messages."""
         if msg[0] not in ('0', '1'):
             return
 
@@ -179,7 +178,7 @@ class KisWsService:
             
             if tr_id == "H0STCNT0":
                 ticker = parts[2]
-                # KIS 일부 메시지는 parts[2]가 종목코드가 아니라 순번('001','002') 등으로 옴 → 6자리 한국 종목만 처리
+                # Some KIS messages have sequence numbers in parts[2] instead of ticker — only process 6-digit KR tickers
                 if is_kr(ticker) and len(ticker) == 6:
                     self.parse_realtime_price(ticker, data_str)
             elif tr_id == "HDFSUSP0":
@@ -191,7 +190,7 @@ class KisWsService:
             logger.error(f"Error handling message: {e}")
 
     def parse_overseas_realtime_price(self, ticker: str, data_str: str):
-        """HDFSUSP0 데이터 파싱 (미국 주식)"""
+        """Parse HDFSUSP0 data (US stocks)."""
         values = data_str.split('^')
         if len(values) < 10: return
         
@@ -206,7 +205,7 @@ class KisWsService:
         MarketDataService.on_realtime_data(ticker, parsed_data)
 
     def parse_realtime_price(self, ticker: str, data_str: str):
-        """H0STCNT0 데이터 파싱 (국내 주식)"""
+        """Parse H0STCNT0 data (domestic stocks)."""
         values = data_str.split('^')
         if len(values) < 10: return
         

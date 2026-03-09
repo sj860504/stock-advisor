@@ -22,8 +22,8 @@ logger = get_logger("financial_service")
 
 class FinancialService:
     """
-    종목별 재무 지표 및 DCF 데이터 제공 서비스
-    - KisService를 통해 원시 데이터를 가져오고 FinancialAnalyzer를 통해 가공합니다.
+    Per-ticker financial metrics and DCF data provider.
+    - Fetches raw data via KisService and processes through FinancialAnalyzer.
     """
     _recent_metrics_by_ticker = {}
     _dcf_input_by_ticker = {}
@@ -33,7 +33,7 @@ class FinancialService:
     def _fetch_and_analyze_kis_financials(
         cls, ticker: str, kis_request_meta: "KisFinancialsMeta"
     ) -> Optional[AnalyzedFinancialMetrics]:
-        """KIS API 호출 → KisFinancialsResponse → FinancialAnalyzer 분석 결과 반환."""
+        """Call KIS API -> KisFinancialsResponse -> return FinancialAnalyzer result."""
         if is_kr(ticker):
             kis_payload = KisService.get_financials(ticker, meta=kis_request_meta)
             response = KisFinancialsResponse(
@@ -53,7 +53,7 @@ class FinancialService:
         financials,
         stock_meta,
     ) -> Optional[AnalyzedFinancialMetrics]:
-        """KIS API 원시 데이터 수집 → 분석 → DB 저장 → 캐시 후 AnalyzedFinancialMetrics 반환."""
+        """Collect KIS API raw data -> analyze -> save to DB -> cache and return AnalyzedFinancialMetrics."""
         kis_request_meta = KisFinancialsMeta(
             api_path=stock_meta.api_path or "",
             api_tr_id=stock_meta.api_tr_id or "",
@@ -70,19 +70,19 @@ class FinancialService:
 
     @classmethod
     def get_metrics(cls, ticker: str) -> Optional[AnalyzedFinancialMetrics]:
-        """종목별 핵심 재무 지표 반환 (KIS API 기반). DB·메모리 캐시 우선, 없으면 KIS 조회 후 분석·저장."""
+        """Return core financial metrics per ticker (KIS API). DB/memory cache first, otherwise fetch from KIS, analyze, and save."""
         if ticker in cls._recent_metrics_by_ticker:
             cached = cls._recent_metrics_by_ticker[ticker]
             if time.time() - cached.get("_timestamp", 0) < 600:
                 return cls._dict_to_metrics(cached)
 
         try:
-            # 1. DB에 저장된 최신 재무 지표 확인 (1일 이내 유효)
+            # 1. Check latest financial metrics in DB (valid within 1 day)
             latest_financials = StockMetaService.get_latest_financials(ticker)
             if latest_financials and (datetime.now() - latest_financials.base_date).total_seconds() < 86400:
                 return cls._financials_row_to_metrics(latest_financials)
 
-            # 2. 종목 메타 조회 후 KIS API 원시 수집 → 분석 → 저장
+            # 2. Fetch stock meta, then collect raw KIS API data -> analyze -> save
             stock_meta = StockMetaService.get_stock_meta(ticker)
             if not stock_meta:
                 stock_meta = StockMetaService.initialize_default_meta(ticker)
@@ -95,7 +95,7 @@ class FinancialService:
 
     @staticmethod
     def _dict_to_metrics(data: dict) -> AnalyzedFinancialMetrics:
-        """캐시/저장용 dict를 AnalyzedFinancialMetrics로 변환."""
+        """Convert cache/storage dict to AnalyzedFinancialMetrics."""
         return AnalyzedFinancialMetrics(
             per=float(data.get("per") or 0),
             pbr=float(data.get("pbr") or 0),
@@ -109,7 +109,7 @@ class FinancialService:
 
     @staticmethod
     def _financials_row_to_metrics(row) -> AnalyzedFinancialMetrics:
-        """DB Financials 행을 AnalyzedFinancialMetrics로 변환."""
+        """Convert DB Financials row to AnalyzedFinancialMetrics."""
         return AnalyzedFinancialMetrics(
             per=float(row.per or 0),
             pbr=float(row.pbr or 0),
@@ -123,7 +123,7 @@ class FinancialService:
 
     @classmethod
     def _dcf_from_eps_history(cls, ticker: str) -> Optional[DcfInputData]:
-        """1. 재무 이력 5년 EPS → CAGR + 할인율 → DcfInputData (없으면 None)"""
+        """1. 5-year EPS from financial history -> CAGR + discount rate -> DcfInputData (None if unavailable)."""
         yearly_eps_points = cls._build_yearly_eps_as_cashflow(ticker, years=5)
         if len(yearly_eps_points) < 5:
             return None
@@ -140,7 +140,7 @@ class FinancialService:
 
     @classmethod
     def _dcf_from_yfinance(cls, ticker: str) -> Optional[DcfInputData]:
-        """2. yfinance FCF → DcfInputData (없으면 None)"""
+        """2. yfinance FCF -> DcfInputData (None if unavailable)."""
         market_type = "KR" if is_kr(ticker) else "US"
         yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
         if not (yf_data and yf_data.fcf_per_share and yf_data.fcf_per_share > 0):
@@ -156,7 +156,7 @@ class FinancialService:
 
     @classmethod
     def _dcf_from_eps_per_fallback(cls, ticker: str) -> Optional[DcfInputData]:
-        """3. DB 최신 EPS * PER → fallback_fair_value (없으면 None)"""
+        """3. Latest DB EPS * PER -> fallback_fair_value (None if unavailable)."""
         latest = StockMetaService.get_latest_financials(ticker)
         if not (latest and latest.eps and latest.per and latest.eps > 0 and latest.per > 0):
             return None
@@ -172,7 +172,7 @@ class FinancialService:
 
     @classmethod
     def _parse_kis_dcf_response(cls, ticker: str, inputs: dict) -> DcfInputData:
-        """KIS 분석 결과(inputs dict) + 현재 PER → DcfInputData 변환."""
+        """Convert KIS analysis result (inputs dict) + current PER to DcfInputData."""
         eps_ttm = float(inputs.get("fcf_per_share") or 0)
         per_ttm = 0.0
         current_metrics = cls.get_metrics(ticker)
@@ -200,7 +200,7 @@ class FinancialService:
 
     @classmethod
     def _dcf_from_kis_api(cls, ticker: str) -> DcfInputData:
-        """4. KIS API 원시 조회 → DcfInputData (최후 폴백, 항상 반환)"""
+        """4. KIS API raw query -> DcfInputData (last resort fallback, always returns)."""
         if is_kr(ticker):
             kis_payload = KisService.get_financials(ticker)
             inputs = FinancialAnalyzer.analyze_dcf_inputs(domestic_data=kis_payload)
@@ -212,7 +212,7 @@ class FinancialService:
 
     @classmethod
     def _get_dcf_from_cache(cls, ticker: str) -> Optional[DcfInputData]:
-        """메모리 캐시에서 DCF 데이터 반환 (30분 이내 유효). 없거나 만료 시 None."""
+        """Return DCF data from memory cache (valid within 30 min). None if missing or expired."""
         if ticker in cls._dcf_input_by_ticker:
             cached = cls._dcf_input_by_ticker[ticker]
             if time.time() - cached.get("timestamp", 0) < 1800:
@@ -221,7 +221,7 @@ class FinancialService:
 
     @classmethod
     def _get_dcf_from_override(cls, ticker: str) -> Optional[DcfInputData]:
-        """사용자 오버라이드가 존재하면 DcfInputData로 변환·캐시 후 반환. 없으면 None."""
+        """Convert user override to DcfInputData, cache and return. None if no override exists."""
         user_override = StockMetaService.get_dcf_override(ticker)
         if not user_override:
             return None
@@ -239,8 +239,8 @@ class FinancialService:
 
     @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
-        """DCF 계산 입력 데이터 반환.
-        우선순위: 사용자 오버라이드 → 5년 EPS CAGR → yfinance FCF → EPS*PER → KIS API."""
+        """Return DCF calculation input data.
+        Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> EPS*PER -> KIS API."""
         override_dcf = cls._get_dcf_from_override(ticker)
         if override_dcf is not None:
             return override_dcf
@@ -266,7 +266,7 @@ class FinancialService:
 
     @staticmethod
     def _dict_to_dcf_input(data: dict) -> DcfInputData:
-        """캐시/저장용 dict를 DcfInputData로 변환."""
+        """Convert cache/storage dict to DcfInputData."""
         return DcfInputData(
             fcf_per_share=data.get("fcf_per_share"),
             beta=float(data.get("beta", 1.0)),
@@ -280,7 +280,7 @@ class FinancialService:
 
     @classmethod
     def _build_yearly_eps_as_cashflow(cls, ticker: str, years: int = 5) -> list:
-        """재무 이력에서 연도별 최근 EPS를 현금흐름 대용치로 추출. 과거→최신 순 리스트 반환."""
+        """Extract yearly EPS as cashflow proxy from financial history. Returns oldest-to-newest list."""
         financials_history = StockMetaService.get_financials_history(ticker, limit=3000)
         yearly_eps_points = []
         years_added = set()
@@ -302,7 +302,7 @@ class FinancialService:
 
     @staticmethod
     def _calc_cagr(cashflow_series: list) -> float:
-        """연복리 성장률(CAGR) 계산. 시계열 첫 값·끝 값 기준."""
+        """Calculate CAGR (compound annual growth rate) from first/last values of the series."""
         if not cashflow_series or len(cashflow_series) < 2 or cashflow_series[0] <= 0:
             return 0.05
         period_count = len(cashflow_series) - 1
@@ -311,7 +311,7 @@ class FinancialService:
 
     @staticmethod
     def _calc_discount_rate_from_volatility(cashflow_series: list) -> float:
-        """현금흐름 시계열의 변동성을 반영한 할인율 계산 (기본 9% + 변동성)."""
+        """Calculate discount rate reflecting cashflow series volatility (base 9% + volatility)."""
         if not cashflow_series or len(cashflow_series) < 2:
             return 0.10
         period_growth_rates = []
@@ -330,12 +330,12 @@ class FinancialService:
 
     @classmethod
     def get_overrides(cls) -> dict:
-        """DB에 저장된 종목별 DCF 사용자 오버라이드 설정을 ticker → 설정 dict 로 반환."""
+        """Return per-ticker DCF user override settings from DB as ticker -> settings dict."""
         return StockMetaService.get_all_dcf_overrides(limit=1000)
 
     @classmethod
     def save_override(cls, ticker: str, override_params: dict) -> dict:
-        """종목별 DCF 사용자 오버라이드 저장. 저장 결과 dict 반환."""
+        """Save per-ticker DCF user override. Returns saved result dict."""
         saved_override = StockMetaService.upsert_dcf_override(
             ticker=ticker,
             fcf_per_share=override_params.get("fcf_per_share"),
@@ -368,7 +368,7 @@ class FinancialService:
         growth_rate: float = None,
         fair_value: float = None,
     ) -> dict:
-        """사용자 지정 DCF 입력값 저장."""
+        """Save user-specified DCF input values."""
         return cls.save_override(
             ticker,
             {"fcf_per_share": fcf_per_share, "beta": beta, "growth_rate": growth_rate, "fair_value": fair_value},

@@ -5,7 +5,7 @@ from .stock_meta import Base
 
 class Portfolio(Base):
     """
-    사용자별 포트폴리오 정보
+    Per-user portfolio information.
     """
     __tablename__ = 'portfolios'
     
@@ -18,7 +18,7 @@ class Portfolio(Base):
 
 class PortfolioHolding(Base):
     """
-    포트폴리오 내 개별 종목 수량 및 평단가 정보
+    Individual holding within portfolio (quantity and average cost).
     """
     __tablename__ = 'portfolio_holdings'
     

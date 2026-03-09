@@ -1,8 +1,8 @@
 """
-SignalService: 점수 계산, 신호 수집
-- 종목 점수 산출 (RSI, DCF, 기술, 포트폴리오, 시장 컨텍스트, 목표가, 보너스)
-- 매매 신호 수집 (_collect_trading_signals)
-- 개별 종목 분석 (analyze_ticker, _analyze_stock_v3)
+SignalService: score calculation and signal collection.
+- Stock score computation (RSI, DCF, technical, portfolio, market context, target price, bonuses)
+- Trading signal collection (_collect_trading_signals)
+- Individual stock analysis (analyze_ticker, _analyze_stock_v3)
 """
 from datetime import datetime
 from typing import Optional
@@ -23,15 +23,15 @@ TOP10_CACHE_TTL_SEC = 6 * 60 * 60
 
 
 class SignalService:
-    """점수 계산 및 매매 신호 수집"""
+    """Score calculation and trading signal collection."""
 
     _top10_cache = {"timestamp": 0, "tickers": set()}
 
-    # ── Top10 시총 캐시 ───────────────────────────────────────────────────────
+    # ── Top10 Market Cap Cache ───────────────────────────────────────────────────────
 
     @classmethod
     def _get_top10_market_cap_tickers(cls) -> set:
-        """미국/한국 시가총액 상위 10개 티커 캐시 반환"""
+        """Return cached top 10 US/KR market cap tickers."""
         now = datetime.now().timestamp()
         if now - cls._top10_cache["timestamp"] < TOP10_CACHE_TTL_SEC:
             return cls._top10_cache["tickers"]
@@ -47,11 +47,11 @@ class SignalService:
         cls._top10_cache = {"timestamp": now, "tickers": top10}
         return top10
 
-    # ── 점수 컴포넌트 ─────────────────────────────────────────────────────────
+    # ── Score Components ─────────────────────────────────────────────────────────
 
     @classmethod
     def _score_rsi(cls, rsi: float, oversold_rsi: float, overbought_rsi: float) -> tuple:
-        """RSI 구간별 점수 계산. Returns (delta, reasons)."""
+        """Calculate RSI score by range. Returns (delta, reasons)."""
         delta = 0
         reasons = []
         if rsi <= 30:
@@ -76,7 +76,7 @@ class SignalService:
 
     @classmethod
     def _score_dcf(cls, dcf_value: float, curr_price: float) -> tuple:
-        """DCF 대비 저/고평가 점수 계산. Returns (delta, reasons)."""
+        """Calculate undervalue/overvalue score vs DCF. Returns (delta, reasons)."""
         if not (dcf_value and dcf_value > 0):
             return 0, []
         delta = 0
@@ -99,7 +99,7 @@ class SignalService:
 
     @classmethod
     def _score_technical(cls, state, curr_price: float, oversold_rsi: float, overbought_rsi: float, dip_buy_pct: float) -> tuple:
-        """[A] RSI + 급락/급등 + DCF + EMA200 → (delta, reasons)"""
+        """[A] RSI + sharp drop/surge + DCF + EMA200 -> (delta, reasons)"""
         WEIGHTS = TradeExecutorService.WEIGHTS
         delta = 0
         reasons = []
@@ -122,7 +122,7 @@ class SignalService:
 
     @classmethod
     def _score_portfolio(cls, holding, profit_pct: float, take_profit_pct: float, stop_loss_pct: float) -> tuple:
-        """[B] 익절 / 추매 / 손절 → (delta, reasons, forced_sell)"""
+        """[B] Profit-taking / add-buy / stop-loss -> (delta, reasons, forced_sell)"""
         if not holding:
             return 0, [], False
         WEIGHTS = TradeExecutorService.WEIGHTS
@@ -138,7 +138,7 @@ class SignalService:
 
     @classmethod
     def _score_market_context(cls, macro: dict, regime: str) -> tuple:
-        """[C] 공포/과열 + 상승/하락장 → (delta, reasons)"""
+        """[C] Fear/greed + bull/bear market -> (delta, reasons)"""
         WEIGHTS = TradeExecutorService.WEIGHTS
         delta = 0
         reasons = []
@@ -156,7 +156,7 @@ class SignalService:
 
     @classmethod
     def _score_target_prices(cls, state, curr_price: float) -> tuple:
-        """[D] 사용자 설정 목표 진입가/매도가 도달 → (delta, reasons)"""
+        """[D] User-set target entry/sell price reached -> (delta, reasons)"""
         delta = 0
         reasons = []
         target_buy = getattr(state, 'target_buy_price', 0)
@@ -169,7 +169,7 @@ class SignalService:
 
     @classmethod
     def _score_bonuses(cls, ticker: str, holding, macro: dict, user_state: dict) -> tuple:
-        """[E-G] 시총상위10 / 사용자가중치 / 섹터비중 보너스 → (delta, reasons)"""
+        """[E-G] Top10 market cap / user weight / sector weight bonuses -> (delta, reasons)"""
         delta = 0
         reasons = []
         top10_bonus = SettingsService.get_int("STRATEGY_TOP10_BONUS", 10)
@@ -197,11 +197,11 @@ class SignalService:
             pass
         return delta, reasons
 
-    # ── 점수 통합 ─────────────────────────────────────────────────────────────
+    # ── Score Integration ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _load_score_thresholds(cls) -> dict:
-        """SettingsService에서 점수 계산에 필요한 6개 임계값을 로드해 dict로 반환."""
+        """Load 6 score thresholds from SettingsService and return as dict."""
         return {
             "oversold_rsi":    SettingsService.get_float("STRATEGY_OVERSOLD_RSI", 30.0),
             "overbought_rsi":  SettingsService.get_float("STRATEGY_OVERBOUGHT_RSI", 70.0),
@@ -213,7 +213,7 @@ class SignalService:
 
     @classmethod
     def _apply_score_components(cls, ticker: str, state, holding, macro: dict, user_state: dict, profit_pct: float, curr_price: float, regime: str, thresholds: dict) -> tuple:
-        """[A]~[G] 점수 컴포넌트를 누적하여 (score, reasons, forced_sell) 반환."""
+        """Accumulate [A]~[G] score components and return (score, reasons, forced_sell)."""
         t = thresholds
         score = t["base_score"]
         reasons: list = []
@@ -230,7 +230,7 @@ class SignalService:
 
     @classmethod
     def _compute_holding_profit_pct(cls, holding, state) -> float:
-        """보유 종목의 수익률(%) 계산. 미보유 시 0.0 반환."""
+        """Calculate holding's return (%). Returns 0.0 if not held."""
         if not holding:
             return 0.0
         buy_price = (getattr(holding, "buy_price", None) if not isinstance(holding, dict) else holding.get("buy_price", None))
@@ -241,13 +241,14 @@ class SignalService:
 
     @classmethod
     def calculate_score(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, market_cash_ratio: float = None, market_total_krw: float = 0.0) -> tuple:
-        """개별 종목의 투자 점수 계산 ([A]~[G] 헬퍼 통합)"""
+        """Calculate individual stock investment score (integrates [A]~[G] helpers)."""
         curr_price = state.current_price
         if curr_price <= 0: return 0, ["no_price_data"]
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         cash_ratio = cash_balance / market_total_krw if market_total_krw > 0 else 0
         panic_locks = user_state.get('panic_locks', {})
-        regime = macro.get('market_regime', {}).get('status', 'Unknown').upper()
+        regime_obj = macro.get('market_regime')
+        regime = getattr(regime_obj, 'status', 'Unknown').upper()
         if market_cash_ratio is None:
             market_cash_ratio = TradeExecutorService._get_target_cash_ratio('KR' if is_kr(ticker) else 'US', regime)
         target_cash_ratio = market_cash_ratio
@@ -261,11 +262,11 @@ class SignalService:
             score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("cash_shortage")
         return max(0, min(100, score)), reasons
 
-    # ── 분석 인터페이스 ───────────────────────────────────────────────────────
+    # ── Analysis Interface ───────────────────────────────────────────────────────
 
     @classmethod
     def analyze_ticker(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, exchange_rate: float, market_total_krw: float = 0.0) -> dict:
-        """외부에서 개별 종목 분석 결과를 받을 수 있도록 공개된 인터페이스"""
+        """Public interface for external individual stock analysis."""
         score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total_krw)
 
         buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
@@ -289,7 +290,7 @@ class SignalService:
 
     @classmethod
     def _dispatch_analyze_trade(cls, ticker: str, side: str, score: int, reason_str: str, state, profit_pct: float, market_total: float, cash_balance: float, exchange_rate: float, holdings: list, user_id: str, holding, macro: dict) -> None:
-        """_analyze_stock_v3 에서 매수/매도 _execute_trade_v2 호출을 위임."""
+        """Delegate buy/sell _execute_trade_v2 calls from _analyze_stock_v3."""
         is_holding = bool(holding)
         TradeExecutorService._execute_trade_v2(
             ticker, side, f"score {score} [{reason_str}]", profit_pct, is_holding, score,
@@ -299,7 +300,7 @@ class SignalService:
 
     @classmethod
     def _analyze_stock_v3(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, market_total: float, cash_balance: float, exchange_rate: float, user_id: str = "sean") -> None:
-        """기존 내부 분석 루프 (리팩토링된 calculate_score 활용)"""
+        """Legacy internal analysis loop (uses refactored calculate_score)."""
         score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total)
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         reason_str = ", ".join(reasons)
@@ -313,11 +314,11 @@ class SignalService:
         elif score >= sell_threshold_min and holding:
             cls._dispatch_analyze_trade(ticker, "sell", score, reason_str, state, profit_pct, market_total, cash_balance, exchange_rate, port, user_id, holding, macro)
 
-    # ── 신호 수집 ─────────────────────────────────────────────────────────────
+    # ── Signal Collection ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _collect_trading_signals(cls, holdings: list, macro_data: dict, user_state: dict, kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float) -> list:
-        """시장 상태를 확인하고 유효한 매매 시그널을 수집"""
+        """Check market status and collect valid trading signals."""
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)

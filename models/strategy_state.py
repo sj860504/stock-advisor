@@ -4,7 +4,7 @@ from .stock_meta import Base
 
 
 class StrategyState(Base):
-    """사용자별 전략 런타임 상태 (쿨다운·패닉락·틱매매 등)."""
+    """Per-user strategy runtime state (cooldown, panic lock, tick trade, etc.)."""
 
     __tablename__ = "strategy_state"
 

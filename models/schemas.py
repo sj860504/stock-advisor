@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, List, Optional, Any
 
 class StockRequest(BaseModel):
@@ -14,7 +14,7 @@ class FinancialMetrics(BaseModel):
 
 
 class AnalyzedFinancialMetrics(BaseModel):
-    """재무 분석기(FinancialAnalyzer) 반환용 모델. per/pbr/roe/eps/bps/배당/가격/시총."""
+    """Model returned by FinancialAnalyzer. Contains PER/PBR/ROE/EPS/BPS/dividend/price/market_cap."""
     per: float = 0.0
     pbr: float = 0.0
     roe: float = 0.0
@@ -26,19 +26,19 @@ class AnalyzedFinancialMetrics(BaseModel):
 
 
 class KisFinancialsMeta(BaseModel):
-    """KIS 재무/시세 조회 요청 시 사용하는 메타 DTO (api_path, tr_id, market_code)."""
+    """Meta DTO for KIS financials/price API requests (api_path, tr_id, market_code)."""
     api_path: str = ""
     api_tr_id: str = ""
     api_market_code: str = ""
 
 
 class KisFinancialsResponse(BaseModel):
-    """KIS 재무/시세 조회 응답 DTO. output은 API output 또는 fetcher의 raw 페이로드."""
+    """KIS financials/price API response DTO. output is the API output or fetcher raw payload."""
     output: Dict[str, Any] = Field(default_factory=dict)
 
 
 class DcfInputData(BaseModel):
-    """DCF 계산 입력 데이터. get_dcf_data 반환용."""
+    """DCF calculation input data. Returned by get_dcf_data."""
     fcf_per_share: Optional[float] = None
     beta: float = 1.0
     growth_rate: float = 0.0
@@ -50,12 +50,12 @@ class DcfInputData(BaseModel):
 
 
 class TechnicalIndicatorsSnapshot(BaseModel):
-    """최신 시점 기술적 지표 스냅샷 (RSI, EMA by span). IndicatorService 반환용."""
+    """Latest technical indicators snapshot (RSI, EMA by span). Returned by IndicatorService."""
     rsi: float = 50.0
     ema: Dict[int, Optional[float]] = Field(default_factory=dict)
 
     def to_storage_payload(self) -> "IndicatorsForStorage":
-        """DB(Financials) 저장용 페이로드로 변환."""
+        """Convert to storage payload for DB (Financials)."""
         return IndicatorsForStorage(
             rsi=self.rsi,
             ema5=self.ema.get(5),
@@ -67,7 +67,7 @@ class TechnicalIndicatorsSnapshot(BaseModel):
         )
 
     def to_metrics_dict(self) -> Dict[str, Any]:
-        """save_financials 등에 넘길 rsi/ema dict 형태 (기존 호환). ema는 None 포함, flat 키 ema5~ema200 포함."""
+        """Return rsi/ema dict for save_financials (backward compat). Includes None values and flat keys ema5~ema200."""
         ema_dict = dict(self.ema)
         d: Dict[str, Any] = {"rsi": self.rsi, "ema": ema_dict}
         for span, val in self.ema.items():
@@ -76,7 +76,7 @@ class TechnicalIndicatorsSnapshot(BaseModel):
 
 
 class IndicatorsForStorage(BaseModel):
-    """DB(Financials) 기술적 지표 저장용 모델. rsi, ema5~ema200."""
+    """Technical indicators storage model for DB (Financials). rsi, ema5~ema200."""
     rsi: Optional[float] = None
     ema5: Optional[float] = None
     ema10: Optional[float] = None
@@ -86,7 +86,7 @@ class IndicatorsForStorage(BaseModel):
     ema200: Optional[float] = None
 
     def to_financials_metrics_dict(self) -> Dict[str, Any]:
-        """StockMetaService.save_financials에 병합할 metrics dict (rsi + ema dict)."""
+        """Metrics dict to merge into StockMetaService.save_financials (rsi + ema dict)."""
         ema_dict = {}
         if self.ema5 is not None:
             ema_dict[5] = self.ema5
@@ -104,7 +104,7 @@ class IndicatorsForStorage(BaseModel):
 
 
 class BollingerBandsLatest(BaseModel):
-    """볼린저 밴드 최신값 (상단/중간/하단)."""
+    """Latest Bollinger Bands values (upper/middle/lower)."""
     middle: float = 0.0
     upper: float = 0.0
     lower: float = 0.0
@@ -113,12 +113,12 @@ class BollingerBandsLatest(BaseModel):
 class ValuationResult(BaseModel):
     ticker: str
     current_price: float
-    target_price: Optional[float] = None # ?곸젙 二쇨? (BPS * PBR or EPS * PER)
+    target_price: Optional[float] = None # Fair value (BPS * PBR or EPS * PER)
     rating: str  # Buy, Sell, Hold
-    score: int # 0-100 醫낇빀 ?먯닔
+    score: int # 0-100 composite score
     logic: str
-    technical: dict # RSI, MA ??
-    fundamental: FinancialMetrics # PER, PBR ??
+    technical: "TechnicalSummaryInReport" = Field(default_factory=lambda: TechnicalSummaryInReport())
+    fundamental: FinancialMetrics # PER, PBR etc.
 
 class ReturnAnalysis(BaseModel):
     ticker: str
@@ -137,7 +137,7 @@ class DcfOverrideRequest(BaseModel):
     fcf_per_share: Optional[float] = None
     beta: Optional[float] = None
     growth_rate: Optional[float] = None
-    fair_value: Optional[float] = None   # 직접 지정 적정가 (설정 시 FCF 계산 우선)
+    fair_value: Optional[float] = None   # Directly specified fair value (overrides FCF calculation)
 
 class StrategyWeightOverrideRequest(BaseModel):
     weights: Dict[str, int]
@@ -171,32 +171,32 @@ class WatchItem(BaseModel):
     ma20: Optional[float] = None
 
 
-# ----- 종합 리포트 / 매크로 / 포트폴리오 / 주문 결과용 DTO -----
+# ----- Comprehensive report / macro / portfolio / order result DTOs -----
 
 
 class PriceInfoSummary(BaseModel):
-    """시세 요약 (현재가, 등락률, 상태)."""
+    """Price summary (current price, change rate, state)."""
     current: float = 0.0
     change_pct: float = 0.0
     state: str = ""
 
 
 class PortfolioSummaryInReport(BaseModel):
-    """리포트 내 보유 요약."""
+    """Holdings summary within report."""
     owned: bool = False
     avg_cost: float = 0.0
     return_pct: float = 0.0
 
 
 class TechnicalSummaryInReport(BaseModel):
-    """리포트 내 기술적 지표 요약."""
+    """Technical indicators summary within report."""
     rsi: float = 50.0
     emas: Dict[int, Optional[float]] = Field(default_factory=dict)
     bollinger: Dict[str, float] = Field(default_factory=dict)
 
 
 class FundamentalSummaryInReport(BaseModel):
-    """리포트 내 기본적 지표 요약 (DCF, 목표가)."""
+    """Fundamental indicators summary within report (DCF, target price)."""
     dcf_fair: Any = "N/A"  # float or "N/A"
     upside_dcf: float = 0.0
     analyst_target: Optional[float] = None
@@ -204,13 +204,13 @@ class FundamentalSummaryInReport(BaseModel):
 
 
 class MacroContextInReport(BaseModel):
-    """리포트 내 매크로 컨텍스트."""
+    """Macro context within report."""
     regime: str = ""
     vix: Optional[float] = None
 
 
 class ComprehensiveReport(BaseModel):
-    """종합 분석 리포트 한 건. get_comprehensive_report 반환용."""
+    """Single comprehensive analysis report. Returned by get_comprehensive_report."""
     ticker: str = ""
     name: str = ""
     price_info: PriceInfoSummary = Field(default_factory=PriceInfoSummary)
@@ -223,7 +223,7 @@ class ComprehensiveReport(BaseModel):
     score_reasons: List[str] = Field(default_factory=list)
 
     def to_report_dict(self) -> Dict[str, Any]:
-        """ReportService.format_comprehensive_report 호환 dict."""
+        """Dict compatible with ReportService.format_comprehensive_report."""
         return {
             "ticker": self.ticker,
             "name": self.name,
@@ -241,7 +241,7 @@ class ComprehensiveReport(BaseModel):
 
 
 class PortfolioHoldingDto(BaseModel):
-    """보유 종목 한 건 (API/서비스 반환용)."""
+    """Single holding (API/service response DTO)."""
     ticker: str = ""
     name: Optional[str] = None
     quantity: int = 0
@@ -254,27 +254,20 @@ class PortfolioHoldingDto(BaseModel):
 
 
 class MacroDataSnapshot(BaseModel):
-    """매크로 데이터 스냅샷. get_macro_data 반환용."""
+    """Macro data snapshot returned by get_macro_data."""
     us_10y_yield: float = 0.0
-    market_regime: Dict[str, Any] = Field(default_factory=dict)
+    market_regime: "MarketRegimeSchema" = Field(default_factory=lambda: MarketRegimeSchema())
     vix: Optional[float] = None
     fear_greed: Optional[float] = None
-    indices: Dict[str, Any] = Field(default_factory=dict)
-    economic_indicators: Dict[str, Any] = Field(default_factory=dict)
+    indices: Dict[str, "IndexQuote"] = Field(default_factory=dict)
+    economic_indicators: "EconomicIndicatorsSnapshot" = Field(default_factory=lambda: EconomicIndicatorsSnapshot())
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "us_10y_yield": self.us_10y_yield,
-            "market_regime": self.market_regime,
-            "vix": self.vix,
-            "fear_greed": self.fear_greed,
-            "indices": self.indices,
-            "economic_indicators": self.economic_indicators,
-        }
+        return self.model_dump()
 
 
 class TradeRecordDto(BaseModel):
-    """거래 기록 한 건 (API 반환용)."""
+    """Single trade record (API response DTO)."""
     id: Optional[int] = None
     ticker: str = ""
     order_type: str = ""
@@ -293,17 +286,17 @@ class TradeRecordDto(BaseModel):
 
 
 class SettingItem(BaseModel):
-    """설정 한 건 (key, value, description)."""
+    """Single setting entry (key, value, description)."""
     key: str = ""
     value: str = ""
     description: str = ""
 
 
-# ----- 스캐너 기회 결과용 DTO -----
+# ----- Scanner opportunity result DTOs -----
 
 
 class OversoldCandidate(BaseModel):
-    """과매도 우량주 후보."""
+    """Oversold blue-chip candidate."""
     ticker: str = ""
     price: float = 0.0
     rsi: float = 0.0
@@ -312,7 +305,7 @@ class OversoldCandidate(BaseModel):
 
 
 class TrendBreakoutCandidate(BaseModel):
-    """추세 돌파(EMA200 골든크로스) 후보."""
+    """Trend breakout (EMA200 golden cross) candidate."""
     ticker: str = ""
     price: float = 0.0
     ema200: float = 0.0
@@ -320,7 +313,7 @@ class TrendBreakoutCandidate(BaseModel):
 
 
 class AnalystStrongBuyCandidate(BaseModel):
-    """기관 강력 매수(목표가 괴리) 후보."""
+    """Analyst strong-buy (target price gap) candidate."""
     ticker: str = ""
     price: float = 0.0
     target: float = 0.0
@@ -329,13 +322,13 @@ class AnalystStrongBuyCandidate(BaseModel):
 
 
 class ScanOpportunitiesResult(BaseModel):
-    """스캔 기회 결과. ScannerService.scan_market 반환용."""
+    """Scan opportunities result. Returned by ScannerService.scan_market."""
     oversold_bluechip: List[OversoldCandidate] = Field(default_factory=list)
     trend_breakout: List[TrendBreakoutCandidate] = Field(default_factory=list)
     analyst_strong_buy: List[AnalystStrongBuyCandidate] = Field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        """API 호환 dict (기존 opportunities 형태)."""
+        """API-compatible dict (legacy opportunities format)."""
         return {
             "oversold_bluechip": [c.model_dump() for c in self.oversold_bluechip],
             "trend_breakout": [c.model_dump() for c in self.trend_breakout],
@@ -343,15 +336,219 @@ class ScanOpportunitiesResult(BaseModel):
         }
 
 
+# ----- Market Regime Schemas -----
+
+
+class EconomicPhaseDetail(BaseModel):
+    """Economic phase detail within market regime."""
+    phase: str = "Neutral"
+    modifier: int = 0
+    inflation_pressure: int = 0
+    growth_signal: int = 0
+    oil_1m_ret: Optional[float] = None
+    cpi_mom: Optional[float] = None
+    ppi_mom: Optional[float] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class OtherDetailScores(BaseModel):
+    """Other composite scores detail."""
+    us_10y_yield: float = 0.0
+    yield_spread_10y2y: Optional[float] = None
+    vix_1m_chg: Optional[float] = None
+    btc_1m_ret: Optional[float] = None
+    dxy_1m_ret: Optional[float] = None
+    gold_1m_ret: Optional[float] = None
+    oil_1m_ret: Optional[float] = None
+    yield_score: int = 0
+    curve_score: int = 0
+    dxy_score: int = 0
+    btc_score: int = 0
+    gold_score: int = 0
+    oil_score: int = 0
+
+    model_config = ConfigDict(extra="allow")
+
+
+class MarketRegimeComponents(BaseModel):
+    """Component scores of market regime."""
+    technical: int = 10
+    technical_detail: Dict[str, Optional[float]] = Field(default_factory=dict)
+    vix: int = 10
+    fear_greed: int = 10
+    economic: int = 10
+    other: int = 10
+    other_detail: OtherDetailScores = Field(default_factory=OtherDetailScores)
+    economic_phase_detail: EconomicPhaseDetail = Field(default_factory=EconomicPhaseDetail)
+
+    model_config = ConfigDict(extra="allow")
+
+
+class MarketRegimeSchema(BaseModel):
+    """Market regime snapshot (Bull/Bear/Neutral)."""
+    status: str = "Unknown"
+    current: float = 0.0
+    ma200: float = 0.0
+    diff_pct: float = 0.0
+    regime_score: int = -1
+    bear_threshold: int = 40
+    economic_phase: str = "Neutral"
+    phase_modifier: int = 0
+    ema: Dict[str, float] = Field(default_factory=dict)
+    components: MarketRegimeComponents = Field(default_factory=MarketRegimeComponents)
+    _fetch_failed: Optional[bool] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+# ----- Economic Indicators Schemas -----
+
+
+class EconomicIndicatorEntry(BaseModel):
+    """Single economic indicator score entry."""
+    name: str = ""
+    series_id: str = ""
+    weight: float = 1.0
+    latest: Optional[float] = None
+    previous: Optional[float] = None
+    delta: Optional[float] = None
+    score: int = 0
+    weighted_score: float = 0.0
+    status: str = "no_data"
+
+
+class EconomicIndicatorsSummary(BaseModel):
+    """Summary of economic indicators scoring."""
+    total_weighted_score: float = 0.0
+    max_weighted_score: float = 0.0
+    total_score: float = 0.0
+    max_score: float = 0.0
+    sentiment_ratio: float = 0.0
+    available_count: int = 0
+    total_count: int = 0
+
+
+class EconomicIndicatorsSnapshot(BaseModel):
+    """Full economic indicators result."""
+    indicators: Dict[str, EconomicIndicatorEntry] = Field(default_factory=dict)
+    summary: EconomicIndicatorsSummary = Field(default_factory=EconomicIndicatorsSummary)
+
+
+# ----- Index / Commodity / Crypto Quote Schemas -----
+
+
+class IndexQuote(BaseModel):
+    """Index quote (price + change %)."""
+    price: float = 0.0
+    change: float = 0.0
+    source: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class CryptoQuote(BaseModel):
+    """Crypto asset quote."""
+    price: float = 0.0
+    change: float = 0.0
+
+    model_config = ConfigDict(extra="allow")
+
+
+class CommodityQuote(BaseModel):
+    """Commodity quote."""
+    price: float = 0.0
+    change: float = 0.0
+
+    model_config = ConfigDict(extra="allow")
+
+
+# ----- Split Order / Cooldown Schemas -----
+
+
+class SplitOrderState(BaseModel):
+    """State tracking for split buy orders."""
+    total_qty: int = 0
+    remaining_qty: int = 0
+    splits_done: int = 0
+    split_count: int = 3
+    start_date: str = ""
+    entry_price: float = 0.0
+
+
+class BuyCooldownEntry(BaseModel):
+    """Buy cooldown tracking entry."""
+    date: str = ""
+    price: float = 0.0
+
+
+# ----- Sector Rebalance Schemas -----
+
+
+class RebalanceSoldEntry(BaseModel):
+    """Entry for a sold position during rebalancing."""
+    ticker: str = ""
+    group: str = ""
+    dev: float = 0.0
+    profit_pct: float = 0.0
+
+
+class RebalanceBoughtEntry(BaseModel):
+    """Entry for a bought position during rebalancing."""
+    ticker: str = ""
+    group: str = ""
+    dev: float = 0.0
+    score: int = 0
+
+
+class RebalanceSkippedEntry(BaseModel):
+    """Entry for a skipped rebalance action."""
+    ticker: str = ""
+    reason: str = ""
+
+
+class SectorRebalanceResult(BaseModel):
+    """Result of sector rebalancing operation."""
+    sold: List[RebalanceSoldEntry] = Field(default_factory=list)
+    bought: List[RebalanceBoughtEntry] = Field(default_factory=list)
+    skipped: List[RebalanceSkippedEntry] = Field(default_factory=list)
+    weights_before: Dict[str, Any] = Field(default_factory=dict)
+    weights_after: Dict[str, Any] = Field(default_factory=dict)
+    summary: str = ""
+
+
+# ----- Calendar Event Schema -----
+
+
+class CalendarEvent(BaseModel):
+    """Economic calendar event."""
+    date: str = ""
+    time_et: str = ""
+    time_kst: str = ""
+    date_kst: str = ""
+    datetime_utc: str = ""
+    datetime_kst: str = ""
+    release_id: str = ""
+    series_ids: List[str] = Field(default_factory=list)
+    names: List[str] = Field(default_factory=list)
+    total_weight: int = 0
+    is_past: bool = False
+
+
+# Rebuild models that use forward references
+ValuationResult.model_rebuild()
+MacroDataSnapshot.model_rebuild()
+
+
 # ---- API Response Schemas ----
 
 class MessageResponse(BaseModel):
-    """단순 메시지 응답."""
+    """Simple message response."""
     message: str
 
 
 class StatusMessageResponse(BaseModel):
-    """상태 + 메시지 응답."""
+    """Status + message response."""
     status: str
     message: str
 
@@ -494,7 +691,7 @@ class SellAllRebuResponse(BaseModel):
 
 
 class OrderRequest(BaseModel):
-    """주식 매수/매도 주문 요청."""
+    """Stock buy/sell order request."""
     ticker: str
     quantity: int
     price: int = 0
@@ -502,7 +699,7 @@ class OrderRequest(BaseModel):
 
 
 class TickTradingSettingsRequest(BaseModel):
-    """틱매매 설정 변경 요청."""
+    """Tick trading settings update request."""
     enabled: Optional[bool] = None
     ticker: Optional[str] = None
     cash_ratio: Optional[float] = None

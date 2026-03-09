@@ -19,7 +19,7 @@ router = APIRouter(prefix="/trading", tags=["trading"])
 
 
 def _build_tick_updates_from_payload(payload: TickTradingSettingsRequest) -> Dict[str, str]:
-    """틱매매 설정 payload를 DB 저장용 key-value dict로 변환합니다."""
+    """Convert tick trading settings payload to key-value dict for DB storage."""
     updates: Dict[str, str] = {}
     if payload.enabled is not None:
         updates["STRATEGY_TICK_ENABLED"] = "1" if payload.enabled else "0"
@@ -42,7 +42,7 @@ def _build_tick_updates_from_payload(payload: TickTradingSettingsRequest) -> Dic
 
 @router.post("/order", response_model=Dict[str, Any])
 async def place_order(order: OrderRequest) -> Dict[str, Any]:
-    """주식 매수/매도 주문."""
+    """Place stock buy/sell order."""
     try:
         result = KisService.send_order(order.ticker, order.quantity, order.price, order.order_type)
         if result.get("status") == "success":
@@ -54,7 +54,7 @@ async def place_order(order: OrderRequest) -> Dict[str, Any]:
 
 @router.get("/balance", response_model=Dict[str, Any])
 async def get_balance() -> Dict[str, Any]:
-    """주식 잔고 조회."""
+    """Query stock balance."""
     try:
         balance = KisService.get_balance()
         if balance:
@@ -68,7 +68,7 @@ async def get_balance() -> Dict[str, Any]:
 
 @router.get("/waiting-list", response_model=Dict[str, Any])
 async def get_waiting_list() -> Dict[str, Any]:
-    """매매 대기 목록 조회 (BUY/SELL 시그널)."""
+    """Get trade waiting list (BUY/SELL signals)."""
     try:
         return TradingStrategyService.get_waiting_list()
     except Exception as e:
@@ -81,7 +81,7 @@ async def get_trade_history(
     market: Optional[str] = None,
     date: Optional[str] = None,
 ) -> List[TradeRecordDto]:
-    """매매 내역 조회. market=kr/us(미지정시 전체), date=YYYY-MM-DD(미지정시 전체)."""
+    """Get trade history. market=kr/us (all if unspecified), date=YYYY-MM-DD (all if unspecified)."""
     try:
         return OrderService.get_trade_history(limit, market=market, date=date)
     except Exception as e:
@@ -93,7 +93,7 @@ async def execute_sell(
     ticker: str = Body(..., embed=True),
     quantity: int = Body(0, embed=True),
 ) -> Dict[str, Any]:
-    """매도 실행 (수량 0 입력 시 전략에 따라 전량 또는 분할 매도)."""
+    """Execute sell (quantity 0 triggers full or split sell per strategy)."""
     try:
         return TradingStrategyService.execute_sell(ticker, quantity)
     except Exception as e:
@@ -102,7 +102,7 @@ async def execute_sell(
 
 @router.get("/settings", response_model=List[Dict[str, Any]])
 async def get_settings() -> List[Dict[str, Any]]:
-    """설정 조회."""
+    """Get settings."""
     try:
         return SettingsService.get_all_settings()
     except Exception as e:
@@ -114,7 +114,7 @@ async def update_setting(
     key: str = Body(..., embed=True),
     value: str = Body(..., embed=True),
 ) -> SettingUpdateResponse:
-    """설정 변경."""
+    """Update setting."""
     try:
         result = SettingsService.set_setting(key, value)
         if result:
@@ -126,7 +126,7 @@ async def update_setting(
 
 @router.get("/start", response_model=StatusMessageResponse)
 async def start_trading() -> StatusMessageResponse:
-    """자동 매매 시작 (전략 활성화)."""
+    """Start auto-trading (enable strategy)."""
     try:
         TradingStrategyService.set_enabled(True)
         return StatusMessageResponse(status="success", message="Trading Strategy Started")
@@ -136,7 +136,7 @@ async def start_trading() -> StatusMessageResponse:
 
 @router.get("/stop", response_model=StatusMessageResponse)
 async def stop_trading() -> StatusMessageResponse:
-    """자동 매매 중지 (전략 비활성화)."""
+    """Stop auto-trading (disable strategy)."""
     try:
         TradingStrategyService.set_enabled(False)
         return StatusMessageResponse(status="success", message="Trading Strategy Stopped")
@@ -146,7 +146,7 @@ async def stop_trading() -> StatusMessageResponse:
 
 @router.get("/tick-settings", response_model=TickSettingsResponse)
 async def get_tick_settings() -> TickSettingsResponse:
-    """틱매매 설정 조회."""
+    """Get tick trading settings."""
     try:
         return TickSettingsResponse(**SettingsService.get_tick_settings())
     except Exception as e:
@@ -155,7 +155,7 @@ async def get_tick_settings() -> TickSettingsResponse:
 
 @router.put("/tick-settings", response_model=TickSettingsUpdateResponse)
 async def update_tick_settings(payload: TickTradingSettingsRequest) -> TickSettingsUpdateResponse:
-    """틱매매 설정 변경."""
+    """Update tick trading settings."""
     try:
         updates = _build_tick_updates_from_payload(payload)
         SettingsService.update_tick_settings(updates)
@@ -166,7 +166,7 @@ async def update_tick_settings(payload: TickTradingSettingsRequest) -> TickSetti
 
 @router.post("/sell-all-and-rebuy", response_model=SellAllRebuResponse)
 async def sell_all_and_rebuy() -> SellAllRebuResponse:
-    """보유 종목 전량 매도 후 전략대로 재매수."""
+    """Sell all holdings then re-buy per strategy."""
     try:
         result = TradingStrategyService.sell_all_and_rebuy()
         return SellAllRebuResponse(**result)

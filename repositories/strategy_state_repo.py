@@ -1,4 +1,4 @@
-"""strategy_state 테이블 CRUD 레포지토리."""
+"""strategy_state table CRUD repository."""
 import json
 from typing import Optional
 from utils.logger import get_logger
@@ -14,7 +14,7 @@ class StrategyStateRepo:
 
     @classmethod
     def load(cls, user_id: str) -> dict:
-        """user_id 행을 읽어 dict로 반환. 없으면 빈 기본값 반환."""
+        """Read user_id row and return as dict. Returns empty defaults if not found."""
         try:
             with session_ro() as session:
                 row = session.query(StrategyState).filter_by(user_id=user_id).first()
@@ -30,7 +30,7 @@ class StrategyStateRepo:
 
     @classmethod
     def save(cls, user_id: str, user_state: dict) -> None:
-        """user_state dict를 DB에 upsert."""
+        """Upsert user_state dict to DB."""
         try:
             with session_scope() as session:
                 row = session.query(StrategyState).filter_by(user_id=user_id).first()
@@ -44,7 +44,7 @@ class StrategyStateRepo:
 
     @classmethod
     def get_field(cls, user_id: str, field: str) -> dict:
-        """단일 필드만 조회."""
+        """Fetch a single field."""
         try:
             with session_ro() as session:
                 row = session.query(StrategyState).filter_by(user_id=user_id).first()
@@ -57,7 +57,7 @@ class StrategyStateRepo:
 
     @classmethod
     def set_field(cls, user_id: str, field: str, value: dict) -> None:
-        """단일 필드만 업데이트."""
+        """Update a single field."""
         try:
             with session_scope() as session:
                 row = session.query(StrategyState).filter_by(user_id=user_id).first()

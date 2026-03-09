@@ -7,7 +7,7 @@ Base = declarative_base()
 
 class StockMeta(Base):
     """
-    주식 종목 메타 정보 모델
+    Stock metadata model.
     """
     __tablename__ = 'stock_meta'
     
@@ -16,18 +16,18 @@ class StockMeta(Base):
     name_ko = Column(String(100))
     name_en = Column(String(100))
     market_type = Column(String(20))  # KR, US
-    exchange_code = Column(String(20)) # NASD, NYSE, KRX 등
+    exchange_code = Column(String(20)) # NASD, NYSE, KRX, etc.
     sector = Column(String(100))
     industry = Column(String(100))
     
-    # API 호출을 위한 메타데이터 (VTS/Real 환경 대응)
-    api_path = Column(String(200)) # 예: /uapi/overseas-stock/v1/quotations/price-detail
-    api_tr_id = Column(String(50)) # 예: HHDFS70200200
-    api_market_code = Column(String(20)) # 예: NAS, NYS (해외), J (국내)
+    # Metadata for API calls (VTS/Real environment)
+    api_path = Column(String(200)) # e.g.: /uapi/overseas-stock/v1/quotations/price-detail
+    api_tr_id = Column(String(50)) # e.g.: HHDFS70200200
+    api_market_code = Column(String(20)) # e.g.: NAS, NYS (overseas), J (domestic)
     
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
-    # Financials와 1:N 관계
+    # 1:N relationship with Financials
     financials = relationship("Financials", back_populates="stock_meta", cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -35,16 +35,16 @@ class StockMeta(Base):
 
 class Financials(Base):
     """
-    종목별 재무 지표 이력 모델
+    Per-stock financial metrics history model.
     """
     __tablename__ = 'financials'
     
     id = Column(Integer, primary_key=True)
     stock_id = Column(Integer, ForeignKey('stock_meta.id'), nullable=False, index=True)
-    name = Column(String(100)) # 조인 없이 확인하기 위한 종목명 필드 추가
-    base_date = Column(DateTime, nullable=False, index=True) # 조회/기준 일자
+    name = Column(String(100)) # Stock name field added for quick lookup without join
+    base_date = Column(DateTime, nullable=False, index=True) # Base/query date
     
-    # 주요 지표 (KIS API 필드 매핑 고려)
+    # Key metrics (mapped to KIS API fields)
     per = Column(Float)
     pbr = Column(Float)
     roe = Column(Float)
@@ -54,13 +54,13 @@ class Financials(Base):
     current_price = Column(Float)
     market_cap = Column(Float)
     
-    # 52주 및 시세 상세
-    high52 = Column(Float) # 52주 최고가
-    low52 = Column(Float)  # 52주 최저가
-    volume = Column(Float) # 거래량
-    amount = Column(Float) # 거래대금
+    # 52-week and price details
+    high52 = Column(Float) # 52-week high
+    low52 = Column(Float)  # 52-week low
+    volume = Column(Float) # Volume
+    amount = Column(Float) # Trading amount
     
-    # 추가 지표 (기술적/기본적)
+    # Additional indicators (technical/fundamental)
     rsi = Column(Float)
     ema5 = Column(Float)
     ema10 = Column(Float)
@@ -80,17 +80,17 @@ class Financials(Base):
 
 class ApiTrMeta(Base):
     """
-    KIS API TR ID 메타 정보 (실전/모의 구분)
+    KIS API TR ID metadata (real/VTS environment).
     """
     __tablename__ = 'api_tr_meta'
     
     id = Column(Integer, primary_key=True)
-    category = Column(String(50), index=True) # 국내주식, 해외주식 등
+    category = Column(String(50), index=True) # Domestic stocks, overseas stocks, etc.
     api_name = Column(String(100), unique=True, index=True)
     tr_id_real = Column(String(50))
     tr_id_vts = Column(String(50))
-    api_path = Column(String(200)) # 기본/Real 경로
-    api_path_vts = Column(String(200)) # VTS 전용 경로 (필요시)
+    api_path = Column(String(200)) # Default/Real path
+    api_path_vts = Column(String(200)) # VTS-specific path (if needed)
     
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -99,8 +99,8 @@ class ApiTrMeta(Base):
 
 class DcfOverride(Base):
     """
-    사용자 지정 DCF 입력값 저장.
-    fair_value 가 설정된 경우 FCF 계산 없이 해당 값을 DCF 적정가로 직접 사용.
+    User-specified DCF input overrides.
+    When fair_value is set, it is used directly as DCF fair value without FCF calculation.
     """
     __tablename__ = 'dcf_overrides'
 
@@ -108,7 +108,7 @@ class DcfOverride(Base):
     fcf_per_share = Column(Float)
     beta = Column(Float)
     growth_rate = Column(Float)
-    fair_value = Column(Float)   # 직접 지정 적정가 (설정 시 FCF 계산 우선)
+    fair_value = Column(Float)   # Directly specified fair value (overrides FCF calculation)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     def __repr__(self):
@@ -116,7 +116,7 @@ class DcfOverride(Base):
 
 
 class MarketRegimeHistory(Base):
-    """일별 시장 국면(regime) 스냅샷 이력."""
+    """Daily market regime snapshot history."""
     __tablename__ = 'market_regime_history'
 
     id           = Column(Integer, primary_key=True, autoincrement=True)

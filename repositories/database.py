@@ -1,7 +1,7 @@
-"""중앙 DB 싱글톤 — 엔진/세션 관리.
+"""Central DB singleton — engine/session management.
 
-모든 Repository / Service 는 이 모듈의 get_session(), session_scope(),
-session_ro() 를 통해 SQLAlchemy 세션을 획득합니다.
+All Repository / Service modules acquire SQLAlchemy sessions
+through get_session(), session_scope(), and session_ro() in this module.
 """
 import os
 from contextlib import contextmanager
@@ -37,7 +37,7 @@ def _create_engine_and_session() -> None:
 
 
 def init_db() -> None:
-    """테이블 생성 및 엔진/세션 초기화 (멱등)."""
+    """Create tables and initialize engine/session (idempotent)."""
     global _engine, _Session
     if _engine:
         return
@@ -45,7 +45,7 @@ def init_db() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     _create_engine_and_session()
 
-    # 모든 ORM 모델을 Base 메타데이터에 등록시킨 뒤 create_all
+    # Register all ORM models in Base metadata, then create_all
     from models.stock_meta import Base  # noqa: F401
     from models.portfolio import Portfolio, PortfolioHolding  # noqa: F401
     from models.trade_history import TradeHistory  # noqa: F401
@@ -90,7 +90,7 @@ def get_session() -> Session:
 
 @contextmanager
 def session_scope() -> Generator[Session, None, None]:
-    """쓰기 세션 — commit / rollback / close 자동 관리."""
+    """Write session — automatic commit / rollback / close management."""
     session = get_session()
     try:
         yield session
@@ -104,7 +104,7 @@ def session_scope() -> Generator[Session, None, None]:
 
 @contextmanager
 def session_ro() -> Generator[Session, None, None]:
-    """읽기 전용 세션 — close 자동 관리."""
+    """Read-only session — automatic close management."""
     session = get_session()
     try:
         yield session

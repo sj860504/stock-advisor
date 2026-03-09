@@ -16,7 +16,7 @@ async def upload_portfolio(
     file: UploadFile = File(...),
     user_id: str = Form(default="default"),
 ) -> PortfolioUploadResponse:
-    """엑셀 파일을 업로드하여 포트폴리오를 등록합니다."""
+    """Upload Excel file to register portfolio."""
     try:
         content = await file.read()
         holdings = PortfolioService.upload_portfolio(content, file.filename, user_id)
@@ -30,7 +30,7 @@ async def upload_portfolio(
 
 @router.get("/{user_id}", response_model=PortfolioListResponse)
 def get_portfolio(user_id: str = "default") -> PortfolioListResponse:
-    """저장된 포트폴리오를 조회합니다."""
+    """Get saved portfolio."""
     holdings = PortfolioService.load_portfolio(user_id)
     if not holdings:
         return PortfolioListResponse(message="No registered portfolio found.", holdings=[])
@@ -39,14 +39,14 @@ def get_portfolio(user_id: str = "default") -> PortfolioListResponse:
 
 @router.get("/{user_id}/analysis", response_model=Dict[str, Any])
 def analyze_portfolio(user_id: str = "default") -> Dict[str, Any]:
-    """포트폴리오 수익률을 분석합니다."""
+    """Analyze portfolio returns."""
     price_cache = SchedulerService.get_all_cached_prices()
     return PortfolioService.analyze_portfolio(user_id, price_cache)
 
 
 @router.get("/{user_id}/full-report", response_model=List[Dict[str, Any]])
 def get_full_portfolio_report(user_id: str = "default") -> List[Dict[str, Any]]:
-    """보유 종목 전체에 대한 상세 분석 데이터를 반환합니다."""
+    """Return detailed analysis data for all holdings."""
     price_cache = SchedulerService.get_all_cached_prices()
     return PortfolioService.build_full_report(user_id, price_cache)
 
@@ -59,7 +59,7 @@ def add_holding(
     buy_price: float,
     name: Optional[str] = None,
 ) -> HoldingActionResponse:
-    """수동으로 보유 종목을 추가합니다."""
+    """Manually add a holding."""
     resolved_ticker = TickerService.resolve_ticker(ticker)
     holdings = PortfolioService.add_holding_manual(user_id, resolved_ticker, quantity, buy_price, name)
     return HoldingActionResponse(message=f"{resolved_ticker} added", holdings=holdings)
@@ -67,7 +67,7 @@ def add_holding(
 
 @router.patch("/{user_id}/{ticker}/sector", response_model=HoldingActionResponse)
 def update_sector(user_id: str, ticker: str, sector: str) -> HoldingActionResponse:
-    """보유 종목의 섹터를 수동으로 업데이트합니다."""
+    """Manually update a holding's sector."""
     try:
         holdings = PortfolioService.update_holding_sector(user_id, ticker, sector)
         return HoldingActionResponse(message=f"{ticker} sector updated to {sector}", holdings=holdings)
@@ -77,7 +77,7 @@ def update_sector(user_id: str, ticker: str, sector: str) -> HoldingActionRespon
 
 @router.delete("/{user_id}/{ticker}", response_model=HoldingActionResponse)
 def remove_holding(user_id: str, ticker: str) -> HoldingActionResponse:
-    """보유 종목을 제거합니다."""
+    """Remove a holding."""
     holdings = PortfolioService.load_portfolio(user_id)
     new_holdings = [h for h in holdings if h.get("ticker") != ticker]
     PortfolioService.save_portfolio(user_id, new_holdings)
@@ -88,7 +88,7 @@ def remove_holding(user_id: str, ticker: str) -> HoldingActionResponse:
 def trade_holding(
     user_id: str, ticker: str, action: str, quantity: float, price: float,
 ) -> HoldingActionResponse:
-    """주식 매수/매도 통합 처리. action: 'buy' 또는 'sell'."""
+    """Unified buy/sell processing. action: 'buy' or 'sell'."""
     resolved_ticker = TickerService.resolve_ticker(ticker)
     holdings = PortfolioService.load_portfolio(user_id)
     try:

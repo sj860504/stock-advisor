@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from services.market.data_service import DataService
 from services.analysis.indicator_service import IndicatorService
 
-# 백테스트 상수
+# Backtest constants
 RSI_PERIOD = 14
 BACKTEST_INITIAL_BALANCE = 10000.0
 BACKTEST_MIN_TRADE_AMOUNT = 10.0
@@ -14,11 +14,11 @@ FIXED_RATIO_STRATEGY = 0.3
 
 
 class BacktestService:
-    """RSI 기반 백테스트 서비스"""
+    """RSI-based backtest service."""
 
     @classmethod
     def run_rsi_backtest(cls, ticker: str, years: int = 3):
-        """RSI 전략 백테스팅 (DataService 사용)"""
+        """RSI strategy backtesting (using DataService)."""
         print(f"📊 Running backtest for {ticker} (Past {years} years)...")
         df = DataService.get_price_history(ticker, days=years * 365)
         if df.empty:
@@ -35,7 +35,7 @@ class BacktestService:
 
     @staticmethod
     def _calc_invest_amount(strategy: str, cash: float, shares: float, price: float) -> float:
-        """매수 전략별 투자금 계산 (all_in / fixed_30)."""
+        """Calculate investment amount per buy strategy (all_in / fixed_30)."""
         if strategy == "all_in":
             return cash
         if strategy == "fixed_30":
@@ -48,7 +48,7 @@ class BacktestService:
 
     @staticmethod
     def _calc_mdd_from_equity(equity_curve: list) -> float:
-        """equity curve 리스트에서 최대낙폭(MDD %)을 계산합니다."""
+        """Calculate maximum drawdown (MDD %) from equity curve list."""
         equity_series = pd.Series(equity_curve)
         if equity_series.empty:
             return 0.0
@@ -57,7 +57,7 @@ class BacktestService:
 
     @staticmethod
     def _simulate(df, strategy="all_in"):
-        """RSI 기반 매매 시뮬레이션 (all_in 또는 fixed_30)"""
+        """RSI-based trading simulation (all_in or fixed_30)."""
         initial_balance = BACKTEST_INITIAL_BALANCE
         cash   = initial_balance
         shares = 0.0

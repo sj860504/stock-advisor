@@ -5,19 +5,16 @@ from utils.logger import get_logger
 logger = get_logger("news_service")
 
 class NewsService:
-    """
-    주식 관련 뉴스 수집 및 요약 서비스 (yfinance 제거 버전)
-    """
+    """Stock news collection and summarization service (yfinance removed)."""
     
     @classmethod
     def get_latest_news(cls, ticker: str, limit: int = 3) -> List[dict]:
-        """
-        특정 종목의 최신 뉴스를 가져옵니다. 
-        (KIS 뉴스 API 또는 RSS 등으로 대체 준비 중)
+        """Fetch latest news for a specific ticker.
+        (Preparing to replace with KIS news API or RSS)
         """
         try:
-            # TODO: KIS 뉴스 API 연동 (TR ID 확인 필요)
-            # 현재는 yfinance를 제거하기 위해 빈 리스트 또는 샘플 데이터 반환
+            # TODO: KIS news API integration (TR ID TBD)
+            # Currently returns empty list after yfinance removal
             logger.info(f"News fetch requested for {ticker} (Placeholder)")
             return []
         except Exception as e:
@@ -26,9 +23,7 @@ class NewsService:
 
     @classmethod
     def summarize_news(cls, ticker: str, news_list: List[dict]) -> str:
-        """
-        뉴스 목록을 시각적으로 요약합니다.
-        """
+        """Summarize news list visually."""
         if not news_list:
             return f"No latest news available for {ticker}."
             
@@ -41,9 +36,7 @@ class NewsService:
 
     @classmethod
     def get_market_summary(cls) -> dict:
-        """
-        주요 지수 현황을 조회합니다 (MacroService 활용 권장).
-        """
+        """Get major index overview (recommend using MacroService)."""
         from services.market.macro_service import MacroService
         macro_data = MacroService.get_major_indices()
         return macro_data

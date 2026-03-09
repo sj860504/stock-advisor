@@ -1,4 +1,4 @@
-"""매매 내역 기록 및 조회 서비스."""
+"""Trade history recording and retrieval service."""
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -13,17 +13,17 @@ DEFAULT_TRADE_HISTORY_LIMIT = 50
 
 
 class OrderService:
-    """매매 내역 DB 기록 및 최근 내역 조회."""
+    """Trade history DB recording and recent history retrieval."""
 
     @classmethod
     def sell_single_holding(
         cls, ticker: str, name: str, quantity: int, current_price: float
     ) -> Tuple[bool, str]:
-        """단일 종목 매도를 실행하고 (성공 여부, 오류 메시지)를 반환합니다."""
+        """Execute a single holding sell and return (success, error_message)."""
         from services.kis.kis_service import KisService
         is_us = not is_kr(ticker)
         if is_us:
-            # 지정가 주문 직전 실시간 가격 재조회 (메모리 가격 지연 방지)
+            # Refresh real-time price just before limit order (prevent stale in-memory price)
             try:
                 from services.kis.fetch.kis_fetcher import KisFetcher
                 token = KisService.get_access_token()
@@ -48,7 +48,7 @@ class OrderService:
 
     @classmethod
     def execute_mass_sell(cls, holdings: list) -> Tuple[int, int, List[str]]:
-        """보유 종목 전량 매도를 실행하고 (성공수, 실패수, 실패_티커_목록)을 반환합니다."""
+        """Execute mass sell of all holdings and return (success_count, fail_count, failed_tickers)."""
         success_count, fail_count, failed_tickers = 0, 0, []
         for holding in holdings:
             ticker = holding["ticker"]
@@ -83,14 +83,14 @@ class OrderService:
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
     ):
-        """매매 내역을 DB에 기록합니다. 성공 시 TradeHistory 엔티티, 실패 시 None 반환."""
+        """Record trade history to DB. Returns TradeHistory entity on success, None on failure."""
         return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price=buy_price)
 
     @classmethod
     def _to_dto(cls, record, holdings_map: dict) -> TradeRecordDto:
-        """TradeHistory 엔티티를 TradeRecordDto로 변환합니다."""
+        """Convert TradeHistory entity to TradeRecordDto."""
         holding = holdings_map.get(record.ticker)
-        # 매매 시점 평균 매수가: DB 저장값 우선, 없으면 현재 보유 데이터 폴백
+        # Average buy price at trade time: DB stored value first, fallback to current holding data
         buy_price = (
             record.buy_price_at_trade
             or (holding.buy_price if holding and holding.buy_price else None)
@@ -122,12 +122,12 @@ class OrderService:
         market: Optional[str] = None,
         date: Optional[str] = None,
     ) -> List[TradeRecordDto]:
-        """최근 매매 내역 조회. market=kr/us/None(전체), date=YYYY-MM-DD."""
+        """Retrieve recent trade history. market=kr/us/None(all), date=YYYY-MM-DD."""
         try:
             if market in ("kr", "us"):
                 trades = TradeHistoryRepo.query(market=market, date=date, limit=limit)
             else:
-                # 전체: 한국/미국 각각 half건씩 보장
+                # All: ensure half records each for KR/US
                 half = limit // 2
                 kr_trades = TradeHistoryRepo.query(market="kr", date=date, limit=half)
                 us_trades = TradeHistoryRepo.query(market="us", date=date, limit=half)
@@ -142,7 +142,7 @@ class OrderService:
     def get_trade_history_by_date_range(
         cls, start_dt: datetime, end_dt: Optional[datetime] = None
     ) -> List[TradeRecordDto]:
-        """지정된 날짜 범위의 매매 내역을 시간순으로 조회합니다."""
+        """Retrieve trade history within the specified date range in chronological order."""
         try:
             trades = TradeHistoryRepo.query_by_date_range(start_dt, end_dt)
             holdings_map = TradeHistoryRepo.get_holdings_map([t.ticker for t in trades])

@@ -6,13 +6,13 @@ logger = get_logger("stock_ranking_service")
 
 class StockRankingService:
     """
-    해외주식 시가총액 순위 기반 메타데이터 수집 및 DB 저장 서비스
+    Overseas stock market cap ranking-based metadata collection and DB storage service.
     """
     
     @classmethod
     def populate_top_overseas_stocks(cls, exchanges=None):
         """
-        주요 거래소(NAS, NYS, AMS)의 시가총액 상위 종목을 수집하여 DB에 저장합니다.
+        Collect top market cap stocks from major exchanges (NAS, NYS, AMS) and save to DB.
         """
         if exchanges is None:
             exchanges = ["NAS", "NYS", "AMS"]
@@ -27,7 +27,7 @@ class StockRankingService:
                     continue
                 output = response.get("output", [])
                 count = 0
-                # TR ID/Path는 루프 밖에서 1회만 조회 (N+1 방지)
+                # Query TR ID/Path once outside loop (prevent N+1)
                 tr_id, api_path = StockMetaService.get_api_info("해외주식_상세시세")
                 for row in output:
                     ticker = row.get("symb")
@@ -52,8 +52,8 @@ class StockRankingService:
 
     @classmethod
     def run_init_population(cls):
-        """초기 데이터 채우기 실행"""
-        # 먼저 DB 초기화
+        """Run initial data population."""
+        # Initialize DB first
         StockMetaService.init_db()
-        # 데이터 수집
+        # Collect data
         cls.populate_top_overseas_stocks()

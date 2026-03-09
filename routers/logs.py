@@ -1,4 +1,4 @@
-"""서버 로그 조회 API."""
+"""Server log retrieval API."""
 import os
 from fastapi import APIRouter, Query
 from typing import List
@@ -15,7 +15,7 @@ def get_logs(
     level: str = Query(default="", description="INFO|WARNING|ERROR|DEBUG — empty for all"),
     search: str = Query(default="", description="Search keyword"),
 ) -> List[str]:
-    """app.log 마지막 N줄 반환. level/search 필터 지원."""
+    """Return last N lines of app.log. Supports level/search filters."""
     if not os.path.exists(LOG_PATH):
         return []
     try:

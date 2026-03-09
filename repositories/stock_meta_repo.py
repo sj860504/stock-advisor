@@ -1,4 +1,4 @@
-"""종목 메타, 재무, API TR, DCF 오버라이드, 시장 국면 Repository."""
+"""Stock meta, financials, API TR, DCF override, and market regime repository."""
 import json
 from datetime import datetime
 from typing import Optional
@@ -19,13 +19,13 @@ logger = get_logger("stock_meta_repo")
 
 
 class StockMetaRepo:
-    """StockMeta 및 관련 테이블 CRUD."""
+    """StockMeta and related table CRUD."""
 
     # ── StockMeta ─────────────────────────────────────────────────────────
 
     @classmethod
     def upsert_stock_meta(cls, ticker: str, **kwargs) -> Optional[StockMeta]:
-        """종목 메타 정보 저장 또는 업데이트."""
+        """Save or update stock meta information."""
         try:
             with session_scope() as session:
                 stock = session.query(StockMeta).filter_by(ticker=ticker).first()
@@ -45,7 +45,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_stock_meta(cls, ticker: str) -> Optional[StockMeta]:
-        """종목 메타 정보 조회."""
+        """Fetch stock meta information."""
         with session_ro() as session:
             result = session.query(StockMeta).filter_by(ticker=ticker).first()
             if result:
@@ -54,7 +54,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_stock_meta_bulk(cls, tickers: list) -> list:
-        """여러 종목 메타 정보 일괄 조회."""
+        """Bulk fetch stock meta information for multiple tickers."""
         if not tickers:
             return []
         with session_ro() as session:
@@ -65,7 +65,7 @@ class StockMetaRepo:
 
     @classmethod
     def find_ticker_by_name(cls, name: str) -> Optional[str]:
-        """종목명으로 티커 조회 (name_ko 또는 name_en 대소문자 무시 검색)."""
+        """Find ticker by stock name (case-insensitive search on name_ko or name_en)."""
         if not name:
             return None
         with session_ro() as session:
@@ -77,7 +77,7 @@ class StockMetaRepo:
 
     @classmethod
     def _is_valid_kr_ticker(cls, ticker: str, name: str, existing: set) -> bool:
-        """KR 개별 종목 유효성 검사 (6자리 숫자, 미수집, 펀드성 아님)."""
+        """Validate individual KR stock (6-digit number, not yet collected, not fund-like)."""
         if not (ticker.isdigit() and len(ticker) == 6):
             return False
         if ticker in existing:
@@ -88,14 +88,14 @@ class StockMetaRepo:
 
     @classmethod
     def get_kr_individual_stocks(cls, existing: set, limit: int) -> list:
-        """KR 시장 개별 종목 티커 목록 조회 (ETF/펀드성 제외, 6자리 숫자 필터).
+        """Fetch KR market individual stock tickers (excluding ETF/fund-like, 6-digit filter).
 
         Args:
-            existing: 이미 수집된 티커 집합 (중복 제외용).
-            limit: 최대 반환 개수.
+            existing: Set of already collected tickers (for deduplication).
+            limit: Maximum number of results to return.
 
         Returns:
-            필터링된 KR 티커 문자열 리스트.
+            Filtered list of KR ticker strings.
         """
         result: list[str] = []
         try:
@@ -120,7 +120,7 @@ class StockMetaRepo:
 
     @classmethod
     def _is_kr_fund_like(cls, ticker: str, name: str) -> bool:
-        """KR 종목에 대해 ETF/ETN/펀드성 상품 여부를 판별하는 내부 헬퍼."""
+        """Internal helper to determine if a KR stock is an ETF/ETN/fund-like product."""
         n = str(name or "").strip().upper()
         kr_keywords = [
             "ETF", "ETN", "인버스", "레버리지", "TRF", "TDF",
@@ -136,13 +136,13 @@ class StockMetaRepo:
 
     @classmethod
     def _get_or_create_stock(cls, session, ticker: str) -> Optional[StockMeta]:
-        """세션 내 StockMeta 조회, 없으면 기본 메타 생성 후 반환."""
+        """Fetch StockMeta within session; create basic meta if not found."""
         stock = session.query(StockMeta).filter_by(ticker=ticker).first()
         if not stock:
             logger.warning(
                 f"Stock meta not found for {ticker}. Creating basic meta first."
             )
-            # 순환참조 방지를 위해 직접 upsert
+            # Direct upsert to avoid circular imports
             from utils.market import is_kr as _is_kr
             stock = StockMeta(ticker=ticker, market_type="KR" if _is_kr(ticker) else "US")
             session.add(stock)
@@ -151,7 +151,7 @@ class StockMetaRepo:
 
     @classmethod
     def _apply_metrics_to_financial(cls, financial, metrics: dict) -> None:
-        """metrics dict의 값을 Financials 레코드 필드에 반영하는 내부 헬퍼."""
+        """Internal helper to apply metrics dict values to Financials record fields."""
         metric_to_db_field = {
             "name": "name",
             "per": "per", "pbr": "pbr", "roe": "roe",
@@ -174,7 +174,7 @@ class StockMetaRepo:
 
     @classmethod
     def _get_or_create_financial(cls, session, stock_id: int, base_date: datetime) -> Financials:
-        """stock_id + base_date 기준으로 Financials 레코드 조회 또는 신규 생성."""
+        """Fetch or create a Financials record by stock_id + base_date."""
         existing = (
             session.query(Financials)
             .filter_by(stock_id=stock_id, base_date=base_date)
@@ -188,7 +188,7 @@ class StockMetaRepo:
 
     @classmethod
     def save_financials(cls, ticker: str, metrics: dict, base_date: datetime = None) -> Optional[Financials]:
-        """재무 지표 저장 (해당 날짜 기준 upsert)."""
+        """Save financial metrics (upsert by base date)."""
         if not metrics:
             return None
         try:
@@ -210,7 +210,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_latest_financials(cls, ticker: str) -> Optional[Financials]:
-        """가장 최근 재무 지표 조회."""
+        """Fetch the most recent financial metrics."""
         with session_ro() as session:
             stock = session.query(StockMeta).filter_by(ticker=ticker).first()
             if not stock:
@@ -227,7 +227,7 @@ class StockMetaRepo:
 
     @classmethod
     def _map_dcf_row_to_dict(cls, r) -> dict:
-        """DCF 조회 행(row)을 결과 dict로 변환하는 내부 헬퍼."""
+        """Internal helper to convert a DCF query row to a result dict."""
         effective_dcf = float(r.override_fair_value) if r.override_fair_value else (
             float(r.dcf_value) if r.dcf_value else None
         )
@@ -253,7 +253,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_all_latest_dcf(cls, limit: int = 1000) -> list:
-        """전 종목 최신 DCF 값 및 관련 지표 일괄 조회 (dcf_overrides 병합 포함)."""
+        """Bulk fetch latest DCF values and related metrics for all stocks (including dcf_overrides merge)."""
         try:
             with session_ro() as session:
                 rows = session.execute(text("""
@@ -284,7 +284,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_financials_history(cls, ticker: str, limit: int = 2500) -> list:
-        """종목 재무 지표 이력 조회 (최신순)."""
+        """Fetch financial metrics history for a stock (newest first)."""
         with session_ro() as session:
             stock = session.query(StockMeta).filter_by(ticker=ticker).first()
             if not stock:
@@ -302,7 +302,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_batch_latest_financials(cls, tickers: list) -> dict:
-        """여러 종목의 최신 재무 지표를 일괄 조회."""
+        """Bulk fetch latest financial metrics for multiple stocks."""
         if not tickers:
             return {}
         with session_ro() as session:
@@ -333,7 +333,7 @@ class StockMetaRepo:
 
     @classmethod
     def upsert_api_tr_meta(cls, api_name: str, **kwargs) -> Optional[ApiTrMeta]:
-        """API별 TR ID 정보 저장."""
+        """Save TR ID information per API."""
         try:
             with session_scope() as session:
                 meta = session.query(ApiTrMeta).filter_by(api_name=api_name).first()
@@ -352,7 +352,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_api_meta(cls, api_name: str) -> Optional[ApiTrMeta]:
-        """API명으로 메타 정보 전체 조회."""
+        """Fetch full meta information by API name."""
         with session_ro() as session:
             result = session.query(ApiTrMeta).filter_by(api_name=api_name).first()
             if result:
@@ -370,7 +370,7 @@ class StockMetaRepo:
         growth_rate: float = None,
         fair_value: float = None,
     ) -> Optional[DcfOverride]:
-        """사용자 지정 DCF 입력값 저장/업데이트."""
+        """Save/update user-specified DCF input values."""
         try:
             with session_scope() as session:
                 row = session.query(DcfOverride).filter_by(ticker=ticker).first()
@@ -396,7 +396,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_dcf_override(cls, ticker: str) -> Optional[DcfOverride]:
-        """사용자 지정 DCF 입력값 조회."""
+        """Fetch user-specified DCF input values."""
         with session_ro() as session:
             result = session.query(DcfOverride).filter_by(ticker=ticker).first()
             if result:
@@ -405,7 +405,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_all_dcf_overrides(cls, limit: int = 1000) -> dict:
-        """DcfOverride 전체 조회.
+        """Fetch all DcfOverride records.
 
         Returns:
             {ticker: {"fcf_per_share": ..., "beta": ..., "growth_rate": ..., "updated_at": ...}}
@@ -433,7 +433,7 @@ class StockMetaRepo:
     def _apply_regime_fields(
         cls, record, regime_data: dict, vix: float, fear_greed: int
     ) -> None:
-        """MarketRegimeHistory 레코드에 모든 국면 필드를 세팅하는 내부 헬퍼."""
+        """Internal helper to set all regime fields on a MarketRegimeHistory record."""
         record.status = regime_data.get("status")
         record.regime_score = regime_data.get("regime_score")
         record.vix = vix
@@ -458,7 +458,7 @@ class StockMetaRepo:
         vix: float,
         fear_greed: int,
     ) -> bool:
-        """일별 시장 국면 스냅샷을 DB에 저장 (이미 있으면 업데이트)."""
+        """Save daily market regime snapshot to DB (update if already exists)."""
         try:
             with session_scope() as session:
                 record = (
@@ -475,7 +475,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_market_regime_history(cls, days: int = 30) -> list:
-        """최근 N일 레짐 이력 반환 (최신순)."""
+        """Return regime history for the last N days (newest first)."""
         try:
             with session_ro() as session:
                 records = (
@@ -505,7 +505,7 @@ class StockMetaRepo:
 
     @classmethod
     def get_regime_for_date(cls, date_str: str) -> Optional[dict]:
-        """특정 날짜 레짐 반환."""
+        """Return regime for a specific date."""
         try:
             with session_ro() as session:
                 r = (

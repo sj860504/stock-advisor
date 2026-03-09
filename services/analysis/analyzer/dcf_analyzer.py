@@ -6,7 +6,7 @@ logger = get_logger("dcf_analyzer")
 
 
 def _get_dcf_config() -> dict:
-    """Config/Settings에서 DCF 상수 조회. 없으면 Config 기본값 사용."""
+    """Retrieve DCF constants from Config/Settings. Uses Config defaults if absent."""
     from services.config.settings_service import SettingsService
     return {
         "equity_risk_premium": SettingsService.get_float("DCF_EQUITY_RISK_PREMIUM", 0.055),
@@ -19,12 +19,12 @@ def _get_dcf_config() -> dict:
 
 class DcfAnalyzer:
     """
-    DCF (현금흐름할인법) 계산 전담 헬퍼 클래스
+    DCF (Discounted Cash Flow) calculation helper class.
     """
 
     @staticmethod
     def _validate_fcf(fcf_per_share: Optional[float]) -> bool:
-        """FCF 유효성 검사: 양수여야 함."""
+        """FCF validation: must be positive."""
         return fcf_per_share is not None and fcf_per_share > 0
 
     @staticmethod
@@ -38,8 +38,8 @@ class DcfAnalyzer:
         default_discount_rate: float = 0.10,
     ) -> float:
         """
-        CAPM 기반 할인율 계산. 수동 할인율이 있으면 우선 사용.
-        할인율은 config 기준으로 클램프.
+        CAPM-based discount rate calculation. Manual discount rate takes priority if provided.
+        Discount rate is clamped per config bounds.
         """
         if manual_discount is not None:
             rate = manual_discount
@@ -58,8 +58,8 @@ class DcfAnalyzer:
         years: int = 10,
     ) -> Tuple[List[float], float]:
         """
-        Stage 1: 고성장 구간의 연도별 할인 FCF 계산.
-        Returns: (할인된 FCF 리스트, 10년차 말 FCF)
+        Stage 1: Calculate yearly discounted FCF for the high-growth period.
+        Returns: (list of discounted FCFs, FCF at end of year 10)
         """
         future_fcf: List[float] = []
         current_fcf = fcf_per_share
@@ -78,8 +78,8 @@ class DcfAnalyzer:
         years: int = 10,
     ) -> float:
         """
-        Stage 2: 터미널 가치 계산 후 할인.
-        수식: (Final FCF * (1 + g)) / (r - g), 그 결과를 r^years로 할인.
+        Stage 2: Calculate and discount terminal value.
+        Formula: (Final FCF * (1 + g)) / (r - g), discounted by r^years.
         """
         terminal_value = (final_fcf * (1 + terminal_growth)) / (
             discount_rate - terminal_growth
@@ -96,8 +96,8 @@ class DcfAnalyzer:
         manual_discount: Optional[float] = None,
     ) -> dict:
         """
-        2단계 성장 모델을 사용하여 적정 주가를 계산합니다.
-        (기존 DcfService 로직을 헬퍼로 이관)
+        Calculate fair value using a two-stage growth model.
+        (Migrated from DcfService logic to this helper)
         """
         if not DcfAnalyzer._validate_fcf(fcf_per_share):
             return {"value": 0.0, "error": "Invalid FCF"}

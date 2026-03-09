@@ -1,7 +1,7 @@
 """
-기술적 지표 계산 전담 서비스.
-- pandas Series/DataFrame을 입력받아 RSI, EMA, 볼린저 밴드를 계산합니다.
-- 반환은 도메인 모델(TechnicalIndicatorsSnapshot, BollingerBandsResult 등)로 통일합니다.
+Technical indicator calculation service.
+- Computes RSI, EMA, and Bollinger Bands from pandas Series/DataFrame inputs.
+- Returns domain models (TechnicalIndicatorsSnapshot, BollingerBandsResult, etc.).
 """
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -14,7 +14,7 @@ from models.schemas import (
     TechnicalIndicatorsSnapshot,
 )
 
-# 기본 계산 구간
+# Default calculation periods
 DEFAULT_RSI_PERIOD = 14
 DEFAULT_BOLLINGER_WINDOW = 20
 DEFAULT_BOLLINGER_NUM_STD = 2
@@ -24,13 +24,13 @@ RSI_NEUTRAL_FALLBACK = 50.0
 
 @dataclass
 class BollingerBandsResult:
-    """볼린저 밴드 계산 결과 (상단/중간/하단 Series)."""
+    """Bollinger Bands calculation result (upper/middle/lower Series)."""
     middle: pd.Series
     upper: pd.Series
     lower: pd.Series
 
     def to_latest(self) -> BollingerBandsLatest:
-        """최신 봉 기준 상/중/하단 값을 스냅샷으로 반환."""
+        """Return upper/middle/lower values for the latest bar as a snapshot."""
         if self.middle.empty:
             return BollingerBandsLatest()
         return BollingerBandsLatest(
@@ -42,13 +42,13 @@ class BollingerBandsResult:
 
 class IndicatorService:
     """
-    기술적 지표 계산 전담 서비스.
-    모든 계산은 pandas Series 또는 DataFrame을 입력받아 처리합니다.
+    Technical indicator calculation service.
+    All calculations accept pandas Series or DataFrame as input.
     """
 
     @staticmethod
     def compute_rsi_series(close_series: pd.Series, period: int = DEFAULT_RSI_PERIOD) -> pd.Series:
-        """RSI(상대강도지수) 시계열 계산."""
+        """Calculate RSI (Relative Strength Index) time series."""
         if close_series.empty:
             return pd.Series()
         price_delta = close_series.diff(1)
@@ -60,7 +60,7 @@ class IndicatorService:
 
     @staticmethod
     def compute_ema_series(close_series: pd.Series, period: int) -> pd.Series:
-        """EMA(지수이동평균) 시계열 계산."""
+        """Calculate EMA (Exponential Moving Average) time series."""
         if close_series.empty:
             return pd.Series()
         return close_series.ewm(span=period, adjust=False).mean()
@@ -71,7 +71,7 @@ class IndicatorService:
         window: int = DEFAULT_BOLLINGER_WINDOW,
         num_std: int = DEFAULT_BOLLINGER_NUM_STD,
     ) -> BollingerBandsResult:
-        """볼린저 밴드 계산 (상단·중간·하단)."""
+        """Calculate Bollinger Bands (upper/middle/lower)."""
         if close_series.empty:
             empty = pd.Series(dtype=float)
             return BollingerBandsResult(middle=empty, upper=empty, lower=empty)
@@ -83,7 +83,7 @@ class IndicatorService:
 
     @staticmethod
     def compute_latest_indicators_snapshot(close_series: pd.Series) -> Optional[TechnicalIndicatorsSnapshot]:
-        """최신 시점의 RSI·EMA 스냅샷을 계산해 도메인 모델로 반환."""
+        """Calculate latest RSI/EMA snapshot and return as domain model."""
         if close_series.empty:
             return None
         numeric_series = pd.to_numeric(close_series, errors="coerce").dropna()
@@ -106,26 +106,26 @@ class IndicatorService:
 
         return TechnicalIndicatorsSnapshot(rsi=rsi_value, ema=ema_by_span)
 
-    # --- 하위 호환용 별칭 (deprecated) ---
+    # --- Backward-compatible aliases (deprecated) ---
     @staticmethod
     def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-        """[하위호환] RSI 시계열. compute_rsi_series 사용 권장."""
+        """[Deprecated] RSI series. Use compute_rsi_series instead."""
         return IndicatorService.compute_rsi_series(series, period=period)
 
     @staticmethod
     def calculate_ema(series: pd.Series, period: int) -> pd.Series:
-        """[하위호환] EMA 시계열. compute_ema_series 사용 권장."""
+        """[Deprecated] EMA series. Use compute_ema_series instead."""
         return IndicatorService.compute_ema_series(series, period)
 
     @staticmethod
     def calculate_bollinger_bands(series: pd.Series, window: int = 20, num_std: int = 2) -> dict:
-        """[하위호환] 볼린저 밴드 dict 반환. compute_bollinger_bands 사용 권장."""
+        """[Deprecated] Bollinger Bands as dict. Use compute_bollinger_bands instead."""
         result = IndicatorService.compute_bollinger_bands(series, window=window, num_std=num_std)
         return {"middle": result.middle, "upper": result.upper, "lower": result.lower}
 
     @staticmethod
     def get_latest_indicators(series: pd.Series) -> dict:
-        """[하위호환] 최신 지표를 dict로 반환. compute_latest_indicators_snapshot 사용 권장."""
+        """[Deprecated] Latest indicators as dict. Use compute_latest_indicators_snapshot instead."""
         snapshot = IndicatorService.compute_latest_indicators_snapshot(series)
         if snapshot is None:
             return {}

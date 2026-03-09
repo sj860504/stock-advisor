@@ -1,4 +1,4 @@
-"""주요 시장 지수 및 환율 현황 제공 서비스."""
+"""Market index and exchange rate overview service."""
 import logging
 from datetime import datetime
 from typing import Tuple
@@ -11,7 +11,7 @@ from utils.logger import get_logger
 
 logger = get_logger("market_overview_service")
 
-# (심볼, 거래소코드)
+# (symbol, exchange_code)
 INDEX_TICKERS: dict[str, Tuple[str, str]] = {
     "KOSPI": ("0001", "KRX"),
     "KOSDAQ": ("1001", "KRX"),
@@ -27,13 +27,13 @@ COL_CHANGE_RATE = "ChangeRate"
 
 
 class MarketOverviewService:
-    """주요 지수(KOSPI, KOSDAQ, S&P500 등) 및 환율 요약 조회."""
+    """Summary view of major indices (KOSPI, KOSDAQ, S&P500, etc.) and exchange rates."""
 
     INDEX_TICKERS = INDEX_TICKERS
 
     @classmethod
     def get_market_summary(cls) -> pd.DataFrame:
-        """주요 지수별 현재가·등락·등락률을 담은 DataFrame을 반환합니다."""
+        """Return DataFrame with current price, change, and change rate for major indices."""
         token = KisService.get_access_token()
         index_rows = []
         for name, (symb, excd) in cls.INDEX_TICKERS.items():
@@ -60,7 +60,7 @@ class MarketOverviewService:
 
     @classmethod
     def print_summary(cls) -> None:
-        """시장 요약을 콘솔에 출력합니다."""
+        """Print market summary to console."""
         df = cls.get_market_summary()
         print(f"=== MARKET OVERVIEW ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===")
         display_data = [

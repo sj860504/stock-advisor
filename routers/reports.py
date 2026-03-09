@@ -11,8 +11,8 @@ router = APIRouter(
 @router.get("", response_model=Dict[str, Any])
 def get_daily_summary() -> Dict[str, Any]:
     """
-    현재 Top 100 종목의 실시간 요약 리포트를 생성합니다.
-    과매수/과매도 및 시가총액 급등 종목을 한눈에 보여줍니다.
+    Generate real-time summary report for current Top 100 tickers.
+    Shows overbought/oversold and market-cap surging tickers at a glance.
     """
     data = SchedulerService.get_all_cached_prices()
     if not data:

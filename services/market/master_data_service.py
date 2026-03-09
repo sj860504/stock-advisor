@@ -1,4 +1,4 @@
-"""KOSPI/KOSDAQ 마스터 파일 다운로드 및 시가총액 상위 종목 리스트 생성."""
+"""KOSPI/KOSDAQ master file download and top market cap ticker list generation."""
 import os
 import ssl
 import urllib.request
@@ -11,7 +11,7 @@ from utils.logger import get_logger
 
 logger = get_logger("master_data_service")
 
-# 다운로드 URL 및 로컬 파일명
+# Download URLs and local file names
 MASTER_DOWNLOAD_TARGETS = {
     "KOSPI": (
         "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
@@ -26,7 +26,7 @@ DEFAULT_TOP_COUNT = 100
 
 
 class MasterDataService:
-    """KOSPI/KOSDAQ 마스터 파일 다운로드·파싱 및 시총 상위 종목 조회."""
+    """KOSPI/KOSDAQ master file download, parse, and top market cap ticker lookup."""
 
     BASE_DIR = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -40,7 +40,7 @@ class MasterDataService:
 
     @classmethod
     def download_master_files(cls) -> None:
-        """KOSPI, KOSDAQ 마스터 ZIP을 다운로드하고 압축 해제합니다."""
+        """Download and extract KOSPI/KOSDAQ master ZIP files."""
         cls._ensure_dir()
         ssl._create_default_https_context = ssl._create_unverified_context
         for market, (url, zip_name) in MASTER_DOWNLOAD_TARGETS.items():
@@ -108,11 +108,11 @@ class MasterDataService:
 
     @classmethod
     def get_top_market_cap_tickers(cls, count: int = DEFAULT_TOP_COUNT) -> List[dict]:
-        """코스피/코스닥 합산 시가총액 상위 count개 종목 리스트를 반환합니다. (랭킹 API 규격 호환)"""
+        """Return top market cap tickers from combined KOSPI/KOSDAQ (ranking API format compatible)."""
         try:
             kospi = cls.get_kospi_master()
             kosdaq = cls.get_kosdaq_master()
-            # ETP=1: ETF/ETN 제외 → 개별 주식만
+            # ETP=1: Exclude ETF/ETN, keep individual stocks only
             kospi_stocks = kospi[pd.to_numeric(kospi["ETP"], errors="coerce").fillna(0) == 0]
             kosdaq_stocks = kosdaq[pd.to_numeric(kosdaq["ETP"], errors="coerce").fillna(0) == 0]
             kospi_df = kospi_stocks[["단축코드", "한글명", "시가총액"]].rename(columns={"시가총액": "market_cap_raw"})

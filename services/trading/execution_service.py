@@ -7,15 +7,15 @@ from utils.market import is_kr
 
 class ExecutionService:
     """
-    한국투자증권(KIS) API를 통한 실시간 주문 실행 서비스
+    Real-time order execution service via KIS (Korea Investment & Securities) API
     """
-    _base_url = "https://openapivts.koreainvestment.com:29443" # 모의투자 URL
+    _base_url = "https://openapivts.koreainvestment.com:29443" # Paper trading URL
     _access_token: Optional[str] = None
     
     @classmethod
     def _get_token(cls):
-        """API 접속을 위한 토큰 발급"""
-        # .env???섍꼍蹂?섏뿉??濡쒕뱶 (Sean?섏씠 諛쒓툒諛쏆쑝?쒕㈃ ?ш린???ㅼ젙 ?꾩슂)
+        """Issue token for API access."""
+        # Load API keys from environment variables
         app_key = os.getenv("KIS_APP_KEY")
         app_secret = os.getenv("KIS_APP_SECRET")
         
@@ -42,14 +42,14 @@ class ExecutionService:
 
     @classmethod
     def buy_market_order(cls, ticker: str, quantity: int):
-        """시장가 매수 주문"""
+        """Market price buy order."""
         if not cls._access_token:
             cls._get_token()
             
-        url = f"{cls._base_url}/uapi/domestic-stock/v1/trading/order-cash" # 국내 주식 기본 주문 URL
-        
-        # 해외 주식은 URL/헤더가 다름
-        if not is_kr(ticker): # 해외 주식(미국 등) 종목
+        url = f"{cls._base_url}/uapi/domestic-stock/v1/trading/order-cash" # Domestic stock order URL
+
+        # Overseas stocks use different URL/headers
+        if not is_kr(ticker): # Overseas stock (US, etc.)
             url = f"{cls._base_url}/uapi/overseas-stock/v1/trading/order"
 
         headers = {
@@ -57,16 +57,16 @@ class ExecutionService:
             "authorization": f"Bearer {cls._access_token}",
             "appkey": os.getenv("KIS_APP_KEY"),
             "appsecret": os.getenv("KIS_APP_SECRET"),
-            "tr_id": "VTTT0001U" if is_kr(ticker) else "VTTT1002U" # 모의투자 매수 TR ID
+            "tr_id": "VTTT0001U" if is_kr(ticker) else "VTTT1002U" # Paper trading buy TR ID
         }
         
-        # 실제 주문 데이터는 계좌 정보가 필요
-        # 계좌 정보가 없으므로 현재는 시뮬레이션으로만 동작
+        # Actual order data requires account info
+        # Currently operates in simulation mode since no account info is configured
         print(f"[{ticker}] {quantity} shares market buy order attempt...")
         return {"status": "ready", "message": "Actual orders will be executed once API account info is configured."}
 
     @classmethod
     def get_balance(cls):
-        """계좌 잔고 및 보유 종목 조회"""
+        """Query account balance and holdings."""
         print("📊 Fetching account balance...")
-        return {"cash": 10000000, "stocks": []} # 테스트용 더미 데이터
+        return {"cash": 10000000, "stocks": []} # Dummy data for testing

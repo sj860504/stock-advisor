@@ -1,4 +1,4 @@
-"""매매 내역 Repository."""
+"""Trade history repository."""
 from datetime import datetime
 from typing import List, Optional
 
@@ -11,7 +11,7 @@ logger = get_logger("trade_history_repo")
 
 
 class TradeHistoryRepo:
-    """TradeHistory 테이블 CRUD."""
+    """TradeHistory table CRUD."""
 
     @classmethod
     def record(
@@ -24,7 +24,7 @@ class TradeHistoryRepo:
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
     ) -> Optional[TradeHistory]:
-        """매매 내역 DB 기록. 성공 시 detached TradeHistory, 실패 시 None."""
+        """Record trade to DB. Returns detached TradeHistory on success, None on failure."""
         try:
             with session_scope() as session:
                 trade = TradeHistory(
@@ -53,7 +53,7 @@ class TradeHistoryRepo:
         date: Optional[str] = None,
         limit: int = 50,
     ) -> List[TradeHistory]:
-        """매매 내역 조회. market=kr/us/None(전체), date=YYYY-MM-DD."""
+        """Query trade history. market=kr/us/None(all), date=YYYY-MM-DD."""
         session = get_session()
         try:
             q = session.query(TradeHistory)
@@ -68,7 +68,7 @@ class TradeHistoryRepo:
         start_dt: datetime,
         end_dt: Optional[datetime] = None,
     ) -> List[TradeHistory]:
-        """날짜 범위 매매 내역 조회 (오름차순)."""
+        """Query trade history by date range (ascending order)."""
         session = get_session()
         try:
             q = session.query(TradeHistory).filter(TradeHistory.timestamp >= start_dt)
@@ -80,7 +80,7 @@ class TradeHistoryRepo:
 
     @classmethod
     def get_holdings_map(cls, tickers: list[str]) -> dict[str, PortfolioHolding]:
-        """{ticker: PortfolioHolding} 맵 반환."""
+        """Return {ticker: PortfolioHolding} map."""
         if not tickers:
             return {}
         session = get_session()
@@ -96,7 +96,7 @@ class TradeHistoryRepo:
 
     @staticmethod
     def _apply_filters(query, market: Optional[str], date: Optional[str]):
-        """market/date 필터 적용 후 query 반환."""
+        """Apply market/date filters and return query."""
         if market == "kr":
             query = query.filter(TradeHistory.ticker.op("GLOB")("[0-9]*"))
         elif market == "us":

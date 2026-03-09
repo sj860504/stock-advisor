@@ -12,7 +12,7 @@ from utils.market import is_kr
 
 logger = get_logger("kis_service")
 
-# KIS API 상수
+# KIS API constants
 KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 TOKEN_REQUEST_TIMEOUT = 5
 BALANCE_REQUEST_TIMEOUT = 8
@@ -21,23 +21,21 @@ MAX_BALANCE_RETRIES = 3
 
 
 class KisService:
-    """
-    한국투자증권 API 연동 서비스
-    """
+    """Korea Investment & Securities (KIS) API integration service."""
     _access_token = None
     _token_expiry = None
     _last_balance_data = None
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
-    _min_req_interval = 0.55  # VTS 기준 약 2TPS 제한 대응
+    _min_req_interval = 0.55  # ~2 TPS rate limit for VTS
 
-    # 실전 계좌 토큰 (시세 조회 전용)
+    # Live trading account token (price quote only)
     _real_access_token = None
     _real_token_expiry = None
     
     @classmethod
     def _throttle_request(cls) -> None:
-        """요청 간격 제한 (초당 거래건수 준수)"""
+        """Throttle requests to comply with TPS rate limit."""
         with cls._req_lock:
             now = time.time()
             elapsed = now - cls._last_req_ts
@@ -48,7 +46,7 @@ class KisService:
     
     @classmethod
     def _is_rate_limited_response(cls, response: requests.Response) -> bool:
-        """초당 거래건수 제한 응답인지 확인"""
+        """Check if response indicates TPS rate limit."""
         if response.status_code in (429, 500):
             try:
                 body = response.json()
@@ -60,10 +58,9 @@ class KisService:
 
     @classmethod
     def _get_account_parts(cls) -> tuple[str, str]:
-        """
-        계좌번호를 KIS 파라미터 형식으로 분리
-        - 입력 허용: 50162391-01 / 5016239101 / 50162391
-        - 반환: (CANO(8), ACNT_PRDT_CD(2))
+        """Split account number into KIS parameter format.
+        - Accepts: 50162391-01 / 5016239101 / 50162391
+        - Returns: (CANO(8), ACNT_PRDT_CD(2))
         """
         raw = (Config.KIS_ACCOUNT_NO or "").strip()
         digits = "".join(ch for ch in raw if ch.isdigit())
@@ -76,7 +73,7 @@ class KisService:
     
     @classmethod
     def _load_cached_token(cls) -> Optional[str]:
-        """파일 캐시에서 유효한 토큰을 읽어 반환. 없거나 만료 시 None."""
+        """Load valid token from file cache. Returns None if missing or expired."""
         token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_token.json')
         if not os.path.exists(token_cache_path):
             return None
@@ -95,7 +92,7 @@ class KisService:
 
     @classmethod
     def _request_new_token(cls) -> str:
-        """KIS API에 신규 토큰 발급 요청 후 파일에 저장하고 반환."""
+        """Request new token from KIS API, save to file, and return."""
         from datetime import timedelta
         token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_token.json')
         url = f"{Config.KIS_BASE_URL}/oauth2/tokenP"
@@ -122,22 +119,22 @@ class KisService:
 
     @classmethod
     def get_access_token(cls) -> str:
-        """접근 토큰 발급 및 갱신 (파일 기반 캐시 적용)"""
-        # 1. 메모리 캐시 확인
+        """Get access token with file-based cache."""
+        # 1. Check in-memory cache
         if cls._access_token and cls._token_expiry and datetime.now() < cls._token_expiry:
             return cls._access_token
-        # 2. 파일 캐시 확인
+        # 2. Check file cache
         cached = cls._load_cached_token()
         if cached:
             return cached
-        # 3. 신규 발급
+        # 3. Request new token
         return cls._request_new_token()
 
-    # ── 실전 계좌 토큰 (시세/WebSocket 전용) ──────────────────────────────────
+    # ── Live account token (price quote / WebSocket only) ─────────────────────
 
     @classmethod
     def _load_cached_real_token(cls) -> Optional[str]:
-        """실전 토큰 파일 캐시에서 유효한 토큰 반환. 없거나 만료 시 None."""
+        """Load valid live token from file cache. Returns None if missing or expired."""
         token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
         if not os.path.exists(token_cache_path):
             return None
@@ -156,7 +153,7 @@ class KisService:
 
     @classmethod
     def _request_new_real_token(cls) -> str:
-        """실전 계좌 신규 토큰 발급 후 파일에 저장하고 반환."""
+        """Request new live account token, save to file, and return."""
         from datetime import timedelta
         token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
         url = f"{Config.KIS_REAL_BASE_URL}/oauth2/tokenP"
@@ -183,7 +180,7 @@ class KisService:
 
     @classmethod
     def get_real_access_token(cls) -> str:
-        """실전 계좌 토큰 반환. has_real_credentials()=False 이면 VTS 토큰 폴백."""
+        """Return live account token. Falls back to VTS token if has_real_credentials()=False."""
         if not Config.has_real_credentials():
             return cls.get_access_token()
         if cls._real_access_token and cls._real_token_expiry and datetime.now() < cls._real_token_expiry:
@@ -195,7 +192,7 @@ class KisService:
 
     @classmethod
     def get_real_headers(cls, tr_id: str) -> dict:
-        """시세 조회용 헤더 (실전 크레덴셜 설정 시 실전, 아니면 VTS)."""
+        """Headers for price quotes (uses live credentials if configured, otherwise VTS)."""
         if Config.has_real_credentials():
             token = cls.get_real_access_token()
             return {
@@ -211,7 +208,7 @@ class KisService:
 
     @classmethod
     def get_headers(cls, tr_id: str) -> dict:
-        """API 공통 헤더 생성"""
+        """Build common API headers."""
         token = cls.get_access_token()
         return {
             "content-type": "application/json; charset=utf-8",
@@ -223,7 +220,7 @@ class KisService:
 
     @classmethod
     def _parse_balance_response(cls, data: dict) -> dict:
-        """output1/output2를 holdings/summary 딕셔너리로 변환"""
+        """Convert output1/output2 to holdings/summary dict."""
         return {
             "holdings": data.get("output1", []),
             "summary": data.get("output2", [])
@@ -231,7 +228,7 @@ class KisService:
 
     @classmethod
     def _fetch_domestic_balance(cls, url: str, headers: dict, params: dict, attempt: int) -> Optional[dict]:
-        """국내 잔고 API GET 호출. HTTP 5xx 시 None 반환, 성공 시 response_data 반환."""
+        """Domestic balance API GET call. Returns None on HTTP 5xx, response_data on success."""
         response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
         if response.status_code >= 500:
             logger.warning(
@@ -243,7 +240,7 @@ class KisService:
 
     @classmethod
     def _balance_retry_loop(cls, url: str, headers: dict, params: dict) -> tuple:
-        """국내 잔고 조회 재시도 루프. (result, last_err) 반환."""
+        """Domestic balance retry loop. Returns (result, last_err)."""
         last_err = None
         for attempt in range(MAX_BALANCE_RETRIES):
             try:
@@ -271,7 +268,7 @@ class KisService:
 
     @classmethod
     def get_balance(cls) -> Optional[dict]:
-        """주식 잔고 조회 (국내 모의투자 기준)"""
+        """Get stock balance (domestic paper trading)."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -299,14 +296,14 @@ class KisService:
 
     @classmethod
     def _parse_overseas_balance_response(cls, data: dict) -> dict:
-        """해외 잔고 응답 output1/output2를 holdings/summary 딕셔너리로 변환"""
+        """Convert overseas balance output1/output2 to holdings/summary dict."""
         output1 = data.get("output1", []) or []
         output2 = data.get("output2", []) or []
         return {"holdings": output1, "summary": output2}
 
     @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
-        """해외 주식 잔고 조회 - 전 거래소(NYSE/NASD/AMEX 포함) (실패 시 None)"""
+        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Returns None on failure."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -336,7 +333,7 @@ class KisService:
 
     @classmethod
     def _fetch_overseas_available_cash_raw(cls, tr_id: str, cano: str, acnt_prdt_cd: str, item_cd: str, excg_cd: str = "NASD") -> Optional[dict]:
-        """해외 매수가능금액 API 호출 후 output dict 반환. 오류 시 None."""
+        """Call overseas available cash API and return output dict. Returns None on error."""
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount"
         params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
@@ -359,15 +356,15 @@ class KisService:
 
     @classmethod
     def get_overseas_available_cash(cls) -> Optional[float]:
-        """해외 주식 실제 현금 조회 - 주문가능외화금액 + T+2 정산 대기금 포함"""
+        """Get overseas actual cash balance - includes orderable foreign currency + T+2 settlement."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
 
         tr_id = "VTTS3007R" if Config.KIS_IS_VTS else "TTTS3007R"
 
-        # 보유 종목에서 item_cd/거래소 코드 추출 (cash 조회용 임시 종목 필요)
-        # 보유 종목 없으면 AAPL/NASD 기본값으로 API 호출 (현금 잔고는 종목 무관)
+        # Extract item_cd/exchange code from holdings (API requires a ticker for cash query)
+        # Default to AAPL/NASD if no holdings (cash balance is ticker-independent)
         overseas_balance = cls.get_overseas_balance()
         item_cd = "AAPL"
         excg_cd = "NASD"
@@ -379,7 +376,7 @@ class KisService:
         try:
             output = cls._fetch_overseas_available_cash_raw(tr_id, cano, acnt_prdt_cd, item_cd, excg_cd)
             if output:
-                # T+2 정산 포함 실제 현금: 외화인출가능금액2(D+2) 우선, 없으면 주문가능외화금액
+                # Actual cash incl. T+2 settlement: prefer frcr_drwg_psbl_amt2 (D+2), fallback to ord_psbl_frcr_amt
                 frcr_drwg2 = float(output.get("frcr_drwg_psbl_amt2") or 0)
                 ord_psbl = float(output.get("ord_psbl_frcr_amt") or 0)
                 available_usd = frcr_drwg2 if frcr_drwg2 > 0 else ord_psbl
@@ -394,7 +391,7 @@ class KisService:
 
     @classmethod
     def _handle_rate_limit_retry(cls, response: requests.Response, attempt: int, max_retries: int, log_tag: str) -> bool:
-        """TPS 제한 응답인 경우 대기 후 True 반환 (재시도 필요). 아니면 False."""
+        """Wait and return True if TPS rate limited (needs retry), False otherwise."""
         if cls._is_rate_limited_response(response) and attempt < max_retries - 1:
             wait_sec = 1.2 * (attempt + 1)
             logger.warning(f"⏳ {log_tag} TPS limit hit. retry {attempt + 1}/{max_retries} in {wait_sec:.1f}s...")
@@ -404,7 +401,7 @@ class KisService:
 
     @classmethod
     def _handle_order_response(cls, data: dict, attempt: int, max_retries: int, log_tag: str) -> Optional[dict]:
-        """주문 응답 rt_cd 처리. None=재시도, dict=최종 반환값."""
+        """Handle order response rt_cd. None=retry, dict=final result."""
         if data.get("rt_cd") == "0":
             return {"status": "success", "data": data.get("output") or data.get("output1") or {}}
         msg = data.get("msg1") or data.get("msg_cd") or "unknown"
@@ -418,7 +415,7 @@ class KisService:
 
     @classmethod
     def _post_order_with_retry(cls, url: str, headers: dict, body: dict, log_tag: str, max_retries: int = 3) -> dict:
-        """POST 주문 요청 + TPS 제한 재시도 공통 로직."""
+        """POST order request with TPS rate limit retry logic."""
         for attempt in range(max_retries):
             try:
                 cls._throttle_request()
@@ -450,7 +447,7 @@ class KisService:
 
     @classmethod
     def _send_domestic_order(cls, ticker: str, quantity: int, tr_id: str, ord_dvsn: str, ord_price: str, log_tag: str) -> dict:
-        """국내주식 주문 공통 실행 (초당 거래건수 제한 준수)"""
+        """Execute domestic stock order (TPS rate limit compliant)."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
@@ -467,7 +464,7 @@ class KisService:
 
     @classmethod
     def send_order(cls, ticker: str, quantity: int, price: int = 0, order_type: str = "buy") -> dict:
-        """국내 주식 주문 (매수/매도)"""
+        """Domestic stock order (buy/sell)."""
         if Config.DEV_MODE:
             logger.info(f"[DEV MODE] Live order blocked → {order_type.upper()} {ticker} {quantity}qty @ {price}")
             return {"status": "dev_blocked", "msg": "DEV MODE: Live order blocked"}
@@ -488,10 +485,9 @@ class KisService:
 
     @classmethod
     def send_after_hours_order(cls, ticker: str, quantity: int, order_type: str = "buy", ord_dvsn: Optional[str] = None) -> dict:
-        """
-        한국 사후장 주문(실전 전용)
-        - Config.KIS_ENABLE_AFTER_HOURS_ORDER=True 일 때만 허용
-        - 모의투자(VTS)에서는 차단
+        """KR after-hours order (live trading only).
+        - Allowed only when Config.KIS_ENABLE_AFTER_HOURS_ORDER=True
+        - Blocked in paper trading (VTS)
         """
         if Config.DEV_MODE:
             logger.info(f"[DEV MODE] After-hours order blocked → {order_type.upper()} {ticker} {quantity}qty")
@@ -521,17 +517,17 @@ class KisService:
 
     @classmethod
     def send_after_hours_buy(cls, ticker: str, quantity: int, ord_dvsn: Optional[str] = None) -> dict:
-        """한국 사후장 매수 주문 (실전+설정 활성화 전용)"""
+        """KR after-hours buy order (live trading + config enabled only)."""
         return cls.send_after_hours_order(ticker=ticker, quantity=quantity, order_type="buy", ord_dvsn=ord_dvsn)
 
     @classmethod
     def send_after_hours_sell(cls, ticker: str, quantity: int, ord_dvsn: Optional[str] = None) -> dict:
-        """한국 사후장 매도 주문 (실전+설정 활성화 전용)"""
+        """KR after-hours sell order (live trading + config enabled only)."""
         return cls.send_after_hours_order(ticker=ticker, quantity=quantity, order_type="sell", ord_dvsn=ord_dvsn)
 
     @classmethod
     def send_overseas_order(cls, ticker: str, quantity: int, price: float = 0, order_type: str = "buy", market: str = "NASD") -> dict:
-        """해외 주식 주문 (미국 기준, 초당 거래건수 제한 준수)"""
+        """Overseas stock order (US market, TPS rate limit compliant)."""
         if Config.DEV_MODE:
             logger.info(f"[DEV MODE] Overseas order blocked → {order_type.upper()} {ticker} {quantity}qty @ {price}")
             return {"status": "dev_blocked", "msg": "DEV MODE: Live order blocked"}
@@ -556,10 +552,10 @@ class KisService:
             logger.info(f"✅ Overseas Order Success! [{order_type.upper()}] {ticker} {quantity}qty @ ${price}")
         return result
 
-    # --- 확장된 메서드 (Modular 통합용) ---
+    # --- Extended methods (for modular integration) ---
     @classmethod
     def get_financials(cls, ticker: str, meta: Optional[dict] = None) -> dict:
-        """국내 주식 재무/기본 지표 조회 (KisFetcher 활용). meta는 dict 또는 KisFinancialsMeta DTO."""
+        """Get domestic stock financials/fundamentals via KisFetcher. meta is dict or KisFinancialsMeta DTO."""
         from services.kis.fetch.kis_fetcher import KisFetcher
         token = cls.get_access_token()
         meta_dict = meta.model_dump() if (meta is not None and hasattr(meta, "model_dump")) else meta
@@ -567,14 +563,14 @@ class KisService:
 
     @classmethod
     def get_overseas_financials(cls, ticker: str, market: str = "NASD", meta: Optional[dict] = None) -> dict:
-        """해외 주식 재무/기본 지표 조회 (KisFetcher 활용). meta는 dict 또는 KisFinancialsMeta DTO."""
+        """Get overseas stock financials/fundamentals via KisFetcher. meta is dict or KisFinancialsMeta DTO."""
         from services.kis.fetch.kis_fetcher import KisFetcher
         token = cls.get_access_token()
         meta_dict = meta.model_dump() if (meta is not None and hasattr(meta, "model_dump")) else meta
         return KisFetcher.fetch_overseas_price(token, ticker, meta=meta_dict)
     @classmethod
     def get_overseas_ranking(cls, excd: str = "NAS") -> dict:
-        """해외 주식 시가총액 순위 조회 (KisFetcher 활용)"""
+        """Get overseas stock market cap ranking via KisFetcher."""
         from services.kis.fetch.kis_fetcher import KisFetcher
         token = cls.get_access_token()
         return KisFetcher.fetch_overseas_ranking(token, excd=excd)

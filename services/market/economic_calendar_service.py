@@ -1,13 +1,14 @@
-"""경제지표 발표 캘린더 서비스
+"""Economic indicator release calendar service.
 
-캘린더 표시: FRED 과거 발표 이력으로 다음 날짜를 추정 (UI 용도)
-실제 트리거: 미국 경제지표 주요 발표 시각(8:30/9:15/10:00 ET)에 FRED 관측일을
-             캐시값과 비교 → 신규 발표 감지 시 macro 재계산 트리거
+Calendar display: estimates next release dates from FRED past release history (for UI).
+Actual trigger: at US economic release times (8:30/9:15/10:00 ET), compares FRED
+                observation dates with cached values -> triggers macro recalculation on new releases.
 """
 import requests
 from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
 from config import Config
+from models.schemas import CalendarEvent
 from utils.logger import get_logger
 
 logger = get_logger("economic_calendar")
@@ -18,10 +19,10 @@ UTC = timezone.utc
 
 FRED_BASE = "https://api.stlouisfed.org/fred"
 
-# ── 시리즈별 메타 ─────────────────────────────────────────────────────────────
-# time_et: 공식 발표 시각 (BLS/Fed/Census 기준, hardcode)
-# release_id: FRED 발표 그룹 ID (캘린더 조회용)
-# freq: "monthly" | "weekly" | "monthly_2" (격월)
+# ── Per-series metadata ───────────────────────────────────────────────────────
+# time_et: official release time (BLS/Fed/Census, hardcoded)
+# release_id: FRED release group ID (for calendar queries)
+# freq: "monthly" | "weekly" | "monthly_2" (bimonthly)
 SERIES_META: dict[str, dict] = {
     "CPIAUCSL":      {"release_id": "10",  "name": "CPI",                          "time_et": "08:30", "weight": 3, "freq": "monthly"},
     "PPIACO":        {"release_id": "31",  "name": "PPI",                          "time_et": "08:30", "weight": 2, "freq": "monthly"},
@@ -39,17 +40,17 @@ SERIES_META: dict[str, dict] = {
     "ICSA":          {"release_id": "120", "name": "Initial Jobless Claims (Wkly)", "time_et": "08:30", "weight": 2, "freq": "weekly"},
 }
 
-# 발표 시각별 그룹 (스케줄러 cron job 등록용)
+# Release time groups (for scheduler cron job registration)
 RELEASE_WINDOWS = ["08:30", "09:15", "10:00"]
 
 
 class EconomicCalendarService:
-    """FRED 발표 캘린더 조회 및 신규 발표 감지 서비스."""
+    """FRED release calendar query and new release detection service."""
 
-    # 시리즈별 마지막 확인된 관측일 캐시 (서버 수명 동안 메모리 유지)
+    # Per-series last confirmed observation date cache (persists in memory for server lifetime)
     _last_obs_date: dict[str, str] = {}   # {series_id: "YYYY-MM-DD"}
 
-    # ── 내부 유틸 ──────────────────────────────────────────────────────────
+    # ── Internal utilities ────────────────────────────────────────────────
 
     @staticmethod
     def _fred_key() -> str:
@@ -64,11 +65,11 @@ class EconomicCalendarService:
     def _et_to_kst(dt_et: datetime) -> datetime:
         return dt_et.astimezone(KST)
 
-    # ── FRED 과거 발표 이력 조회 ───────────────────────────────────────────
+    # ── FRED past release history queries ──────────────────────────────────
 
     @classmethod
     def _get_past_release_dates(cls, release_id: str, n: int = 6) -> list[str]:
-        """FRED release/dates → 최근 N개 발표 날짜 (내림차순). 연속 일자 중복 제거."""
+        """FRED release/dates -> last N release dates (desc). Deduplicates consecutive dates."""
         key = cls._fred_key()
         if not key:
             return []
@@ -80,13 +81,13 @@ class EconomicCalendarService:
                     "api_key": key,
                     "file_type": "json",
                     "sort_order": "desc",
-                    "limit": 50,           # 충분히 많이 가져와 중복 제거 후 N개 선택
+                    "limit": 50,           # Fetch enough to select N after deduplication
                 },
                 timeout=8,
             )
             res.raise_for_status()
             all_dates = [r["date"] for r in (res.json() or {}).get("release_dates", [])]
-            # 연속된 날짜(비즈니스 데이 패턴)는 FRED 내부 업데이트이므로 월 기준 첫 날짜만 유지
+            # Consecutive dates (business day pattern) are FRED internal updates; keep only first per month
             seen_months: set[str] = set()
             deduped: list[str] = []
             for d in all_dates:
@@ -103,18 +104,18 @@ class EconomicCalendarService:
 
     @staticmethod
     def _estimate_weekly_release_date() -> str:
-        """주간 시리즈 다음 목요일 날짜 반환."""
+        """Return next Thursday date for weekly series."""
         today_dt   = datetime.now()
-        days_ahead = (3 - today_dt.weekday()) % 7  # 목=3
+        days_ahead = (3 - today_dt.weekday()) % 7  # Thu=3
         if days_ahead == 0:
             days_ahead = 7
         return (today_dt + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
     @classmethod
     def _estimate_monthly_release_date(cls, release_id: str) -> str | None:
-        """월별 시리즈의 과거 발표 이력 기반 다음 발표일 추정.
+        """Estimate next release date for monthly series based on past release history.
 
-        직전 간격(28~50일) 중앙값을 사용해 이상치에 강건하게 계산.
+        Uses median of recent intervals (28~50 days) for outlier robustness.
         """
         today_str = datetime.now().strftime("%Y-%m-%d")
         past = cls._get_past_release_dates(release_id, n=6)
@@ -137,16 +138,16 @@ class EconomicCalendarService:
 
     @classmethod
     def _estimate_next_release_date(cls, release_id: str, freq: str) -> str | None:
-        """과거 발표 이력으로 다음 발표 날짜 추정."""
+        """Estimate next release date from past release history."""
         if freq == "weekly":
             return cls._estimate_weekly_release_date()
         return cls._estimate_monthly_release_date(release_id)
 
-    # ── FRED 최신 관측일 조회 (신규 발표 감지용) ──────────────────────────
+    # ── FRED latest observation date query (for new release detection) ─────
 
     @classmethod
     def _get_fred_latest_obs_date(cls, series_id: str) -> str | None:
-        """FRED series/observations → 최신 관측 날짜 반환."""
+        """FRED series/observations -> return latest observation date."""
         key = cls._fred_key()
         if not key:
             return None
@@ -172,11 +173,11 @@ class EconomicCalendarService:
             pass
         return None
 
-    # ── 공개 API ──────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     @classmethod
     def check_for_new_releases(cls) -> list[dict]:
-        """모든 FRED 시리즈를 확인하여 신규 발표 목록 반환.
+        """Check all FRED series for new releases.
 
         Returns: [{"series_id", "name", "new_date", "prev_date"}, ...]
         """
@@ -199,7 +200,7 @@ class EconomicCalendarService:
 
     @staticmethod
     def _build_release_groups() -> dict[str, dict]:
-        """SERIES_META를 release_id 기준으로 그룹화하여 반환합니다."""
+        """Group SERIES_META by release_id and return."""
         release_groups: dict[str, dict] = {}
         for sid, meta in SERIES_META.items():
             rid = meta["release_id"]
@@ -211,36 +212,36 @@ class EconomicCalendarService:
         return release_groups
 
     @classmethod
-    def _build_calendar_event(cls, rid: str, grp: dict, next_date: str, now_utc: datetime) -> dict:
-        """단일 경제지표 발표 이벤트 dict를 생성합니다."""
+    def _build_calendar_event(cls, rid: str, grp: dict, next_date: str, now_utc: datetime) -> CalendarEvent:
+        """Build a single CalendarEvent for an economic release."""
         time_et     = grp["time_et"]
         dt_et       = cls._to_et(next_date, time_et)
         dt_utc      = dt_et.astimezone(UTC)
         dt_kst      = cls._et_to_kst(dt_et)
         series_list = grp["series"]
-        return {
-            "date":         next_date,
-            "time_et":      time_et,
-            "time_kst":     dt_kst.strftime("%H:%M"),
-            "date_kst":     dt_kst.strftime("%Y-%m-%d"),
-            "datetime_utc": dt_utc.isoformat(),
-            "datetime_kst": dt_kst.isoformat(),
-            "release_id":   rid,
-            "series_ids":   [s["series_id"] for s in series_list],
-            "names":        [s["name"] for s in series_list],
-            "total_weight": sum(s["weight"] for s in series_list),
-            "is_past":      dt_utc <= now_utc,
-        }
+        return CalendarEvent(
+            date=next_date,
+            time_et=time_et,
+            time_kst=dt_kst.strftime("%H:%M"),
+            date_kst=dt_kst.strftime("%Y-%m-%d"),
+            datetime_utc=dt_utc.isoformat(),
+            datetime_kst=dt_kst.isoformat(),
+            release_id=rid,
+            series_ids=[s["series_id"] for s in series_list],
+            names=[s["name"] for s in series_list],
+            total_weight=sum(s["weight"] for s in series_list),
+            is_past=dt_utc <= now_utc,
+        )
 
     @classmethod
-    def get_weekly_calendar(cls, days: int = 7) -> list[dict]:
-        """오늘부터 N일간 경제지표 예상 발표 일정 반환 (날짜순)."""
+    def get_weekly_calendar(cls, days: int = 7) -> list[CalendarEvent]:
+        """Return expected economic release schedule for next N days (sorted by date)."""
         now_utc   = datetime.now(UTC)
         today_str = now_utc.strftime("%Y-%m-%d")
         end_str   = (now_utc + timedelta(days=days)).strftime("%Y-%m-%d")
 
         release_groups = cls._build_release_groups()
-        events: list[dict] = []
+        events: list[CalendarEvent] = []
         seen_keys: set[tuple] = set()
 
         for rid, grp in release_groups.items():
@@ -253,6 +254,6 @@ class EconomicCalendarService:
             seen_keys.add(key)
             events.append(cls._build_calendar_event(rid, grp, next_date, now_utc))
 
-        events.sort(key=lambda e: e["datetime_utc"])
+        events.sort(key=lambda e: e.datetime_utc)
         logger.info(f"📅 Weekly calendar: {len(events)} events ({today_str} ~ {end_str})")
         return events

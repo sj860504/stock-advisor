@@ -8,19 +8,19 @@ logger = get_logger("simulation_service")
 
 class SimulationService:
     """
-    트레이딩 시뮬레이션 실행 및 관리 서비스
+    Trading simulation execution and management service.
     """
     
     DEFAULT_TARGETS = [
-        "005930", # 삼성전자
-        "000660", # SK하이닉스
-        "TSLA",   # 테슬라
-        "AAPL",   # 애플
-        "NVDA",   # 엔비디아
+        "005930", # Samsung Electronics
+        "000660", # SK Hynix
+        "TSLA",   # Tesla
+        "AAPL",   # Apple
+        "NVDA",   # NVIDIA
         "AMD",    # AMD
-        "MSFT",   # 마이크로소프트
-        "SOXL",   # 반도체 3배 레버리지
-        "TQQQ",   # 나스닥 3배 레버리지
+        "MSFT",   # Microsoft
+        "SOXL",   # Semiconductor 3x Leveraged ETF
+        "TQQQ",   # NASDAQ 3x Leveraged ETF
     ]
 
     SIMULATION_WAIT_DEFAULT = 10
@@ -28,11 +28,11 @@ class SimulationService:
     @classmethod
     def run_live_simulation(cls, tickers: List[str] = None, user_id: str = "sean", wait_seconds: int = None):
         """
-        현재 시장 데이터를 기반으로 전략 시뮬레이션 실행
+        Run strategy simulation based on current market data.
         """
         logger.info("🚀 [Simulation] Starting Strategy Simulation...")
         
-        # 1. 전략 엔진 강제 활성화
+        # 1. Force-enable strategy engine
         TradingStrategyService.set_enabled(True)
         
         if wait_seconds is None:
@@ -42,12 +42,12 @@ class SimulationService:
         for ticker in targets:
             MarketDataService.register_ticker(ticker)
             
-        # 3. 데이터 로딩 대기
+        # 3. Wait for data loading
         if wait_seconds > 0:
             logger.info(f"⏳ Waiting for data warm-up ({wait_seconds} seconds)...")
             time.sleep(wait_seconds)
             
-        # 4. 전략 실행
+        # 4. Execute strategy
         logger.info("▶️ Executing Trading Strategy...")
         try:
             TradingStrategyService.run_strategy(user_id=user_id)

@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 class OverseasDetailPriceResponse(BaseModel):
-    """KIS 해외 주식 상세 시세 응답 스키마 (HHDFS70200200)"""
+    """KIS overseas stock detail price response schema (HHDFS70200200)."""
     rsym: Optional[str] = Field(None, description="Real-time ticker code")
     pvol: Optional[str] = Field(None, description="Previous day volume")
     open: Optional[str] = Field(None, description="Open price")
@@ -44,4 +44,4 @@ class OverseasDetailPriceResponse(BaseModel):
     tvol: Optional[str] = Field(None, description="Volume")
     tamt: Optional[str] = Field(None, description="Trading amount")
     etyp_nm: Optional[str] = Field(None, description="ETP classification name")
-    hnam: Optional[str] = Field(None, description="Stock Korean name") # 스펙상 없으나 실제 응답에 포함됨
+    hnam: Optional[str] = Field(None, description="Stock Korean name") # Not in spec but included in actual response

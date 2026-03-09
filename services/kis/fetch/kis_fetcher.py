@@ -8,13 +8,13 @@ from utils.logger import get_logger
 
 logger = get_logger("kis_fetcher")
 
-# KIS API 상수
+# KIS API constants
 KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 REQUEST_TIMEOUT_DEFAULT = 5
 
 
 def _safe_float(val, default: float = 0.0) -> float:
-    """문자열/None을 float으로 변환. 실패 시 default 반환."""
+    """Convert string/None to float. Returns default on failure."""
     try:
         if val is None or str(val).strip() == "":
             return default
@@ -24,24 +24,23 @@ def _safe_float(val, default: float = 0.0) -> float:
 
 
 class KisFetcher:
-    """
-    한국투자증권(KIS) REST API를 통해 원시 데이터를 수집하는 헬퍼 클래스
-    - 데이터베이스(api_tr_meta)에 저장된 TR ID와 경로 정보를 동적으로 사용합니다.
-    - 모의투자(VTS) 및 실전투자 환경을 Config.KIS_IS_VTS 플래그로 구분하여 대응합니다.
+    """KIS REST API raw data fetcher.
+    - Dynamically uses TR ID and path from DB (api_tr_meta).
+    - Supports both paper trading (VTS) and live trading via Config.KIS_IS_VTS flag.
     """
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
-    _min_req_interval = 0.55  # VTS 기준 약 2TPS 제한 대응
+    _min_req_interval = 0.55  # ~2 TPS rate limit for VTS
     
     @staticmethod
     def _get_api_info(api_name: str) -> tuple:
-        """DB에서 TR ID와 경로 정보를 가져옵니다 (환경 자동 선택)."""
+        """Get TR ID and path from DB (auto-selects environment)."""
         from services.market.stock_meta_service import StockMetaService
         return StockMetaService.get_api_info(api_name, is_vts=Config.KIS_IS_VTS)
 
     @staticmethod
     def _get_headers(token: str, tr_id: str) -> dict:
-        """KIS API 공통 헤더 생성"""
+        """Build common KIS API headers."""
         return {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {token}",
@@ -53,12 +52,12 @@ class KisFetcher:
 
     @staticmethod
     def _get_price_base_url() -> str:
-        """시세 조회용 Base URL. 실전 크레덴셜 설정 시 실전 서버, 아니면 VTS."""
+        """Base URL for price quotes. Uses live server if real credentials configured, otherwise VTS."""
         return Config.KIS_REAL_BASE_URL if Config.has_real_credentials() else Config.KIS_BASE_URL
 
     @classmethod
     def _get_price_headers(cls, token: str, tr_id: str) -> dict:
-        """시세 조회용 헤더. 실전 크레덴셜 설정 시 실전 자격증명 사용."""
+        """Headers for price quotes. Uses live credentials if configured."""
         if Config.has_real_credentials():
             from services.kis.kis_service import KisService
             real_token = KisService.get_real_access_token()
@@ -86,7 +85,7 @@ class KisFetcher:
         if response.status_code in (429, 500):
             return True
         text = response.text or ""
-        if "초당 거래건수" in text:
+        if "초당 거래건수" in text:  # KIS TPS rate limit message
             return True
         try:
             body = response.json()
@@ -118,7 +117,7 @@ class KisFetcher:
 
     @classmethod
     def fetch_domestic_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
-        """국내 주식 현재가 조회"""
+        """Fetch domestic stock current price."""
         tr_id, path = cls._get_api_info("주식현재가_시세")
         if not path: return {}
 
@@ -153,7 +152,7 @@ class KisFetcher:
                     "name": output.get('hts_kor_isnm', ticker),
                     "raw": output
                 }
-            elif response.status_code == 500 or "초당" in response.text:
+            elif response.status_code == 500 or "\ucd08\ub2f9" in response.text:
                 logger.warning(f"⏳ TPS Limit reached for {ticker}. Waiting 1.5s...")
                 time.sleep(1.5)
                 return {}
@@ -166,7 +165,7 @@ class KisFetcher:
 
     @classmethod
     def fetch_overseas_detail(cls, token: str, ticker: str, meta: dict = None) -> dict:
-        """해외 주식 상세 시세 조회 (PER, PBR, EPS 등 포함)"""
+        """Fetch overseas stock detailed price quote (incl. PER, PBR, EPS)."""
         from models.kis_schemas import OverseasDetailPriceResponse
         
         tr_id, path = cls._get_api_info("해외주식_상세시세")
@@ -191,7 +190,7 @@ class KisFetcher:
                 response_data = response.json()
                 output_raw = response_data.get("output", {})
                 if output_raw:
-                    # 스키마를 통한 검증 및 파싱
+                    # Validate and parse via schema
                     output = OverseasDetailPriceResponse(**output_raw)
                     return {
                         "price": _safe_float(output.last),
@@ -217,7 +216,7 @@ class KisFetcher:
 
     @classmethod
     def fetch_overseas_price(cls, token: str, ticker: str, meta: dict = None) -> dict:
-        """해외 주식 기본 현재가 조회 (HHDFS00000300)"""
+        """Fetch overseas stock basic current price (HHDFS00000300)."""
         tr_id, path = cls._get_api_info("해외주식_현재가")
         if not path: return {}
             
@@ -253,11 +252,11 @@ class KisFetcher:
 
     @classmethod
     def fetch_overseas_ranking(cls, token: str, excd: str = "NAS") -> dict:
-        """해외 주식 시가총액 순위 조회 (VTS 대응)"""
+        """Fetch overseas stock market cap ranking (VTS compatible)."""
         tr_id, path = cls._get_api_info("해외주식_시가총액순위")
         if not path: return {}
         
-        # EXCD 보정 (3자리만 사용)
+        # Normalize EXCD to 3 chars
         market_map = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS", "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
         kis_excd = market_map.get(excd.upper(), excd.upper()[:3])
 
@@ -287,9 +286,9 @@ class KisFetcher:
 
     @classmethod
     def fetch_domestic_ranking(cls, token: str, mrkt_div: str = "0000") -> dict:
-        """국내 주식 시가총액 순위 조회 (VTS 환경에서는 마스터 파일 기반 폴백 사용)"""
-        # VTS 모드이면 실전 크레덴셜 유무와 무관하게 항상 마스터 파일 기반 폴백 사용
-        # (실전 서버 URL + VTS 파라미터 혼용 시 ERROR INPUT FIELD NOT FOUND 발생)
+        """Fetch domestic stock market cap ranking (VTS uses master file fallback)."""
+        # In VTS mode, always use master file fallback regardless of live credentials
+        # (mixing live server URL with VTS params causes ERROR INPUT FIELD NOT FOUND)
         if Config.KIS_IS_VTS:
             from services.market.master_data_service import MasterDataService
             top_stocks = MasterDataService.get_top_market_cap_tickers(100)
@@ -301,7 +300,7 @@ class KisFetcher:
         if not path: return {}
 
         url = f"{cls._get_price_base_url()}{path}"
-        for div_code in ["J"]: # '0'은 유효하지 않으므로 'J'만 시도
+        for div_code in ["J"]:  # '0' is invalid, only try 'J'
             params = {
                 "fid_cond_mrkt_div_code": div_code,
                 "fid_cond_scr_div_code": "20170",
@@ -336,7 +335,7 @@ class KisFetcher:
 
     @classmethod
     def fetch_daily_price(cls, token: str, ticker: str, start_date: str, end_date: str) -> dict:
-        """국내 주식 일자별 시세 조회"""
+        """Fetch domestic stock daily OHLCV data."""
         tr_id, path = cls._get_api_info("국내주식_일자별시세")
         if not path: path = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
         
@@ -359,12 +358,63 @@ class KisFetcher:
             logger.error(f"Error fetching daily price for {ticker}: {e}")
             return {}
 
+    @staticmethod
+    def _build_overseas_daily_params(tr_id: str, ticker: str, excd: str, start_date: str, end_date: str) -> dict:
+        """Build params dict for overseas daily price request based on TR ID."""
+        if tr_id == "FHKST03030100":
+            mrkt_map = {"NASD": "N", "NAS": "N", "NYSE": "Y", "NYS": "Y", "AMEX": "A", "AMS": "A", "IDX": "U"}
+            mrkt_code = mrkt_map.get(excd.upper(), "N")
+            return {
+                "fid_cond_mrkt_div_code": mrkt_code,
+                "fid_input_iscd": ticker,
+                "fid_input_date_1": start_date,
+                "fid_input_date_2": end_date,
+                "fid_period_div_code": "D"
+            }
+        else:
+            market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+            kis_excd = market_map_4to3.get(excd.upper(), excd.upper())
+            if len(kis_excd) > 3 and kis_excd != "IDX":
+                kis_excd = kis_excd[:3]
+            return {
+                "AUTH": "",
+                "EXCD": kis_excd,
+                "SYMB": ticker,
+                "GUBN": "0",
+                "BYMD": "",
+                "MODP": "0"
+            }
+
+    @classmethod
+    def _try_exchange_fallback(cls, ticker: str, url: str, headers: dict, params: dict) -> dict | None:
+        """Try alternate exchange code (NAS<->NYS) when initial query returns empty. Returns data or None."""
+        if "EXCD" not in params:
+            return None
+        alt_excd = "NYS" if params["EXCD"] == "NAS" else ("NAS" if params["EXCD"] == "NYS" else None)
+        if not alt_excd:
+            return None
+        logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} fallback query (empty response)")
+        alt_params = {**params, "EXCD": alt_excd}
+        alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
+        if alt_response and alt_response.status_code == 200:
+            alt_data = alt_response.json()
+            if alt_data.get("output2"):
+                alt_data["output"] = alt_data["output2"]
+                try:
+                    from services.market.stock_meta_service import StockMetaService
+                    StockMetaService.update_market_code(ticker, alt_excd)
+                    logger.info(f"✅ {ticker} api_market_code auto-corrected: {params['EXCD']} → {alt_excd}")
+                except Exception:
+                    pass
+                return alt_data
+        return None
+
     @classmethod
     def fetch_overseas_daily_price(cls, token: str, ticker: str, start_date: str, end_date: str) -> dict:
-        """해외 주식 일자별 시세 조회"""
+        """Fetch overseas stock daily OHLCV data."""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
-        
+
         url = f"{cls._get_price_base_url()}{path}"
 
         excd = "NAS"
@@ -377,33 +427,7 @@ class KisFetcher:
                     excd = meta.api_market_code
             except: pass
 
-        if tr_id == "FHKST03030100":
-            # 차트 API (지수용 등)
-            mrkt_map = {"NASD": "N", "NAS": "N", "NYSE": "Y", "NYS": "Y", "AMEX": "A", "AMS": "A", "IDX": "U"}
-            mrkt_code = mrkt_map.get(excd.upper(), "N")
-            
-            params = {
-                "fid_cond_mrkt_div_code": mrkt_code,
-                "fid_input_iscd": ticker,
-                "fid_input_date_1": start_date,
-                "fid_input_date_2": end_date,
-                "fid_period_div_code": "D"
-            }
-        else:
-            # 기존 해외주식_기간별시세 (HHDFS76240000)
-            # VTS여도 HHDFS TR이면 3자리를 기대함
-            market_map_4to3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
-            kis_excd = market_map_4to3.get(excd.upper(), excd.upper())
-            if len(kis_excd) > 3 and kis_excd != "IDX": kis_excd = kis_excd[:3]
-                
-            params = {
-                "AUTH": "",
-                "EXCD": kis_excd, 
-                "SYMB": ticker,
-                "GUBN": "0",
-                "BYMD": "",
-                "MODP": "0" 
-            }
+        params = cls._build_overseas_daily_params(tr_id, ticker, excd, start_date, end_date)
 
         try:
             headers = cls._get_price_headers(token, tr_id=tr_id)
@@ -417,25 +441,10 @@ class KisFetcher:
             if response_data.get("output2") and not response_data.get("output"):
                 response_data["output"] = response_data["output2"]
 
-            # NAS/NYS 잘못된 경우 자동 폴백 (KIS의 거래소 코드가 실제 상장 거래소와 다를 수 있음)
-            if tr_id != "FHKST03030100" and not response_data.get("output") and "EXCD" in params:
-                alt_excd = "NYS" if params["EXCD"] == "NAS" else ("NAS" if params["EXCD"] == "NYS" else None)
-                if alt_excd:
-                    logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} fallback query (empty response)")
-                    alt_params = {**params, "EXCD": alt_excd}
-                    alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
-                    if alt_response and alt_response.status_code == 200:
-                        alt_data = alt_response.json()
-                        if alt_data.get("output2"):
-                            alt_data["output"] = alt_data["output2"]
-                            # DB api_market_code 자동 업데이트
-                            try:
-                                from services.market.stock_meta_service import StockMetaService
-                                StockMetaService.update_market_code(ticker, alt_excd)
-                                logger.info(f"✅ {ticker} api_market_code auto-corrected: {params['EXCD']} → {alt_excd}")
-                            except Exception:
-                                pass
-                            return alt_data
+            if tr_id != "FHKST03030100" and not response_data.get("output"):
+                fallback = cls._try_exchange_fallback(ticker, url, headers, params)
+                if fallback is not None:
+                    return fallback
 
             return response_data
         except Exception as e:

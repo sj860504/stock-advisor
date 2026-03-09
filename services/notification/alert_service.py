@@ -11,19 +11,19 @@ logger = get_logger("alert_service")
 
 class AlertService:
     """
-    슬랙 알림 및 사용자 알림 서비스 (Refactored)
+    Slack notification and user alert service (Refactored)
     """
     _webhook_url: Optional[str] = None
-    _sent_alerts = set()  # 중복 알림 방지
+    _sent_alerts = set()  # Duplicate alert prevention
     _prev_data = {}  # {ticker: {price, ema20, ...}}
-    _pending_alerts = [] # 에이전트 전송 대기열
-    _user_alerts: List[PriceAlert] = [] # 사용자 설정 가격 알림
+    _pending_alerts = [] # Agent send queue
+    _user_alerts: List[PriceAlert] = [] # User-configured price alerts
     
     @classmethod
     def set_webhook(cls, webhook_url: str):
         cls._webhook_url = webhook_url
     
-    # 개발 모드에서 차단할 키워드 (매수/매도 실행 알림)
+    # Keywords to block in dev mode (buy/sell execution alerts)
     _DEV_BLOCK_KEYWORDS = (
         "BUY Executed", "SELL Executed",  # trade execution alerts
         "Tick Trade",                      # tick trade alerts
@@ -35,8 +35,8 @@ class AlertService:
 
     @classmethod
     def send_slack_alert(cls, message: str, channel: str = None) -> bool:
-        """슬랙으로 실제 알림을 전송합니다."""
-        # 개발 모드: 모든 Slack 발송 차단 (거래 및 리포트 포함)
+        """Send actual notification to Slack."""
+        # Dev mode: block all Slack sends (including trades and reports)
         if Config.DEV_MODE:
             logger.info(f"[DEV MODE] Slack send blocked → {message[:80]}...")
             return False
@@ -58,14 +58,14 @@ class AlertService:
 
     @classmethod
     def get_pending_alerts(cls) -> list:
-        """대기 중인 알림을 반환하고 비웁니다."""
+        """Return pending alerts and clear the queue."""
         alerts = list(cls._pending_alerts)
         cls._pending_alerts.clear()
         return alerts
 
     @classmethod
     def add_user_alert(cls, alert: PriceAlert):
-        """사용자 알림 추가 (티커명 자동 해석 포함)."""
+        """Add user alert (includes automatic ticker name resolution)."""
         from services.market.ticker_service import TickerService
         resolved = TickerService.resolve_ticker(alert.ticker)
         if resolved:
@@ -74,7 +74,7 @@ class AlertService:
 
     @classmethod
     def check_user_alerts(cls) -> List[str]:
-        """사용자 설정 알림 확인"""
+        """Check user-configured alerts."""
         triggered = []
         all_states = MarketDataService.get_all_states()
         for alert in cls._user_alerts:
@@ -92,23 +92,23 @@ class AlertService:
     
     @classmethod
     def check_and_alert(cls, ticker: str, data: dict) -> list:
-        """종목 데이터를 확인하고 조건에 맞으면 알림을 생성합니다."""
+        """Check ticker data and generate alerts if conditions are met."""
         alerts = []
         
-        # 각 체크 로직은 독립 함수로 분리하여 호출
+        # Each check logic is separated into independent functions
         alerts.extend(cls._check_volatility(ticker, data))
         alerts.extend(cls._check_rsi(ticker, data))
         alerts.extend(cls._check_undervalued(ticker, data))
         alerts.extend(cls._check_ma_crossover(ticker, data))
         
-        # 현재 데이터를 이전 데이터로 저장 (다음 비교를 위해)
+        # Save current data as previous data (for next comparison)
         cls._save_current_state(ticker, data)
         
         return alerts
 
     @classmethod
     def generate_daily_summary(cls, data: dict) -> str:
-        """현 시점의 시장 요약 리포트를 생성합니다."""
+        """Generate a current market summary report."""
         if not data:
             return "Analysis data has not been collected yet."
             
@@ -133,7 +133,7 @@ class AlertService:
 
     @classmethod
     def _check_volatility(cls, ticker: str, data: dict) -> list:
-        """1. 급등/급락 알림 (Volatility)"""
+        """1. Surge/plunge alert (Volatility)."""
         alerts = []
         price = data.get('price')
         prev = cls._prev_data.get(ticker, {})
@@ -165,12 +165,12 @@ class AlertService:
 
     @classmethod
     def _check_rsi(cls, ticker: str, data: dict) -> list:
-        """2. RSI 과매수 과매도 알림"""
+        """2. RSI overbought/oversold alert."""
         alerts = []
         rsi = data.get('rsi')
         if not rsi: return []
         
-        alert_key = f"{ticker}_{data.get('time', '')[:13]}_rsi" # 시간당 1회
+        alert_key = f"{ticker}_{data.get('time', '')[:13]}_rsi" # Once per hour
         
         if rsi < 30:
             if f"{alert_key}_oversold" not in cls._sent_alerts:
@@ -185,7 +185,7 @@ class AlertService:
 
     @classmethod
     def _check_undervalued(cls, ticker: str, data: dict) -> list:
-        """3. DCF 저평가 알림"""
+        """3. DCF undervaluation alert."""
         alerts = []
         price = data.get('price')
         dcf = data.get('fair_value_dcf')
@@ -203,7 +203,7 @@ class AlertService:
 
     @classmethod
     def _check_ma_crossover(cls, ticker: str, data: dict) -> list:
-        """4. 지지선(EMA) 돌파/이탈 알림"""
+        """4. Support line (EMA) breakout/breakdown alert."""
         alerts = []
         price = data.get('price')
         prev = cls._prev_data.get(ticker, {})
@@ -224,11 +224,11 @@ class AlertService:
             if not ema_val: continue
             prev_ema = prev.get(name.split('(')[0].lower()) or ema_val
             
-            # 골든크로스
+            # Golden cross
             if prev_price <= prev_ema and price > ema_val:
                 alerts.append(f"✨ **{ticker}** {name} breakout above! (Support: ${ema_val:.2f}, Current: ${price})")
             
-            # 데드크로스
+            # Dead cross
             elif prev_price >= prev_ema and price < ema_val:
                 alerts.append(f"🚨 **{ticker}** {name} breakdown below! (Support: ${ema_val:.2f}, Current: ${price})")
                 
@@ -236,7 +236,7 @@ class AlertService:
 
     @classmethod
     def _save_current_state(cls, ticker: str, data: dict):
-        """현재 상태를 저장 (다음 번 비교용)"""
+        """Save current state (for next comparison)."""
         cls._prev_data[ticker] = {
             'price': data.get('price'),
             'ema5': data.get('ema5'),

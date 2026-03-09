@@ -16,32 +16,31 @@ from services.market.market_hour_service import MarketHourService
 
 logger = get_logger("data_service")
 
-# 상수: 컬럼명
+# Constants: column names
 COL_CLOSE = "Close"
 COL_HIGH = "High"
 COL_LOW = "Low"
 COL_OPEN = "Open"
 COL_DATE = "Date"
-# KIS API 제한
+# KIS API limits
 KIS_RATE_LIMIT_SLEEP_SEC = 0.5
 KIS_HISTORY_BATCH_LIMIT = 100
 HISTORY_DAYS_DEFAULT = 365
-# 국내 랭킹 실패 시 기본 종목
+# Fallback tickers when domestic ranking fails
 KR_FALLBACK_TICKERS = ["005930", "000660", "373220", "207940", "005380", "005490", "035420", "000270", "051910", "105560"]
 KR_FALLBACK_MINIMAL = ["005930", "000660", "373220", "207940", "005380"]
-# FDR 지수 심볼 매핑
+# FDR index symbol mapping
 FDR_INDEX_SYMBOL_MAP = {"SPX": "US500", "NAS": "IXIC", "DJI": "DJI", "VIX": "VIX"}
 
 
 class DataService:
-    """
-        KIS API 기반 데이터 수집 및 지표 계산 서비스
-        - 지수 데이터는 KIS 실패 시 FinanceDataReader로 보완합니다.
+    """KIS API-based data collection and indicator calculation service.
+    - Index data falls back to FinanceDataReader when KIS fails.
     """
 
     @classmethod
     def _is_fund_like_security(cls, ticker: str, name: str, market: str) -> bool:
-        """ETF/ETN/펀드성 상품 여부 판별"""
+        """Check if ticker is an ETF/ETN/fund-like product."""
         t = str(ticker or "").strip().upper()
         n = str(name or "").strip().upper()
         m = str(market or "").strip().upper()
@@ -62,14 +61,14 @@ class DataService:
         if any(k in n for k in us_name_keywords):
             return True
 
-        # 이름이 비어있거나 불확실할 때를 대비해 대표 ETF 티커 블록리스트
+        # Blocklist of known US ETF tickers for empty/uncertain names
         us_etf_tickers = {
             "SPY", "IVV", "VOO", "VTI", "QQQ", "QQQM", "DIA", "IWM", "EFA", "EEM",
             "TLT", "IEF", "BND", "BNDX", "VCIT", "SMH", "VXUS", "IXUS", "IBIT"
         }
         return t in us_etf_tickers
 
-    # 미국 폴백 티커 목록 상수
+    # US fallback ticker list constants
     _US_FALLBACK_CORE = [
         "AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST", "NFLX",
         "JPM", "V", "LLY", "XOM", "UNH"
@@ -99,7 +98,7 @@ class DataService:
 
     @classmethod
     def _parse_us_fallback_ticker_row(cls, sym_candidate: str, seen: set) -> tuple:
-        """단일 폴백 심볼 후보를 (sym, excd, ex_name) 튜플로 변환. 유효하지 않으면 None 반환."""
+        """Convert a single fallback symbol candidate to (sym, excd, ex_name) tuple. Returns None if invalid."""
         sym = str(sym_candidate).strip().upper()
         if not sym or sym in seen:
             return None
@@ -112,7 +111,7 @@ class DataService:
 
     @classmethod
     def _build_us_fallback_data(cls, limit: int = 100) -> list:
-        """미국 랭킹 조회 실패 시 사용할 대체 티커 목록(최대 limit)"""
+        """Build fallback US ticker list for ranking API failure (up to limit)."""
         ordered = []
         seen = set()
         for sym_candidate in cls._US_FALLBACK_CORE + cls._US_FALLBACK_EXTENDED:
@@ -125,7 +124,7 @@ class DataService:
 
     @classmethod
     def _parse_krx_ticker_from_row(cls, item: dict, tr_id: str, path: str) -> str:
-        """KRX 랭킹 응답의 단일 항목에서 ticker 추출 + StockMeta upsert. 유효하지 않으면 None."""
+        """Extract ticker from KRX ranking response item + upsert StockMeta. Returns None if invalid."""
         ticker = item.get("mksc_shrn_iscd")
         name = item.get("hts_kor_isnm")
         if not ticker or cls._is_fund_like_security(ticker, name, "KR"):
@@ -138,7 +137,7 @@ class DataService:
 
     @classmethod
     def _supplement_kr_tickers(cls, tickers: list, limit: int) -> list:
-        """KRX 티커가 limit 미만일 때 DB 메타에서 KR 개별 종목으로 부족분 보충."""
+        """Supplement KRX tickers from DB meta if below limit."""
         if len(tickers) >= limit:
             return tickers
         try:
@@ -153,7 +152,7 @@ class DataService:
 
     @classmethod
     def get_top_krx_tickers(cls, limit: int = 100) -> list:
-        """KIS API를 통해 국내 주식 시가총액 상위 종목을 수집합니다."""
+        """Get top KRX stocks by market cap via KIS API."""
         try:
             token = KisService.get_access_token()
             response = KisFetcher.fetch_domestic_ranking(token)
@@ -176,7 +175,7 @@ class DataService:
 
     @classmethod
     def _fetch_us_tickers_from_kis(cls, limit: int) -> list:
-        """KIS NAS+NYS 랭킹 API에서 미국 주식 티커+메타 목록 조회 후 시총순 상위 limit개 반환."""
+        """Fetch US tickers+meta from KIS NAS+NYS ranking API, return top by market cap."""
         token = KisService.get_access_token()
         response_nas = KisFetcher.fetch_overseas_ranking(token, excd="NAS")
         response_nys = KisFetcher.fetch_overseas_ranking(token, excd="NYS")
@@ -205,7 +204,7 @@ class DataService:
 
     @classmethod
     def _apply_us_ticker_supplements(cls, tickers: list, limit: int) -> list:
-        """폴백 목록으로 부족분 보충하거나 tickers가 비어있으면 전체를 폴백으로 채운다."""
+        """Supplement with fallback list or fill entirely if tickers is empty."""
         tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
         if not tickers:
             fallback_data = cls._build_us_fallback_data(limit=limit)
@@ -234,7 +233,7 @@ class DataService:
 
     @classmethod
     def get_top_us_tickers(cls, limit: int = 100) -> list:
-        """KIS API를 통해 미국 주식 시가총액 상위 종목을 수집합니다."""
+        """Get top US stocks by market cap via KIS API."""
         try:
             tickers = cls._fetch_us_tickers_from_kis(limit)
             return cls._apply_us_ticker_supplements(tickers, limit)
@@ -244,7 +243,7 @@ class DataService:
 
     @classmethod
     def _fetch_kr_price_history(cls, ticker: str, token: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """KIS API로 국내 주식 일봉 데이터 조회 후 DataFrame 반환."""
+        """Fetch domestic stock daily OHLCV via KIS API and return DataFrame."""
         response = KisFetcher.fetch_daily_price(token, ticker, start_date, end_date)
         if not response or not response.get("output2"):
             return pd.DataFrame()
@@ -256,7 +255,7 @@ class DataService:
 
     @classmethod
     def _fetch_us_price_history(cls, ticker: str, token: str, start_date: str, end_date: str, days: int) -> pd.DataFrame:
-        """KIS API로 해외 주식/지수 일봉 데이터 조회 후 DataFrame 반환. 지수는 FDR 폴백 포함."""
+        """Fetch overseas stock/index daily OHLCV via KIS API and return DataFrame. Includes FDR fallback for indices."""
         response = KisFetcher.fetch_overseas_daily_price(token, ticker, start_date, end_date)
         if ticker in ["SPX", "NAS", "VIX", "DJI"]:
             rows = response.get("output2") or response.get("output") or []
@@ -282,7 +281,7 @@ class DataService:
     def _extend_price_history_batch(
         cls, df: pd.DataFrame, ticker: str, token: str, start_date: str, days: int
     ) -> pd.DataFrame:
-        """배치 상한(100건)에 달했을 때 가장 오래된 날짜 이전 구간을 추가 조회해 df를 확장."""
+        """Extend df by fetching additional data before oldest date when batch limit (100) is reached."""
         from datetime import timedelta
         df[COL_DATE] = pd.to_datetime(df[COL_DATE])
         new_end_date = (df[COL_DATE].min() - timedelta(days=1)).strftime("%Y%m%d")
@@ -297,8 +296,8 @@ class DataService:
 
     @classmethod
     def get_price_history(cls, ticker: str, days: int = 300) -> pd.DataFrame:
-        """KIS API를 통해 과거 N일간의 가격 데이터를 가져옵니다."""
-        # 과거 시세 조회는 시장 운영 시간과 무관하게 허용됨
+        """Fetch past N days of price data via KIS API."""
+        # Historical price queries are allowed regardless of market hours
         logger.info(f"Fetching history for {ticker} (Last {days} days)...")
         try:
             from datetime import timedelta
@@ -329,7 +328,7 @@ class DataService:
 
     @classmethod
     def _fallback_index_history_fdr(cls, ticker: str, days: int = 300) -> pd.DataFrame:
-        """KIS 지수 데이터 실패 시 FinanceDataReader로 보완"""
+        """Fallback to FinanceDataReader when KIS index data fails."""
         try:
             import FinanceDataReader as fdr
         except Exception as e:
@@ -354,7 +353,7 @@ class DataService:
 
     @classmethod
     def _sync_ticker_market_data(cls, ticker: str, market: str, token: str) -> bool:
-        """단일 티커 시세/지표/DCF 수집 후 DB 저장. 성공 시 True, 건너뜀·실패 시 False."""
+        """Fetch price/indicators/DCF for a single ticker and save to DB. True on success, False on skip/failure."""
         logger.info(f"Processing {ticker} ({market})...")
         if market == "KR":
             price_info = KisFetcher.fetch_domestic_price(token, ticker)
@@ -383,12 +382,12 @@ class DataService:
 
     @classmethod
     def sync_daily_market_data(cls, limit: int = 100) -> None:
-        """매일 1회 실행: 상위 종목 수집 -> 지표 계산 -> DB 저장"""
+        """Daily sync: collect top tickers -> calculate indicators -> save to DB."""
         logger.info(f"Starting daily market data sync (Top {limit})...")
         kr_tickers = cls.get_top_krx_tickers(limit=limit)
         us_tickers = cls.get_top_us_tickers(limit=limit)
         all_tickers = [(t, "KR") for t in kr_tickers] + [(t, "US") for t in us_tickers]
-        token = KisService.get_access_token()  # 루프 밖에서 1회만 조회
+        token = KisService.get_access_token()  # Fetch once outside the loop
         markets = {market for _, market in all_tickers}
         open_markets = {m for m in markets if MarketHourService.should_fetch(m)}
         for ticker, market in all_tickers:

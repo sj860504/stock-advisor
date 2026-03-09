@@ -1,8 +1,8 @@
 """
-SectorRebalancerService: 섹터 리밸런싱
-- 섹터 비중 현황 조회 (get_sector_rebalance_status)
-- 주간 섹터 리밸런싱 (run_sector_rebalance)
-- 초과 섹터 분할 매도 / 부족 섹터 매수
+SectorRebalancerService: sector rebalancing.
+- Sector weight status query (get_sector_rebalance_status)
+- Weekly sector rebalancing (run_sector_rebalance)
+- Overweight sector split sell / underweight sector buy
 """
 from services.market.market_data_service import MarketDataService
 from services.market.macro_service import MacroService
@@ -16,9 +16,9 @@ logger = get_logger("sector_rebalancer_service")
 
 
 class SectorRebalancerService:
-    """섹터 비중 리밸런싱 서비스"""
+    """Sector weight rebalancing service."""
 
-    # ── 비중 현황 ─────────────────────────────────────────────────────────────
+    # ── Weight Status ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _build_market_rebalance(cls, holdings: list, exchange_rate: float, market: str) -> dict:
@@ -33,7 +33,7 @@ class SectorRebalancerService:
 
     @classmethod
     def get_sector_rebalance_status(cls, user_id: str = "sean") -> dict:
-        """섹터 비중 현황 및 리밸런싱 필요 종목 반환 (API용). KR/US 분리."""
+        """Return sector weight status and stocks needing rebalancing (for API). KR/US separated."""
         exchange_rate = MacroService.get_exchange_rate()
         holdings = PortfolioService.load_portfolio(user_id)
         return {
@@ -41,11 +41,11 @@ class SectorRebalancerService:
             "us": cls._build_market_rebalance(holdings, exchange_rate, "us"),
         }
 
-    # ── 초과 섹터 매도 ────────────────────────────────────────────────────────
+    # ── Overweight Sector Sell ────────────────────────────────────────────────────────
 
     @classmethod
     def _get_overweight_groups(cls, weights: dict, threshold: float) -> list:
-        """비중 초과 그룹 목록을 편차 내림차순으로 반환."""
+        """Return overweight group list sorted by deviation descending."""
         return sorted(
             [(grp, info) for grp, info in weights.items()
              if grp != "other" and info["dev"] > threshold],
@@ -58,7 +58,7 @@ class SectorRebalancerService:
         holdings: list, market_total: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
-        """초과 그룹 내 보유 종목 1건에 대해 매도 시도. Returns (executed, skipped_entry, cash_delta)."""
+        """Attempt to sell 1 holding in overweight group. Returns (executed, skipped_entry, cash_delta)."""
         ticker = h["ticker"]
         if not TradeExecutorService._check_market_hours(ticker):
             return False, {"ticker": ticker, "reason": "market_closed"}, 0.0
@@ -85,7 +85,7 @@ class SectorRebalancerService:
         kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
-        """STEP 1: 초과 섹터 보유 종목 분할 매도 → (sells_executed, sold_list, skipped_list, updated_cash)"""
+        """STEP 1: Split sell overweight sector holdings -> (sells_executed, sold_list, skipped_list, updated_cash)"""
         overweight_groups = cls._get_overweight_groups(weights, TradeExecutorService.SECTOR_REBAL_THRESHOLD)
         sold, skipped, sells_executed = [], [], 0
         for grp, info in overweight_groups:
@@ -111,14 +111,14 @@ class SectorRebalancerService:
                     break
         return sells_executed, sold, skipped, cash_balance
 
-    # ── 부족 섹터 매수 ────────────────────────────────────────────────────────
+    # ── Underweight Sector Buy ────────────────────────────────────────────────────────
 
     @classmethod
     def _score_underweight_buy_candidates(
         cls, grp: str, all_states: dict, holdings_map: dict, macro: dict, user_state: dict,
         kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float,
     ) -> list:
-        """주어진 섹터 그룹의 매수 후보 종목 리스트를 스코어 오름차순으로 반환."""
+        """Return buy candidate list for given sector group, sorted by score ascending."""
         from services.strategy.signal_service import SignalService
         candidates = []
         for ticker, state in all_states.items():
@@ -145,7 +145,7 @@ class SectorRebalancerService:
         holdings: list, kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
         user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
-        """부족 섹터 최우선 후보 1건에 대해 매수 시도. Returns (executed, skipped_list, bought_entry)."""
+        """Attempt to buy best candidate for underweight sector. Returns (executed, skipped_list, bought_entry)."""
         skipped = []
         for ticker, state, holding, score, reasons in candidates:
             if score > buy_threshold + 10:
@@ -169,7 +169,7 @@ class SectorRebalancerService:
         cash_balance: float, exchange_rate: float, user_id: str, macro: dict,
         target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
-        """STEP 2: 부족 섹터 후보 종목 매수 → (buys_executed, bought_list, skipped_list)"""
+        """STEP 2: Buy candidates for underweight sectors -> (buys_executed, bought_list, skipped_list)"""
         underweight_groups = sorted(
             [(grp, info) for grp, info in weights.items()
              if grp != "other" and info["dev"] < -TradeExecutorService.SECTOR_REBAL_THRESHOLD],
@@ -196,11 +196,11 @@ class SectorRebalancerService:
                 bought.append(bought_entry)
         return buys_executed, bought, skipped
 
-    # ── 요약 및 알림 ─────────────────────────────────────────────────────────
+    # ── Summary and Alerts ─────────────────────────────────────────────────────────
 
     @classmethod
     def _build_rebalance_summary(cls, sold: list, bought: list, weights_before: dict, weights_after: dict) -> str:
-        """섹터 리밸런싱 결과 Slack 요약 문자열 생성"""
+        """Generate sector rebalancing result Slack summary string."""
         summary = (
             f"🔄 *Weekly Sector Rebalancing Complete*\n"
             f"Sells: {len(sold)}  |  Buys: {len(bought)}\n"
@@ -218,14 +218,14 @@ class SectorRebalancerService:
 
     @classmethod
     def _notify_rebalance_slack(cls, summary: str) -> None:
-        """섹터 리밸런싱 완료 요약 메시지를 Slack으로 전송."""
+        """Send sector rebalancing completion summary to Slack."""
         try:
             from services.notification.alert_service import AlertService
             AlertService.send_slack_alert(summary)
         except Exception:
             pass
 
-    # ── 리밸런싱 실행 ─────────────────────────────────────────────────────────
+    # ── Rebalancing Execution ─────────────────────────────────────────────────────────
 
     @classmethod
     def _execute_rebalance_trades(
@@ -233,7 +233,7 @@ class SectorRebalancerService:
         exchange_rate: float, user_id: str, macro: dict,
         target_cash_kr: float, target_cash_us: float,
     ) -> dict:
-        """초과 매도 + 부족 매수를 수행하여 결과 dict(sold, bought, skipped) 반환."""
+        """Execute overweight sells + underweight buys and return result dict (sold, bought, skipped)."""
         result: dict = {"sold": [], "bought": [], "skipped": []}
         _, sold, skipped_s, cash_balance = cls._execute_overweight_sells(
             weights, holdings, kr_total, us_total_krw, cash_balance, exchange_rate,
@@ -251,11 +251,11 @@ class SectorRebalancerService:
 
     @classmethod
     def run_sector_rebalance(cls, user_id: str = "sean") -> dict:
-        """주 1회 섹터 그룹 비중 리밸런싱.
+        """Weekly sector group weight rebalancing.
 
-        편차 < 5% → 패스, 5~10% → 절반 리밸런싱, >10% → 전체 리밸런싱
-        초과 섹터 → 수익 높은 보유 종목 분할 매도
-        부족 섹터 → DCF 저평가 + RSI 낮은 후보 매수
+        Deviation < 5% -> skip, 5~10% -> half rebalancing, >10% -> full rebalancing
+        Overweight sector -> split sell most profitable holdings
+        Underweight sector -> buy DCF undervalued + low RSI candidates
         """
         logger.info("🔄 Weekly sector rebalancing started...")
         exchange_rate = MacroService.get_exchange_rate()

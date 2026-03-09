@@ -11,80 +11,81 @@ logger = get_logger("ticker_state")
 @dataclass
 class TickerState:
     ticker: str
-    name: str = ""                # 종목명 추가
+    name: str = ""                # Stock name
     current_price: float = 0.0
     open_price: float = 0.0
     high_price: float = 0.0
     low_price: float = 0.0
-    prev_close: float = 0.0  # 전일 종가
+    prev_close: float = 0.0  # Previous day close
     volume: int = 0
-    change_rate: float = 0.0 # 등락률 (%)
+    change_rate: float = 0.0 # Change rate (%)
     
-    # 지표들
+    # Indicators
     ema: Dict[int, float] = field(default_factory=dict) # {5: 1000, 20: 950, ...}
     rsi: float = 0.0             # RSI (14)
     bollinger: Dict[str, float] = field(default_factory=dict) # {upper, middle, lower}
-    dcf_value: float = 0.0       # 적정주가 (DCF)
+    dcf_value: float = 0.0       # Fair value (DCF)
     
-    # 전략 타겟가
-    target_buy_price: float = 0.0  # 목표 진입가
-    target_sell_price: float = 0.0 # 목표 매도가
+    # Strategy target prices
+    target_buy_price: float = 0.0  # Target entry price
+    target_sell_price: float = 0.0 # Target sell price
 
-    # 가격 최신화 시각
+    # Price last-updated timestamp
     last_updated: Optional[datetime] = None
-    
-    # 데이터 버퍼 (최근 N개의 종가, 실시간 EMA 계산용)
-    # 실제로는 일봉 데이터 로딩 후, 실시간 가격이 변할 때 '오늘의 종가(현재가)'로 가정하고 EMA를 재계산하는 방식이 일반적
-    # 또는 분봉 기준이라면 분봉 완성 시점에 확정. 여기서는 '일봉 기준 실시간 EMA'를 추정한다고 가정.
+
+    # Data buffer (recent N closing prices for real-time EMA calculation)
+    # In practice, after loading daily candle data, the current price is treated as today's close
+    # and EMA is recalculated. For minute candles, values are finalized at candle close.
+    # Here we estimate daily-basis real-time EMA.
     
     def __post_init__(self) -> None:
-        # field(default_factory=dict) 를 사용하므로 명시적 초기화 불필요
+        # Using field(default_factory=dict), so explicit initialization is unnecessary
         pass
 
     def update_from_socket(self, data_dict: dict) -> None:
         """
-        WebSocket 수신 데이터로 상태 업데이트
-        data_dict: KIS Websocket H0STCNT0 포맷 파싱 결과
+        Update state from WebSocket received data.
+        data_dict: Parsed result of KIS WebSocket H0STCNT0 format.
         """
         try:
-            # KIS 실시간 체결가 데이터 매핑
-            # H0STCNT0: 유가증권 단축 종목코드(0), 영업시간(1), 현재가(2), 전일대비구분(3), 전일대비(4), 전일대비율(5)... 시가(7), 고가(8), 저가(9)...
+            # KIS real-time execution data mapping
+            # H0STCNT0: stock code(0), time(1), current price(2), change sign(3), change(4), change rate(5)... open(7), high(8), low(9)...
+
+            # Parsing logic should be handled externally and passed as a clean dict
+            # e.g.: {'price': 70000, 'rate': 1.5, 'open': 69000, ...}
             
-            # 파싱 로직은 외부에서 처리해서 깔끔한 dict로 넘겨주는 게 좋음
-            # 예: {'price': 70000, 'rate': 1.5, 'open': 69000, ...}
+            new_price = float(data_dict.get('mksc_shrn_iscd', 0)) # Use parsed dict key, not raw position
+            # Note: WebSocket raw data parsing is performed at the Service level; only values are passed here
             
-            new_price = float(data_dict.get('mksc_shrn_iscd', 0)) # 실시간 체결가는 2번째가 아니라 파싱된 dict 키 사용
-            # 주의: WebSocket raw data 파싱은 Service 레벨에서 수행하고 여기엔 값만 전달
-            
-            self.current_price = float(data_dict.get('stck_prpr', self.current_price)) # 현재가
-            self.open_price = float(data_dict.get('stck_oprc', self.open_price))       # 시가
-            self.high_price = float(data_dict.get('stck_hgpr', self.high_price))       # 고가
-            self.low_price = float(data_dict.get('stck_lwpr', self.low_price))         # 저가
-            
-            # 전일 대비율
+            self.current_price = float(data_dict.get('stck_prpr', self.current_price)) # Current price
+            self.open_price = float(data_dict.get('stck_oprc', self.open_price))       # Open price
+            self.high_price = float(data_dict.get('stck_hgpr', self.high_price))       # High price
+            self.low_price = float(data_dict.get('stck_lwpr', self.low_price))         # Low price
+
+            # Day-over-day change rate
             self.change_rate = float(data_dict.get('rt_cd', 0.0)) 
             
-            # 거래량 (누적 거래량)
+            # Volume (cumulative)
             self.volume = int(data_dict.get('acml_vol', self.volume))
             
-            # 전일 종가는 보통 별도 조회 필요 (실시간 데이터에도 포함될 수 있으나 계산용으로 미리 세팅 권장)
+            # Previous close usually requires a separate lookup (may be in real-time data, but pre-setting recommended)
             
-            # 지표 실시간 업데이트
+            # Real-time indicator update
             self.recalculate_indicators()
             
         except Exception as e:
             logger.error(f"Error updating ticker state: {e}")
 
     def recalculate_indicators(self) -> None:
-        """현재가를 기준으로 실시간 지표(EMA 등) 재계산"""
+        """Recalculate real-time indicators (EMA, etc.) based on current price."""
         if not self.ema or self.current_price <= 0:
             return
             
-        # 일봉 기준 실시간 EMA 추정
+        # Daily-basis real-time EMA estimation
         # EMA_today = (Price_today * alpha) + (EMA_yesterday * (1 - alpha))
         for n, prev_ema_val in list(self.ema.items()):
             try:
-                # 키가 정수인 경우만 수행 (예: 5, 20, 100...)
+                # Only process integer keys (e.g.: 5, 20, 100...)
                 period = int(n)
                 alpha = 2 / (period + 1)
                 self.ema[period] = round((self.current_price * alpha) + (prev_ema_val * (1 - alpha)), 2)
@@ -92,12 +93,12 @@ class TickerState:
                 continue
             
     def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None) -> None:
-        """외부에서 계산된 지표 주입 (Warm-up 또는 정기 갱신)"""
+        """Inject externally calculated indicators (warm-up or periodic refresh)."""
         if emas:
-            # 모든 키를 정수로 변환하여 저장
+            # Convert all keys to int before storing
             processed_emas = {}
             for k, v in emas.items():
-                if v is None: continue # None 값 건너뛰기
+                if v is None: continue # Skip None values
                 try:
                     processed_emas[int(k)] = float(v)
                 except:
@@ -110,20 +111,20 @@ class TickerState:
 
     @property
     def is_undervalued(self) -> bool:
-        """DCF 대비 저평가 여부"""
+        """Whether undervalued relative to DCF fair value."""
         return self.current_price < self.dcf_value if self.dcf_value > 0 else False
 
     @property
     def is_ready(self) -> bool:
-        """매매 점수 계산을 위한 기초 데이터가 모두 준비되었는지 여부"""
-        # 1. 시세 데이터 체크
+        """Whether all base data required for trade score calculation is ready."""
+        # 1. Price data check
         if self.current_price <= 0: return False
         
-        # 2. 필수 기술적 지표 체크 (RSI 필수)
+        # 2. Required technical indicator check (RSI is mandatory)
         if self.rsi <= 0: return False
         
-        # 3. EMA 체크 (200일선이 없더라도 120선이나 60선이 있으면 분석 가능하다고 판단)
-        # KIS API 기본 반환 건수(100건) 제한으로 인해 EMA 200이 누락되는 상황 대응
+        # 3. EMA check (analysis possible with EMA120 or EMA60 even if EMA200 is missing)
+        # Handles cases where EMA200 is unavailable due to KIS API default limit (100 records)
         ema_val = self.ema.get(200) or self.ema.get(120) or self.ema.get(60)
         if not ema_val or ema_val <= 0: return False
         

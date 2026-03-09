@@ -3,7 +3,7 @@ from .stock_meta import Base
 
 class Settings(Base):
     """
-    시스템/전략 설정 모델
+    System/strategy settings model.
     """
     __tablename__ = 'settings'
 

@@ -5,12 +5,12 @@ from typing import List, Dict
 
 class FileService:
     """
-    파일 처리 서비스 (엑셀/CSV 파싱)
+    File processing service (Excel/CSV parsing)
     """
 
     @staticmethod
     def parse_portfolio_file(file_content: bytes, filename: str) -> List[Dict]:
-        """엑셀/CSV 파일을 파싱하여 표준 포트폴리오 포맷으로 변환"""
+        """Parse Excel/CSV file and convert to standard portfolio format."""
         try:
             if filename.endswith('.xlsx') or filename.endswith('.xls'):
                 df = pd.read_excel(io.BytesIO(file_content))
@@ -19,8 +19,8 @@ class FileService:
             else:
                 return []
                 
-            # 필수 컬럼 확인 (유연하게 처리)
-            # 예상 컬럼: 종목명(name), 종목코드(ticker), 수량(quantity), 매수단가(buy_price), 섹터(sector)
+            # Check required columns (flexible handling)
+            # Expected columns: name, ticker, quantity, buy_price, sector
             
             df.columns = [str(col).lower().strip().replace(" ", "_") for col in df.columns]
             

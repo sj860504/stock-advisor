@@ -6,7 +6,13 @@ from datetime import datetime, timedelta
 from config import Config
 from services.kis.kis_service import KisService
 from services.kis.fetch.kis_fetcher import KisFetcher
+from typing import Dict
 from utils.logger import get_logger
+from models.schemas import (
+    MarketRegimeSchema, MarketRegimeComponents, OtherDetailScores,
+    EconomicPhaseDetail, EconomicIndicatorEntry, EconomicIndicatorsSummary,
+    EconomicIndicatorsSnapshot, IndexQuote, CryptoQuote, CommodityQuote,
+)
 
 logger = get_logger("macro_service")
 
@@ -14,7 +20,7 @@ MACRO_CACHE_EXPIRY_SEC = 3600
 
 
 class MacroService:
-    """거시경제 지표 및 시장 국면 분석 (KIS/FRED 기반)."""
+    """Macroeconomic indicators and market regime analysis (KIS/FRED based)."""
     _cache: dict = {}
     _cache_expiry = MACRO_CACHE_EXPIRY_SEC
     _fred_base_url = "https://api.stlouisfed.org/fred/series/observations"
@@ -36,10 +42,10 @@ class MacroService:
         "initial_jobless_claims": "ICSA"
     }
 
-    # weight: 지표별 중요도 (합계 기준 정규화됨 — 절대값 불변)
-    # 핵심 인플레이션/고용(3): CPI, 실업률, 비농업고용
-    # 주요 선행/심리(2): PMI, 소비자신뢰, PPI, 소매판매, 내구재주문
-    # 보조(1): 나머지
+    # weight: importance per indicator (normalized by sum — absolute values fixed)
+    # Core inflation/employment (3): CPI, unemployment, NFP
+    # Major leading/sentiment (2): PMI, consumer confidence, PPI, retail sales, durable goods
+    # Auxiliary (1): rest
     MACRO_RULES = {
         "cpi":                   {"higher_is_good": False, "name": "CPI",                    "weight": 3},
         "unemployment_rate":     {"higher_is_good": False, "name": "Unemployment Rate",      "weight": 3},
@@ -93,37 +99,37 @@ class MacroService:
         }
 
         cls._cache['macro'] = (data, now)
-
-        # 오늘 날짜로 레짐 스냅샷 DB 저장 (이력 추적용)
-        # SPX fetch 실패 시 불완전 데이터 저장 방지
-        if market_regime.get("_fetch_failed"):
-            logger.warning("SPX fetch failed — skipping regime DB save")
-        else:
-            try:
-                from services.market.stock_meta_service import StockMetaService
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                StockMetaService.save_market_regime(
-                    today_str, market_regime, vix or 0, fear_greed or 50
-                )
-            except Exception as _e:
-                logger.warning(f"Regime DB save failed: {_e}")
-
+        cls._save_regime_snapshot(market_regime, vix, fear_greed)
         return data
+
+    @staticmethod
+    def _save_regime_snapshot(market_regime, vix, fear_greed):
+        """Save daily regime snapshot to DB for history tracking."""
+        if (getattr(market_regime, 'model_extra', None) or {}).get('_fetch_failed'):
+            logger.warning("SPX fetch failed — skipping regime DB save")
+            return
+        try:
+            from services.market.stock_meta_service import StockMetaService
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            regime_data = market_regime.model_dump() if hasattr(market_regime, 'model_dump') else market_regime
+            StockMetaService.save_market_regime(today_str, regime_data, vix or 0, fear_greed or 50)
+        except Exception as _e:
+            logger.warning(f"Regime DB save failed: {_e}")
 
     @classmethod
     def invalidate_cache(cls):
-        """경제지표 발표 후 macro 캐시를 강제 초기화 (다음 호출 시 전체 재계산)."""
+        """Force-clear macro cache after economic release (full recalculation on next call)."""
         cls._cache.pop('macro', None)
 
     @classmethod
     def refresh_on_release(cls, release_name: str, series_ids: list) -> dict:
-        """경제지표 발표 트리거 → 캐시 초기화 + 재계산 + DB 저장 + Slack 알림."""
+        """Economic release trigger: clear cache + recalculate + save to DB + Slack alert."""
         logger.info(f"Economic release detected: {release_name} — recalculating regime...")
         cls.invalidate_cache()
-        data = cls.get_macro_data()   # 캐시 없으므로 전체 재계산 & DB auto-save
-        regime = data.get("market_regime", {})
-        score  = regime.get("regime_score", "?")
-        status = regime.get("status", "?")
+        data = cls.get_macro_data()   # No cache, full recalculation & DB auto-save
+        regime = data.get("market_regime")
+        score  = regime.regime_score if regime else "?"
+        status = regime.status if regime else "?"
         vix    = data.get("vix", "?")
         fng    = data.get("fear_greed", "?")
         try:
@@ -140,16 +146,16 @@ class MacroService:
 
     @classmethod
     def get_exchange_rate(cls) -> float:
-        """KIS 등을 활용한 환율 정보 (임시 고정 또는 API 호출)"""
-        # KIS에서도 환율 정보를 제공하지만, 여기서는 단순화하여 1400 유지 또는 추후 확장
+        """Exchange rate via KIS (fixed value for now, extensible via API)."""
+        # KIS provides exchange rate data, but simplified to 1400 for now
         return 1400.0
 
-    # yfinance 폴백 심볼 (KIS IDX가 0을 반환할 때 사용)
+    # yfinance fallback symbols (used when KIS IDX returns 0)
     _YFINANCE_INDEX_MAP = {"S&P500": "^GSPC", "Dow": "^DJI", "Nasdaq100": "^NDX"}
 
     @classmethod
-    def _get_major_indices(cls) -> dict:
-        """KIS API를 통한 주요 지수 시세 (장 마감·미응답 시 yfinance 폴백)"""
+    def _get_major_indices(cls) -> Dict[str, IndexQuote]:
+        """Major index quotes via KIS API (yfinance fallback when market closed or no response)."""
         token = KisService.get_access_token()
         indices = {}
         mapping = [
@@ -164,51 +170,52 @@ class MacroService:
                     res = KisFetcher.fetch_domestic_price(token, symb)
                 else:
                     res = KisFetcher.fetch_overseas_price(token, symb, meta={"api_market_code": excd})
-                indices[name] = {
-                    "price": res.get("price", 0),
-                    "change": res.get("change_rate", 0),
-                }
+                indices[name] = IndexQuote(
+                    price=res.get("price", 0),
+                    change=res.get("change_rate", 0),
+                )
             except Exception:
-                indices[name] = {"price": 0, "change": 0}
+                indices[name] = IndexQuote()
 
-        # yfinance 폴백: KIS에서 0을 반환한 미국 지수만 보완
+        # yfinance fallback: supplement US indices that returned 0 from KIS
         try:
             import yfinance as yf
             for name, sym in cls._YFINANCE_INDEX_MAP.items():
-                if indices.get(name, {}).get("price", 0) == 0:
+                existing = indices.get(name)
+                if existing is None or existing.price == 0:
                     hist = yf.Ticker(sym).history(period="2d")
                     if len(hist) >= 2:
                         price = float(hist["Close"].iloc[-1])
                         prev  = float(hist["Close"].iloc[-2])
-                        indices[name] = {
-                            "price":  round(price, 2),
-                            "change": round((price / prev - 1) * 100, 2),
-                            "source": "yfinance",
-                        }
+                        indices[name] = IndexQuote(
+                            price=round(price, 2),
+                            change=round((price / prev - 1) * 100, 2),
+                            source="yfinance",
+                        )
         except Exception:
             pass
 
         return indices
 
     @classmethod
-    def _get_crypto_data(cls) -> dict:
-        """가상자산 시세 (yfinance BTC-USD)"""
-        result = {"BTC": {"price": 0, "change": 0}}
+    def _get_crypto_data(cls) -> Dict[str, CryptoQuote]:
+        """Crypto prices (yfinance BTC-USD)."""
+        result: Dict[str, CryptoQuote] = {"BTC": CryptoQuote()}
         try:
             import yfinance as yf
             hist = yf.Ticker("BTC-USD").history(period="2d")
             if len(hist) >= 2:
                 price = float(hist["Close"].iloc[-1])
                 prev = float(hist["Close"].iloc[-2])
-                result["BTC"] = {"price": round(price, 0), "change": round((price / prev - 1) * 100, 2)}
+                result["BTC"] = CryptoQuote(price=round(price, 0), change=round((price / prev - 1) * 100, 2))
         except Exception:
             pass
         return result
 
     @classmethod
-    def _get_commodity_data(cls) -> dict:
-        """원자재 시세 (yfinance GC=F, CL=F)"""
-        result = {"Gold": {"price": 0, "change": 0}, "Oil": {"price": 0, "change": 0}}
+    def _get_commodity_data(cls) -> Dict[str, CommodityQuote]:
+        """Commodity prices (yfinance GC=F, CL=F)."""
+        result: Dict[str, CommodityQuote] = {"Gold": CommodityQuote(), "Oil": CommodityQuote()}
         try:
             import yfinance as yf
             for name, symbol in [("Gold", "GC=F"), ("Oil", "CL=F")]:
@@ -216,14 +223,14 @@ class MacroService:
                 if len(hist) >= 2:
                     price = float(hist["Close"].iloc[-1])
                     prev = float(hist["Close"].iloc[-2])
-                    result[name] = {"price": round(price, 2), "change": round((price / prev - 1) * 100, 2)}
+                    result[name] = CommodityQuote(price=round(price, 2), change=round((price / prev - 1) * 100, 2))
         except Exception:
             pass
         return result
 
     @classmethod
     def _get_us_10y_yield(cls) -> float:
-        """미국 10년물 국채 금리 (yfinance ^TNX)"""
+        """US 10-year Treasury yield (yfinance ^TNX)."""
         try:
             import yfinance as yf
             data = yf.Ticker("^TNX").history(period="1d")
@@ -235,7 +242,7 @@ class MacroService:
 
     @classmethod
     def _get_vix(cls) -> float:
-        """VIX 공포 지수 (KIS → yfinance ^VIX 폴백)"""
+        """VIX fear index (KIS with yfinance ^VIX fallback)."""
         token = KisService.get_access_token()
         try:
             res = KisFetcher.fetch_overseas_price(token, "VIX", meta={"api_market_code": "IDX"})
@@ -254,16 +261,16 @@ class MacroService:
             pass
         return 20.0
 
-    # ── 점수 계산 헬퍼 (현재/과거 공용) ──────────────────────────────────────
+    # ── Score calculation helpers (shared for current/historical) ──────────────
 
     @staticmethod
     def _to_20(raw: int | float, max_val: int | float) -> int:
-        """±max_val 범위의 raw 점수를 0~20으로 정규화 (중립=10)."""
+        """Normalize raw score in ±max_val range to 0~20 (neutral=10)."""
         return max(0, min(20, round((raw + max_val) / (2 * max_val) * 20)))
 
     @classmethod
     def _calc_ema_raw(cls, close: pd.Series, current_price: float, ema_map: dict) -> int:
-        """EMA 배열 정렬 + 기울기 점수 합산."""
+        """EMA alignment + slope score summation."""
         price_weights = {5: 12, 20: 16, 60: 16, 120: 20, 200: 24}
         raw = sum(w if current_price >= ema_map[p] else -w for p, w in price_weights.items())
         ema5, ema20, ema60, ema120, ema200 = (ema_map[p] for p in [5, 20, 60, 120, 200])
@@ -279,7 +286,7 @@ class MacroService:
 
     @classmethod
     def _calc_momentum_raw(cls, close: pd.Series, ndx_1m_hist) -> tuple:
-        """SPX/NDX 1M·2W 모멘텀 + 52주 ATH 드로다운 점수 합산."""
+        """SPX/NDX 1M/2W momentum + 52-week ATH drawdown score summation."""
         raw = 0
         spx_1m_ret = ndx_1m_ret = spx_2w_ret = spx_from_ath = None
         if len(close) >= 21:
@@ -316,7 +323,7 @@ class MacroService:
 
     @classmethod
     def _calc_technical_20(cls, close: pd.Series, ndx_1m_hist=None) -> tuple:
-        """EMA 배열 + SPX/NDX/2주 모멘텀 + ATH드로다운 → (technical_20: 0~20, detail, ema_map)."""
+        """EMA alignment + SPX/NDX/2W momentum + ATH drawdown -> (technical_20: 0~20, detail, ema_map)."""
         current_price = float(close.iloc[-1])
         ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in [5, 20, 60, 120, 200]}
         ema_raw = cls._calc_ema_raw(close, current_price, ema_map)
@@ -328,65 +335,77 @@ class MacroService:
 
     @classmethod
     def _calc_vix_20(cls, vix: float, vix_1m_chg: float | None) -> int:
-        """VIX 레벨(±8) + 속도(±4) → 0~20."""
+        """VIX level (±8) + velocity (±4) -> 0~20."""
         vix_score = 0
-        if vix >= 30:    vix_score = -8
-        elif vix >= 25:  vix_score = -5
-        elif vix >= 22:  vix_score = -2
+        if vix >= 35:    vix_score = -8
+        elif vix >= 30:  vix_score = -5
+        elif vix >= 25:  vix_score = -3
+        elif vix >= 22:  vix_score = -1
         elif vix <= 13:  vix_score = +8
         elif vix <= 18:  vix_score = +4
 
         vix_speed = 0
         if vix_1m_chg is not None:
-            if vix_1m_chg > 30:    vix_speed = -4
-            elif vix_1m_chg > 15:  vix_speed = -2
-            elif vix_1m_chg < -25: vix_speed = +2
-            elif vix_1m_chg < -10: vix_speed = +1
+            if vix_1m_chg > 40:    vix_speed = -4
+            elif vix_1m_chg > 20:  vix_speed = -2
+            elif vix_1m_chg < -30: vix_speed = +2
+            elif vix_1m_chg < -15: vix_speed = +1
         return cls._to_20(max(-12, min(12, vix_score + vix_speed)), 12)
 
     @staticmethod
     def _calc_fng_20(fear_greed: int) -> int:
-        """Fear&Greed 6단계 → 0~20."""
+        """Fear&Greed 6-tier -> 0~20."""
         fng_score = 0
-        if fear_greed <= 20:    fng_score = -10
-        elif fear_greed <= 35:  fng_score = -6
-        elif fear_greed <= 45:  fng_score = -2
-        elif fear_greed >= 80:  fng_score = +10
-        elif fear_greed >= 65:  fng_score = +6
-        elif fear_greed >= 55:  fng_score = +2
+        if fear_greed <= 15:    fng_score = -10
+        elif fear_greed <= 25:  fng_score = -6
+        elif fear_greed <= 40:  fng_score = -3
+        elif fear_greed >= 85:  fng_score = +10
+        elif fear_greed >= 70:  fng_score = +6
+        elif fear_greed >= 55:  fng_score = +3
         return MacroService._to_20(fng_score, 10)
 
     @staticmethod
-    def _calc_econ_20(economic_indicators: dict) -> int:
-        """FRED 경제지표 가중 점수 합산 → 0~20."""
-        econ_summary = (economic_indicators or {}).get("summary", {})
-        econ_total   = float(econ_summary.get("total_score", 0) or 0)
-        econ_max_val = float(econ_summary.get("max_score", 0) or 0)
+    def _calc_econ_20(economic_indicators) -> int:
+        """FRED economic indicator weighted score -> 0~20."""
+        if economic_indicators is None:
+            econ_summary = EconomicIndicatorsSummary()
+        elif isinstance(economic_indicators, EconomicIndicatorsSnapshot):
+            econ_summary = economic_indicators.summary
+        else:
+            econ_summary = (economic_indicators or {}).get("summary", {})
+        econ_total   = float(getattr(econ_summary, 'total_score', 0) if isinstance(econ_summary, EconomicIndicatorsSummary) else econ_summary.get("total_score", 0) or 0)
+        econ_max_val = float(getattr(econ_summary, 'max_score', 0) if isinstance(econ_summary, EconomicIndicatorsSummary) else econ_summary.get("max_score", 0) or 0)
         econ_score   = int(round((econ_total / econ_max_val) * 10)) if econ_max_val > 0 else 0
         return MacroService._to_20(max(-10, min(10, econ_score)), 10)
 
-    # ── 5-Phase 경제 국면 판별 ────────────────────────────────────────────
+    # ── 5-Phase economic regime classification ────────────────────────────
 
     @staticmethod
     def _calc_inflation_pressure(oil_1m_ret: float | None, economic_indicators: dict | None) -> tuple:
-        """유가·CPI·PPI MoM 기반 인플레이션 압력 점수 (-10 ~ +10)."""
+        """Inflation pressure score based on oil/CPI/PPI MoM (-10 ~ +10)."""
         pressure = 0
         detail = {}
 
         # Oil 1M return
         if oil_1m_ret is not None:
             detail["oil_1m_ret"] = oil_1m_ret
-            if oil_1m_ret > 20:     pressure += 4
-            elif oil_1m_ret > 10:   pressure += 2
+            if oil_1m_ret > 20:     pressure += 2
+            elif oil_1m_ret > 10:   pressure += 1
             elif oil_1m_ret > 5:    pressure += 1
-            elif oil_1m_ret < -10:  pressure -= 2
+            elif oil_1m_ret < -15:  pressure -= 2
             elif oil_1m_ret < -5:   pressure -= 1
 
-        # CPI / PPI MoM (FRED indicators에서 추출)
-        indicators = (economic_indicators or {}).get("indicators", {})
+        # CPI / PPI MoM (extracted from FRED indicators)
+        if isinstance(economic_indicators, EconomicIndicatorsSnapshot):
+            indicators = economic_indicators.indicators
+        else:
+            indicators = (economic_indicators or {}).get("indicators", {})
         for key, weight in [("cpi", 3), ("ppi", 2)]:
-            ind = indicators.get(key, {})
-            latest, prev = ind.get("latest"), ind.get("previous")
+            ind = indicators.get(key)
+            if ind is None:
+                continue
+            latest = getattr(ind, 'latest', None) if isinstance(ind, EconomicIndicatorEntry) else ind.get("latest")
+            prev = getattr(ind, 'previous', None) if isinstance(ind, EconomicIndicatorEntry) else ind.get("previous")
             if latest and prev and prev > 0:
                 mom = round((latest - prev) / prev * 100, 3)
                 detail[f"{key}_mom"] = mom
@@ -399,7 +418,7 @@ class MacroService:
 
     @staticmethod
     def _calc_growth_signal(tech_detail: dict, vix: float, fear_greed: int, econ_20: int) -> tuple:
-        """SPX 모멘텀·VIX·F&G·경제지표 기반 성장 신호 (-10 ~ +10)."""
+        """Growth signal based on SPX momentum/VIX/F&G/economic indicators (-10 ~ +10)."""
         signal = 0
         detail = {}
 
@@ -413,48 +432,102 @@ class MacroService:
             elif spx_1m < -3:   signal -= 2
             elif spx_1m < -1:   signal -= 1
 
-        # VIX level
-        if vix >= 30:           signal -= 3
-        elif vix >= 25:         signal -= 2
+        # VIX level (halved — already scored in vix_20)
+        if vix >= 30:           signal -= 2
+        elif vix >= 25:         signal -= 1
         elif vix >= 20:         signal -= 1
-        elif vix <= 13:         signal += 3
+        elif vix <= 13:         signal += 2
         elif vix <= 18:         signal += 1
 
-        # Fear & Greed
-        if fear_greed <= 20:    signal -= 2
+        # Fear & Greed (halved — already scored in fng_20)
+        if fear_greed <= 20:    signal -= 1
         elif fear_greed <= 35:  signal -= 1
-        elif fear_greed >= 80:  signal += 2
+        elif fear_greed >= 80:  signal += 1
         elif fear_greed >= 65:  signal += 1
 
-        # FRED econ (10 = 중립)
+        # FRED econ (10 = neutral)
         signal += (econ_20 - 10)
 
         return max(-10, min(10, signal)), detail
 
     ECONOMIC_PHASES = {
-        "Stagflation":  {"modifier": -15, "label": "Stagflation"},
-        "Deflation":    {"modifier": -10, "label": "Deflation"},
-        "Inflation":    {"modifier":  -8, "label": "Inflation"},
-        "Reflation":    {"modifier":  +3, "label": "Reflation"},
-        "Goldilocks":   {"modifier": +10, "label": "Goldilocks"},
+        "Stagflation":  {"modifier":  -8, "label": "Stagflation"},
+        "Deflation":    {"modifier":  -5, "label": "Deflation"},
+        "Inflation":    {"modifier":  -3, "label": "Inflation"},
+        "Reflation":    {"modifier":  +2, "label": "Reflation"},
+        "Goldilocks":   {"modifier":  +5, "label": "Goldilocks"},
     }
 
     @classmethod
     def _determine_economic_phase(cls, inflation_pressure: int, growth_signal: int) -> tuple:
-        """인플레 압력 × 성장 신호 → (phase_name, modifier)."""
-        if inflation_pressure >= 3 and growth_signal <= -2:
+        """Inflation pressure x growth signal -> (phase_name, modifier)."""
+        if inflation_pressure >= 5 and growth_signal <= -4:
             phase = "Stagflation"
-        elif inflation_pressure >= 3 and growth_signal > -2:
+        elif inflation_pressure >= 3:
             phase = "Inflation"
-        elif inflation_pressure <= -3 and growth_signal <= -2:
+        elif inflation_pressure <= -3 and growth_signal <= -3:
             phase = "Deflation"
-        elif inflation_pressure <= 0 and growth_signal >= 2:
+        elif inflation_pressure <= 0 and growth_signal >= 3:
             phase = "Goldilocks"
         elif inflation_pressure > 0 and growth_signal >= 0:
             phase = "Reflation"
         else:
             return "Neutral", 0
         return phase, cls.ECONOMIC_PHASES[phase]["modifier"]
+
+    @staticmethod
+    def _score_yield(us_10y_yield: float) -> int:
+        if us_10y_yield <= 3.5: return 8
+        if us_10y_yield <= 4.0: return 4
+        if us_10y_yield <= 4.5: return 0
+        if us_10y_yield <= 5.0: return -4
+        return -8
+
+    @staticmethod
+    def _score_curve(yield_spread: float | None) -> int:
+        if yield_spread is None: return 0
+        if yield_spread > 1.0: return 6
+        if yield_spread > 0.3: return 3
+        if yield_spread < -1.0: return -6
+        if yield_spread < -0.3: return -3
+        return 0
+
+    @staticmethod
+    def _score_btc(btc_ret: float | None) -> int:
+        if btc_ret is None: return 0
+        if btc_ret > 20: return 3
+        if btc_ret > 10: return 1
+        if btc_ret < -25: return -3
+        if btc_ret < -12: return -1
+        return 0
+
+    @staticmethod
+    def _score_dxy(dxy_ret: float | None) -> int:
+        if dxy_ret is None: return 0
+        if dxy_ret > 3: return -4
+        if dxy_ret > 1: return -2
+        if dxy_ret < -3: return 4
+        if dxy_ret < -1: return 2
+        return 0
+
+    @staticmethod
+    def _score_gold(gold_ret: float | None) -> int:
+        if gold_ret is None: return 0
+        if gold_ret > 5: return -4
+        if gold_ret > 2: return -2
+        if gold_ret < -5: return 4
+        if gold_ret < -2: return 2
+        return 0
+
+    @staticmethod
+    def _score_oil(oil_ret: float | None) -> int:
+        if oil_ret is None: return 0
+        if oil_ret > 20: return -3
+        if oil_ret > 10: return -2
+        if oil_ret > 5: return -1
+        if oil_ret < -15: return 2
+        if oil_ret < -5: return 1
+        return 0
 
     @staticmethod
     def _calc_composite_20(
@@ -465,52 +538,15 @@ class MacroService:
         gold_ret: float | None,
         oil_ret: float | None = None,
     ) -> tuple:
-        """금리레벨(±8)+수익률곡선(±6)+DXY(±4)+BTC(±3)+Gold(±4)+Oil(±5) → (other_20: 0~20, score_detail)."""
-        yield_score = 0
-        if us_10y_yield <= 3.5:    yield_score = +8
-        elif us_10y_yield <= 4.0:  yield_score = +4
-        elif us_10y_yield <= 4.5:  yield_score = 0
-        elif us_10y_yield <= 5.0:  yield_score = -4
-        else:                       yield_score = -8
-
-        curve_score = 0
-        if yield_spread is not None:
-            if yield_spread > 1.0:    curve_score = +6
-            elif yield_spread > 0.3:  curve_score = +3
-            elif yield_spread < -1.0: curve_score = -6
-            elif yield_spread < -0.3: curve_score = -3
-
-        btc_score = 0
-        if btc_ret is not None:
-            if btc_ret > 20:    btc_score = +3
-            elif btc_ret > 10:  btc_score = +1
-            elif btc_ret < -25: btc_score = -3
-            elif btc_ret < -12: btc_score = -1
-
-        dxy_score = 0
-        if dxy_ret is not None:
-            if dxy_ret > 3:     dxy_score = -4
-            elif dxy_ret > 1:   dxy_score = -2
-            elif dxy_ret < -3:  dxy_score = +4
-            elif dxy_ret < -1:  dxy_score = +2
-
-        gold_score = 0
-        if gold_ret is not None:
-            if gold_ret > 5:    gold_score = -4
-            elif gold_ret > 2:  gold_score = -2
-            elif gold_ret < -5: gold_score = +4
-            elif gold_ret < -2: gold_score = +2
-
-        oil_score = 0
-        if oil_ret is not None:
-            if oil_ret > 20:     oil_score = -5
-            elif oil_ret > 10:   oil_score = -3
-            elif oil_ret > 5:    oil_score = -1
-            elif oil_ret < -15:  oil_score = +3
-            elif oil_ret < -5:   oil_score = +1
-
+        """Yield level(±8)+curve(±6)+DXY(±4)+BTC(±3)+Gold(±4)+Oil(±5) -> (other_20: 0~20, score_detail)."""
+        yield_score = MacroService._score_yield(us_10y_yield)
+        curve_score = MacroService._score_curve(yield_spread)
+        btc_score = MacroService._score_btc(btc_ret)
+        dxy_score = MacroService._score_dxy(dxy_ret)
+        gold_score = MacroService._score_gold(gold_ret)
+        oil_score = MacroService._score_oil(oil_ret)
         other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score + oil_score
-        other_20  = MacroService._to_20(other_raw, 31)
+        other_20 = MacroService._to_20(other_raw, 28)
         return other_20, {
             "yield_score": yield_score, "curve_score": curve_score,
             "dxy_score": dxy_score, "btc_score": btc_score,
@@ -519,7 +555,7 @@ class MacroService:
 
     @classmethod
     def _fetch_composite_assets(cls, us_10y_yield: float) -> tuple:
-        """수익률 곡선 스프레드 + BTC/DXY/Gold/Oil 1M 수익률 조회."""
+        """Fetch yield curve spread + BTC/DXY/Gold/Oil 1M returns."""
         yield_spread = None
         try:
             y2_val, _ = cls._get_fred_latest_pair("DGS2")
@@ -536,6 +572,8 @@ class MacroService:
                     h = yf.Ticker(sym).history(period="1mo")
                     if len(h) >= 5:
                         ret = round((float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100, 2)
+                        if key == "oil":
+                            ret = max(-25, min(25, ret))
                         if key == "btc":    btc_ret  = ret
                         elif key == "dxy":  dxy_ret  = ret
                         elif key == "gold": gold_ret = ret
@@ -548,7 +586,7 @@ class MacroService:
 
     @classmethod
     def _get_bear_threshold(cls) -> int:
-        """Bear 지속성에 따른 동적 임계값 (기본 40, 1개월 Bear→44, 2개월 Bear→48)."""
+        """Dynamic Bear threshold based on persistence (default 40, 1-month Bear->44, 2-month Bear->48)."""
         bear_threshold = 40
         try:
             from services.market.stock_meta_service import StockMetaService
@@ -566,13 +604,13 @@ class MacroService:
 
     @classmethod
     def _fetch_spx_and_ndx_history(cls) -> tuple:
-        """실시간 SPX 2년치 close + NDX 1개월 히스토리 조회."""
+        """Fetch real-time SPX 2-year close + NDX 1-month history."""
         import yfinance as yf
         close = None
         try:
             raw = yf.Ticker("^GSPC").history(period="2y")
             if not raw.empty and "Close" in raw.columns:
-                close = pd.to_numeric(raw["Close"], errors="coerce").dropna() or None
+                close = pd.to_numeric(raw["Close"], errors="coerce").dropna()
             if close is None or (hasattr(close, 'empty') and close.empty):
                 logger.warning("SPX 2y fetch failed — yfinance returned empty data")
         except Exception as e:
@@ -586,7 +624,7 @@ class MacroService:
 
     @classmethod
     def _fetch_vix_1m_change(cls, vix: float) -> float | None:
-        """VIX 1개월 변화율 조회."""
+        """Fetch VIX 1-month change rate."""
         try:
             import yfinance as yf
             vix_h = yf.Ticker("^VIX").history(period="1mo")
@@ -613,8 +651,8 @@ class MacroService:
         growth_signal: int = 0,
         inflation_detail: dict | None = None,
         oil_ret: float | None = None,
-    ) -> dict:
-        """컴포넌트 점수를 합산해 시장 국면 결과 dict를 반환합니다."""
+    ) -> MarketRegimeSchema:
+        """Aggregate component scores and return market regime result."""
         base_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
         regime_score = max(0, min(100, base_score + phase_modifier))
         if regime_score >= 65:
@@ -627,36 +665,36 @@ class MacroService:
         ema200 = ema_map[200]
         ma200  = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
         diff_pct = round((current_price - ma200) / ma200 * 100, 2) if ma200 else 0
-        return {
-            "status": status,
-            "current": round(current_price, 2),
-            "ma200": round(float(ma200 or 0), 2),
-            "diff_pct": float(diff_pct),
-            "regime_score": regime_score,
-            "bear_threshold": bear_threshold,
-            "economic_phase": economic_phase,
-            "phase_modifier": phase_modifier,
-            "ema": {f"ema{p}": round(v, 2) for p, v in ema_map.items()},
-            "components": {
-                "technical": technical_20, "technical_detail": tech_detail,
-                "vix": vix_20, "fear_greed": fng_20, "economic": econ_20, "other": other_20,
-                "other_detail": {
-                    "us_10y_yield": round(us_10y_yield, 3),
-                    "yield_spread_10y2y": yield_spread,
-                    "vix_1m_chg": vix_1m_chg,
-                    "btc_1m_ret": btc_ret, "dxy_1m_ret": dxy_ret,
-                    "gold_1m_ret": gold_ret, "oil_1m_ret": oil_ret,
+        return MarketRegimeSchema(
+            status=status,
+            current=round(current_price, 2),
+            ma200=round(float(ma200 or 0), 2),
+            diff_pct=float(diff_pct),
+            regime_score=regime_score,
+            bear_threshold=bear_threshold,
+            economic_phase=economic_phase,
+            phase_modifier=phase_modifier,
+            ema={f"ema{p}": round(v, 2) for p, v in ema_map.items()},
+            components=MarketRegimeComponents(
+                technical=technical_20, technical_detail=tech_detail,
+                vix=vix_20, fear_greed=fng_20, economic=econ_20, other=other_20,
+                other_detail=OtherDetailScores(
+                    us_10y_yield=round(us_10y_yield, 3),
+                    yield_spread_10y2y=yield_spread,
+                    vix_1m_chg=vix_1m_chg,
+                    btc_1m_ret=btc_ret, dxy_1m_ret=dxy_ret,
+                    gold_1m_ret=gold_ret, oil_1m_ret=oil_ret,
                     **other_scores,
-                },
-                "economic_phase_detail": {
-                    "phase": economic_phase,
-                    "modifier": phase_modifier,
-                    "inflation_pressure": inflation_pressure,
-                    "growth_signal": growth_signal,
+                ),
+                economic_phase_detail=EconomicPhaseDetail(
+                    phase=economic_phase,
+                    modifier=phase_modifier,
+                    inflation_pressure=inflation_pressure,
+                    growth_signal=growth_signal,
                     **(inflation_detail or {}),
-                },
-            },
-        }
+                ),
+            ),
+        )
 
     @classmethod
     def _get_market_regime(
@@ -665,12 +703,11 @@ class MacroService:
         fear_greed: int | None = None,
         economic_indicators: dict | None = None,
         us_10y_yield: float | None = None,
-    ) -> dict:
-        """시장 국면 판단 (Bull/Bear/Neutral) 및 100점 기준 점수 계산 (5-Phase 경제 국면 반영)."""
+    ) -> MarketRegimeSchema:
+        """Market regime classification (Bull/Bear/Neutral) with 100-point scoring (5-phase economic regime)."""
         close, ndx_1m_hist = cls._fetch_spx_and_ndx_history()
         if close is None or close.empty:
-            return {"status": "Unknown", "current": 0, "ma200": 0, "diff_pct": 0,
-                    "regime_score": -1, "_fetch_failed": True}
+            return MarketRegimeSchema(status="Unknown", regime_score=-1, _fetch_failed=True)
 
         technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
 
@@ -694,7 +731,7 @@ class MacroService:
             us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
         )
 
-        # 5-Phase 경제 국면 판별
+        # 5-Phase economic regime classification
         inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
         growth_signal, _growth_detail = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
         economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
@@ -722,7 +759,7 @@ class MacroService:
 
     @classmethod
     def _get_fear_greed_index(cls) -> int:
-        # CNN Fear & Greed 공개 엔드포인트 사용 (브라우저 헤더 필요)
+        # CNN Fear & Greed public endpoint (browser headers required)
         try:
             url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
             res = requests.get(url, timeout=8, headers=cls._CNN_HEADERS)
@@ -741,31 +778,29 @@ class MacroService:
 
     @classmethod
     def _get_sector_performance(cls) -> dict:
-        """섹터별 성과 (XLK, XLF 등)"""
-        return {} # 필요 시 KIS로 개별 ETF 조회하도록 확장 가능
+        """Sector performance (XLK, XLF, etc.)."""
+        return {}  # Extensible via individual ETF queries through KIS
 
     @classmethod
-    def _score_single_indicator(cls, key: str, series_id: str, latest, prev) -> dict:
-        """지표 하나의 점수·상태 dict를 반환합니다."""
+    def _score_single_indicator(cls, key: str, series_id: str, latest, prev) -> EconomicIndicatorEntry:
+        """Return score and status for a single indicator."""
         rule = cls.MACRO_RULES.get(key, {})
         name, weight = rule.get("name", key), float(rule.get("weight", 1))
         higher_is_good = bool(rule.get("higher_is_good", True))
         if latest is None or prev is None:
-            return {"name": name, "series_id": series_id, "weight": weight,
-                    "latest": None, "previous": None, "delta": None,
-                    "score": 0, "weighted_score": 0, "status": "no_data"}
+            return EconomicIndicatorEntry(name=name, series_id=series_id, weight=weight)
         delta = latest - prev
         raw = (1 if higher_is_good else -1) if delta > 0 else (-1 if higher_is_good else 1) if delta < 0 else 0
-        return {
-            "name": name, "series_id": series_id, "weight": weight,
-            "latest": round(float(latest), 4), "previous": round(float(prev), 4), "delta": round(float(delta), 4),
-            "score": raw, "weighted_score": raw * weight,
-            "status": "positive" if raw > 0 else "negative" if raw < 0 else "neutral",
-        }
+        return EconomicIndicatorEntry(
+            name=name, series_id=series_id, weight=weight,
+            latest=round(float(latest), 4), previous=round(float(prev), 4), delta=round(float(delta), 4),
+            score=raw, weighted_score=raw * weight,
+            status="positive" if raw > 0 else "negative" if raw < 0 else "neutral",
+        )
 
     @classmethod
-    def _get_economic_indicators(cls) -> dict:
-        """FRED 전체 14개 지표를 병렬 조회 후 가중치 기반 점수 산출."""
+    def _get_economic_indicators(cls) -> EconomicIndicatorsSnapshot:
+        """Fetch all 14 FRED indicators in parallel and compute weighted scores."""
         all_keys = list(cls.FRED_SERIES.keys())
 
         def _fetch(key):
@@ -787,28 +822,28 @@ class MacroService:
             series_id, latest, prev = fetch_results[key]
             ind = cls._score_single_indicator(key, series_id, latest, prev)
             indicators[key] = ind
-            if ind["status"] != "no_data":
-                total_weighted_score += ind["weighted_score"]
-                max_weighted_score += ind["weight"]
+            if ind.status != "no_data":
+                total_weighted_score += ind.weighted_score
+                max_weighted_score += ind.weight
 
         sentiment_ratio = round(total_weighted_score / max_weighted_score, 4) if max_weighted_score > 0 else 0
-        available = sum(1 for v in indicators.values() if v["status"] != "no_data")
-        return {
-            "indicators": indicators,
-            "summary": {
-                "total_weighted_score": round(total_weighted_score, 2),
-                "max_weighted_score":   round(max_weighted_score, 2),
-                "total_score":          round(total_weighted_score, 2),  # 하위호환
-                "max_score":            round(max_weighted_score, 2),    # 하위호환
-                "sentiment_ratio":      sentiment_ratio,
-                "available_count":      available,
-                "total_count":          len(all_keys),
-            },
-        }
+        available = sum(1 for v in indicators.values() if v.status != "no_data")
+        return EconomicIndicatorsSnapshot(
+            indicators=indicators,
+            summary=EconomicIndicatorsSummary(
+                total_weighted_score=round(total_weighted_score, 2),
+                max_weighted_score=round(max_weighted_score, 2),
+                total_score=round(total_weighted_score, 2),
+                max_score=round(max_weighted_score, 2),
+                sentiment_ratio=sentiment_ratio,
+                available_count=available,
+                total_count=len(all_keys),
+            ),
+        )
 
     @staticmethod
     def _fetch_historical_spx(start_2y: str, start_1m: str, end_date: str) -> tuple:
-        """과거 SPX 2년치 close + NDX 1개월 히스토리 조회."""
+        """Fetch historical SPX 2-year close + NDX 1-month history."""
         import yfinance as yf
         close = None
         try:
@@ -826,7 +861,7 @@ class MacroService:
 
     @staticmethod
     def _fetch_historical_vix(start_1m: str, end_date: str) -> tuple:
-        """과거 VIX + 1개월 변화율 조회."""
+        """Fetch historical VIX + 1-month change rate."""
         import yfinance as yf
         vix, vix_1m_chg = 20.0, None
         try:
@@ -843,7 +878,7 @@ class MacroService:
 
     @staticmethod
     def _fetch_historical_composite_returns(start_1m: str, end_date: str) -> tuple:
-        """과거 BTC/DXY/Gold/Oil 1개월 수익률 조회."""
+        """Fetch historical BTC/DXY/Gold/Oil 1-month returns."""
         import yfinance as yf
         btc_ret = dxy_ret = gold_ret = oil_ret = None
         try:
@@ -852,6 +887,8 @@ class MacroService:
                     h = yf.Ticker(sym).history(start=start_1m, end=end_date)
                     if len(h) >= 5:
                         ret = round((float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100, 2)
+                        if key == "oil":
+                            ret = max(-25, min(25, ret))
                         if key == "btc":    btc_ret  = ret
                         elif key == "dxy":  dxy_ret  = ret
                         elif key == "gold": gold_ret = ret
@@ -864,11 +901,11 @@ class MacroService:
 
     @classmethod
     def calculate_historical_regime(cls, date_str: str) -> dict:
-        """특정 날짜의 시장 국면을 역사적 데이터로 계산 후 DB 저장.
+        """Calculate market regime for a specific date using historical data, then save to DB.
 
-        - SPX / VIX / BTC / DXY / Gold: yfinance 과거 데이터 사용
-        - FRED 경제지표: 월별이므로 현재값과 동일하게 사용
-        - Fear&Greed: 오늘 기준 7일 이내면 현재값, 그 외 중립(50)으로 추정
+        - SPX / VIX / BTC / DXY / Gold: uses yfinance historical data
+        - FRED indicators: monthly, so current values are used
+        - Fear&Greed: current value if within 7 days, otherwise estimated as neutral (50)
         """
         from datetime import datetime, timedelta
         target_dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -922,7 +959,8 @@ class MacroService:
 
         try:
             from services.market.stock_meta_service import StockMetaService
-            StockMetaService.save_market_regime(date_str, regime_data, vix, fear_greed)
+            regime_dict = regime_data.model_dump() if hasattr(regime_data, 'model_dump') else regime_data
+            StockMetaService.save_market_regime(date_str, regime_dict, vix, fear_greed)
         except Exception:
             pass
 
@@ -931,7 +969,7 @@ class MacroService:
 
     @classmethod
     def _get_fred_latest_pair(cls, series_id: str | None) -> tuple[float | None, float | None]:
-        """FRED 시계열의 최신값과 직전값 반환"""
+        """Return latest and previous values from a FRED time series."""
         if not series_id:
             return None, None
         api_key = (Config.FRED_API_KEY or "").strip()

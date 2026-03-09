@@ -1,4 +1,4 @@
-"""종합 분석 서비스. 티커별 시세·기술·기본·매크로·뉴스를 통합해 리포트를 생성합니다."""
+"""Comprehensive analysis service. Integrates price, technical, fundamental, macro, and news data per ticker to generate reports."""
 from typing import Optional, Union
 
 from models.schemas import (
@@ -25,13 +25,13 @@ REPORT_NEWS_LIMIT = 2
 
 
 class AnalysisService:
-    """티커 종합 분석 및 리포트 생성."""
+    """Comprehensive ticker analysis and report generation."""
 
-    # ── 헬퍼 메서드 ────────────────────────────────────────────
+    # ── Helper Methods ────────────────────────────────────────────
 
     @classmethod
     def _fetch_price_data(cls, token: str, ticker: str) -> Optional[dict]:
-        """KIS API에서 현재가 및 기초 데이터 조회."""
+        """Fetch current price and basic data from KIS API."""
         if is_kr(ticker):
             return KisFetcher.fetch_domestic_price(token, ticker)
         return KisFetcher.fetch_overseas_price(token, ticker)
@@ -40,7 +40,7 @@ class AnalysisService:
     def _build_portfolio_summary(
         cls, ticker: str, current_price: float, user_id: str
     ) -> tuple:
-        """보유 여부·평단가·수익률 반환. (holding_dto, avg_cost, return_pct)"""
+        """Return holding status, avg cost, and return %. (holding_dto, avg_cost, return_pct)"""
         holdings = PortfolioService.load_portfolio_dtos(user_id)
         holding = next((h for h in holdings if h.ticker == ticker), None)
         avg_cost = holding.buy_price if holding else 0
@@ -52,7 +52,7 @@ class AnalysisService:
 
     @classmethod
     def _build_technical_context(cls, ticker: str) -> tuple:
-        """RSI·EMA·Bollinger 계산. 데이터 없으면 기본값 반환. (rsi, emas, bollinger)"""
+        """Calculate RSI/EMA/Bollinger. Returns defaults if no data. (rsi, emas, bollinger)"""
         hist = DataService.get_price_history(ticker, days=REPORT_HISTORY_DAYS)
         if hist.empty:
             return 50, {}, {}
@@ -65,7 +65,7 @@ class AnalysisService:
 
     @classmethod
     def _calculate_dcf_fair(cls, ticker: str, risk_free_rate: float) -> Union[float, str]:
-        """DCF 내재가치 계산. DB settings의 DCF 파라미터 사용. 불충분 시 'N/A' 반환."""
+        """Calculate DCF intrinsic value using DB settings DCF parameters. Returns 'N/A' if insufficient."""
         dcf_data = FinancialService.get_dcf_data(ticker)
         fcf = dcf_data.fcf_per_share if dcf_data else None
         if not dcf_data or not fcf or fcf <= 0:
@@ -99,7 +99,7 @@ class AnalysisService:
         user_id: str,
         macro_snapshot: dict,
     ) -> tuple:
-        """매매 점수 계산. 실패 시 (None, []) 반환."""
+        """Calculate trading score. Returns (None, []) on failure."""
         try:
             from services.strategy.trading_strategy_service import TradingStrategyService
             from services.market.market_data_service import MarketDataService
@@ -125,11 +125,48 @@ class AnalysisService:
         except Exception:
             return None, []
 
-    # ── 공개 메서드 ────────────────────────────────────────────
+    @staticmethod
+    def _build_report_object(
+        ticker, name, current_price, change_rate_pct, market_state,
+        holding, avg_cost, return_pct, rsi, emas, bollinger,
+        dcf_fair, upside_dcf, analyst_target, upside_analyst,
+        macro_snapshot, news_summary, score, score_reasons,
+    ) -> ComprehensiveReport:
+        """Assemble the final ComprehensiveReport from pre-computed values."""
+        return ComprehensiveReport(
+            ticker=ticker,
+            name=name,
+            price_info=PriceInfoSummary(
+                current=current_price,
+                change_pct=change_rate_pct,
+                state=market_state,
+            ),
+            portfolio=PortfolioSummaryInReport(
+                owned=bool(holding),
+                avg_cost=avg_cost,
+                return_pct=return_pct,
+            ),
+            technical=TechnicalSummaryInReport(rsi=rsi, emas=emas, bollinger=bollinger),
+            fundamental=FundamentalSummaryInReport(
+                dcf_fair=dcf_fair,
+                upside_dcf=upside_dcf,
+                analyst_target=analyst_target,
+                upside_analyst=upside_analyst,
+            ),
+            macro_context=MacroContextInReport(
+                regime=getattr(macro_snapshot.get("market_regime"), 'status', ''),
+                vix=macro_snapshot.get("vix"),
+            ),
+            news_summary=news_summary,
+            score=score,
+            score_reasons=score_reasons,
+        )
+
+    # ── Public Methods ────────────────────────────────────────────
 
     @classmethod
     def get_comprehensive_report(cls, ticker: str, user_id: str = "sean") -> Optional[ComprehensiveReport]:
-        """하나의 티커에 대한 시세·보유·기술·기본·매크로·뉴스를 통합해 리포트 모델을 반환합니다."""
+        """Integrate price, portfolio, technical, fundamental, macro, and news for a ticker into a report model."""
         try:
             token      = KisService.get_access_token()
             price_data = cls._fetch_price_data(token, ticker)
@@ -165,33 +202,15 @@ class AnalysisService:
                 rsi, emas, bollinger, dcf_fair, user_id, macro_snapshot,
             )
 
-            return ComprehensiveReport(
-                ticker=ticker,
-                name=price_data.get("name", ticker),
-                price_info=PriceInfoSummary(
-                    current=current_price,
-                    change_pct=change_rate_pct,
-                    state=market_state,
-                ),
-                portfolio=PortfolioSummaryInReport(
-                    owned=bool(holding),
-                    avg_cost=avg_cost,
-                    return_pct=return_pct,
-                ),
-                technical=TechnicalSummaryInReport(rsi=rsi, emas=emas, bollinger=bollinger),
-                fundamental=FundamentalSummaryInReport(
-                    dcf_fair=dcf_fair,
-                    upside_dcf=upside_dcf,
-                    analyst_target=analyst_target,
-                    upside_analyst=upside_analyst,
-                ),
-                macro_context=MacroContextInReport(
-                    regime=(macro_snapshot.get("market_regime") or {}).get("status", ""),
-                    vix=macro_snapshot.get("vix"),
-                ),
-                news_summary=news_summary,
-                score=score,
-                score_reasons=score_reasons,
+            return cls._build_report_object(
+                ticker=ticker, name=price_data.get("name", ticker),
+                current_price=current_price, change_rate_pct=change_rate_pct,
+                market_state=market_state, holding=holding, avg_cost=avg_cost,
+                return_pct=return_pct, rsi=rsi, emas=emas, bollinger=bollinger,
+                dcf_fair=dcf_fair, upside_dcf=upside_dcf,
+                analyst_target=analyst_target, upside_analyst=upside_analyst,
+                macro_snapshot=macro_snapshot, news_summary=news_summary,
+                score=score, score_reasons=score_reasons,
             )
         except Exception as e:
             print(f"Error generating comprehensive report for {ticker}: {e}")
@@ -201,7 +220,7 @@ class AnalysisService:
 
     @classmethod
     def get_formatted_report(cls, ticker: str) -> str:
-        """종합 리포트 데이터를 생성한 뒤 포맷된 문자열로 반환합니다."""
+        """Generate comprehensive report data and return as formatted string."""
         report = cls.get_comprehensive_report(ticker)
         if report is None:
             return "Error: Failed to generate report"

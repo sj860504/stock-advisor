@@ -7,12 +7,12 @@ logger = get_logger("settings_service")
 
 class SettingsService:
     """
-    시스템 설정 관리 서비스
+    System settings management service
     """
     _cache: dict = {}       # {key: (value, expire_time)}
-    _CACHE_TTL: int = 30    # 30초 TTL — 변경 후 최대 30초 내 반영
-    
-    # 기본 설정값 정의 (Config에서 가져옴)
+    _CACHE_TTL: int = 30    # 30s TTL — reflects changes within 30 seconds
+
+    # Default settings (loaded from Config)
     DEFAULT_SETTINGS = {
         "STRATEGY_TARGET_CASH_RATIO": (str(Config.STRATEGY_TARGET_CASH_RATIO), "Target cash ratio (0.0 ~ 1.0)"),
         "STRATEGY_PER_TRADE_RATIO": (str(Config.STRATEGY_PER_TRADE_RATIO), "Per-trade ratio (relative to total assets)"),
@@ -56,10 +56,10 @@ class SettingsService:
 
     @classmethod
     def init_defaults(cls):
-        """기본 설정값이 DB에 없으면 초기화"""
-        # 1. 없는 키만 삽입
+        """Initialize default settings if not present in DB."""
+        # 1. Insert only missing keys
         SettingsRepo.upsert_many(cls.DEFAULT_SETTINGS)
-        # 2. 특정 키 값 보정 (구버전 기본값 → 신버전 기본값)
+        # 2. Correct specific key values (old defaults -> new defaults)
         _corrections = {
             "STRATEGY_TAKE_PROFIT_PCT": ("5.0", "5", ""),
             "STRATEGY_STOP_LOSS_PCT": ("-10.0", "-10", ""),
@@ -68,12 +68,12 @@ class SettingsService:
             current = SettingsRepo.get(key)
             if current in old_values:
                 SettingsRepo.set(key, cls.DEFAULT_SETTINGS[key][0])
-        # 3. 틱매매는 재시작 시 항상 비활성화
+        # 3. Tick trading is always disabled on restart
         SettingsRepo.set("STRATEGY_TICK_ENABLED", "0")
 
     @classmethod
     def get_setting(cls, key: str, default=None):
-        """설정값 조회 (30초 TTL 인메모리 캐시)"""
+        """Get setting value (30s TTL in-memory cache)."""
         now = time.time()
         cached = cls._cache.get(key)
         if cached and cached[1] > now:
@@ -104,24 +104,24 @@ class SettingsService:
 
     @classmethod
     def set_setting(cls, key: str, value: str):
-        """설정값 변경"""
+        """Update setting value."""
         desc = cls.DEFAULT_SETTINGS.get(key, ("", ""))[1]
         result = SettingsRepo.set(key, str(value), desc)
-        cls._cache.pop(key, None)  # 변경 시 캐시 즉시 무효화
+        cls._cache.pop(key, None)  # Invalidate cache immediately on change
         if result:
             logger.info(f"⚙️ Setting updated: {key} = {value}")
         return result
 
     @classmethod
     def get_all_settings(cls) -> list:
-        """전체 설정 조회 → [{key, value, description}, ...] 리스트 반환."""
+        """Get all settings -> [{key, value, description}, ...] list."""
         cls.init_defaults()
         raw = SettingsRepo.get_all()
         return [{"key": k, **v} for k, v in raw.items()]
 
     @classmethod
     def get_tick_settings(cls) -> dict:
-        """틱매매 설정 조회."""
+        """Get tick trading settings."""
         return {
             "enabled": cls.get_int("STRATEGY_TICK_ENABLED", 0) == 1,
             "ticker": cls.get_setting("STRATEGY_TICK_TICKER", "005930"),
@@ -135,6 +135,6 @@ class SettingsService:
 
     @classmethod
     def update_tick_settings(cls, updates: dict) -> None:
-        """틱매매 설정을 일괄 변경합니다."""
+        """Batch update tick trading settings."""
         for key, value in updates.items():
             cls.set_setting(key, value)

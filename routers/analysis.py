@@ -19,7 +19,7 @@ router = APIRouter(
 
 
 def resolve_ticker_or_404(ticker_input: str) -> str:
-    """티커 입력값을 실제 티커로 변환하고, 없으면 404를 반환합니다."""
+    """Resolve ticker input to actual ticker, returning 404 if not found."""
     resolved = TickerService.resolve_ticker(ticker_input)
     if not resolved:
         raise HTTPException(status_code=404, detail=f"Could not find ticker for: {ticker_input}")
@@ -28,7 +28,7 @@ def resolve_ticker_or_404(ticker_input: str) -> str:
 
 @router.get("/valuation/{ticker_input}", response_model=ComprehensiveReport)
 def get_valuation(ticker_input: str) -> ComprehensiveReport:
-    """해당 종목(한글명 또는 티커)의 종합 분석 리포트를 반환합니다."""
+    """Return comprehensive analysis report for the given ticker (name or ticker code)."""
     real_ticker = resolve_ticker_or_404(ticker_input)
     result = AnalysisService.get_comprehensive_report(real_ticker)
     if not result:
@@ -38,7 +38,7 @@ def get_valuation(ticker_input: str) -> ComprehensiveReport:
 
 @router.get("/returns/{ticker_input}", response_model=ReturnAnalysis)
 def get_returns(ticker_input: str) -> ReturnAnalysis:
-    """2024-01-01부터 현재까지 수익률과 MDD(최대 낙폭)을 분석합니다."""
+    """Analyze returns and MDD (max drawdown) from 2024-01-01 to present."""
     real_ticker = resolve_ticker_or_404(ticker_input)
     result = AnalysisService.analyze_returns(real_ticker)
     if not result:
@@ -48,7 +48,7 @@ def get_returns(ticker_input: str) -> ReturnAnalysis:
 
 @router.get("/metrics/{ticker_input}", response_model=FinancialMetricsResponse)
 def get_financial_metrics(ticker_input: str) -> FinancialMetricsResponse:
-    """종목 핵심 재무 지표(PER, PBR, ROE, 배당수익률 등) 조회."""
+    """Get key financial metrics (PER, PBR, ROE, dividend yield, etc.)."""
     real_ticker = resolve_ticker_or_404(ticker_input)
     metrics = FinancialService.get_metrics(real_ticker)
     return FinancialMetricsResponse(
@@ -60,10 +60,10 @@ def get_financial_metrics(ticker_input: str) -> FinancialMetricsResponse:
 @router.get("/dcf", response_model=DcfListResponse)
 def get_all_dcf(market_type: Optional[str] = None, has_value: bool = False) -> DcfListResponse:
     """
-    전 종목 최신 DCF 적정가 목록 반환.
-    - market_type: 'KR' 또는 'US' 필터 (미입력 시 전체)
-    - has_value: true 이면 dcf_value > 0 인 종목만 반환
-    upside_pct 기준 내림차순 정렬 (저평가 종목 우선).
+    Return latest DCF fair value list for all tickers.
+    - market_type: 'KR' or 'US' filter (all if unspecified)
+    - has_value: if true, return only tickers with dcf_value > 0
+    Sorted by upside_pct descending (undervalued tickers first).
     """
     return DcfService.get_filtered_list(market_type=market_type, has_value=has_value)
 
@@ -71,8 +71,8 @@ def get_all_dcf(market_type: Optional[str] = None, has_value: bool = False) -> D
 @router.get("/dcf/{ticker_input}", response_model=DcfDetailResponse)
 def get_dcf(ticker_input: str) -> DcfDetailResponse:
     """
-    종목의 현재 DCF 적정가 조회.
-    오버라이드 설정 → yfinance FCF → EPS*PER 폴백 순으로 자동 선택.
+    Get current DCF fair value for a ticker.
+    Auto-selects: override -> yfinance FCF -> EPS*PER fallback.
     """
     real_ticker = resolve_ticker_or_404(ticker_input)
     dcf_input = FinancialService.get_dcf_data(real_ticker)
@@ -95,7 +95,7 @@ def get_custom_dcf(
     discount_rate: Optional[float] = None,
     terminal_growth: Optional[float] = 0.03,
 ) -> CustomDcfResponse:
-    """사용자 지정 파라미터로 DCF 적정가 계산."""
+    """Calculate DCF fair value with custom parameters."""
     try:
         data = DcfService.calculate_custom_dcf(ticker, growth_rate, discount_rate, terminal_growth)
     except ValueError as e:
@@ -115,9 +115,9 @@ def get_custom_dcf(
 
 @router.put("/dcf-override", response_model=DcfOverrideResponse)
 def update_dcf_override(payload: DcfOverrideRequest) -> DcfOverrideResponse:
-    """종목별 DCF 오버라이드 저장.
-    - fair_value 만 지정하면 해당 값을 적정가로 직접 사용.
-    - fcf_per_share + beta + growth_rate 조합으로 2단계 DCF 계산도 가능.
+    """Save per-ticker DCF override.
+    - Specify fair_value only to use that value directly as fair price.
+    - Combination of fcf_per_share + beta + growth_rate enables 2-stage DCF calculation.
     """
     real_ticker = resolve_ticker_or_404(payload.ticker)
     override = DcfService.save_override(
@@ -140,12 +140,12 @@ def update_dcf_override(payload: DcfOverrideRequest) -> DcfOverrideResponse:
 
 @router.put("/strategy/weights", response_model=StrategyWeightsResponse)
 def update_strategy_weights(payload: StrategyWeightOverrideRequest) -> StrategyWeightsResponse:
-    """종목별 점수 가중치 오버라이드를 설정합니다."""
+    """Set per-ticker score weight overrides."""
     overrides = TradingStrategyService.set_top_weight_overrides(payload.weights)
     return StrategyWeightsResponse(overrides=overrides)
 
 
 @router.get("/sector-weights", response_model=Dict[str, Any])
 def get_sector_weights(user_id: str = "sean") -> Dict[str, Any]:
-    """섹터 그룹(기술주/가치주/금융주) 현재 비중 및 목표 대비 리밸런싱 현황."""
+    """Sector group (tech/value/financial) current allocation and rebalancing status vs targets."""
     return TradingStrategyService.get_sector_rebalance_status(user_id=user_id)

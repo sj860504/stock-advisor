@@ -1,4 +1,4 @@
-"""포트폴리오 관리 서비스 (DB + KIS 동기화)."""
+"""Portfolio management service (DB + KIS sync)."""
 import json
 import os
 from datetime import datetime
@@ -23,12 +23,12 @@ DEFAULT_EXCHANGE_RATE = 1350.0
 
 
 class PortfolioService:
-    """포트폴리오 및 보유 종목 관리 (DB 저장, KIS 잔고 동기화)."""
+    """Portfolio and holdings management (DB persistence, KIS balance sync)."""
     _last_balance_summary: dict = {}
 
     @staticmethod
     def _extract_float(data: dict, *keys) -> float:
-        """딕셔너리에서 첫 번째 유효한 float 값을 반환합니다. 음수 허용, "0" 문자열 truthy 버그 방지."""
+        """Return the first valid float from dict keys. Allows negatives; avoids "0" string truthy bug."""
         for key in keys:
             val = data.get(key)
             if val is not None and val != "":
@@ -40,7 +40,7 @@ class PortfolioService:
 
     @classmethod
     def _extract_holding_fields(cls, h) -> tuple:
-        """HoldingSchema 또는 dict에서 공통 필드를 추출합니다."""
+        """Extract common fields from HoldingSchema or dict."""
         if isinstance(h, dict):
             return (
                 h.get("ticker", ""),
@@ -66,7 +66,7 @@ class PortfolioService:
         holdings,
         cash_balance: Optional[float] = None,
     ) -> bool:
-        """포트폴리오 및 보유 종목 정보를 DB에 저장합니다. HoldingSchema 또는 dict 모두 허용합니다."""
+        """Save portfolio and holdings to DB. Accepts both HoldingSchema and dict."""
         holding_dicts = []
         for h in holdings:
             ticker, name, quantity, buy_price, current_price, sector = cls._extract_holding_fields(h)
@@ -78,24 +78,24 @@ class PortfolioService:
 
     @classmethod
     def load_portfolio(cls, user_id: str) -> List[dict]:
-        """DB에서 포트폴리오 보유 종목을 조회해 dict 리스트로 반환합니다."""
+        """Load portfolio holdings from DB and return as list of dicts."""
         return PortfolioRepo.load_holdings(user_id)
 
     @classmethod
     def load_portfolio_dtos(cls, user_id: str) -> List[PortfolioHoldingDto]:
-        """DB에서 포트폴리오 보유 종목을 조회해 DTO 리스트로 반환합니다."""
+        """Load portfolio holdings from DB and return as list of DTOs."""
         return [PortfolioHoldingDto(**h) for h in cls.load_portfolio(user_id)]
 
     @classmethod
     def load_cash(cls, user_id: str) -> float:
-        """DB에서 현금 잔고 조회"""
+        """Load cash balance from DB."""
         return PortfolioRepo.load_cash(user_id)
 
     @classmethod
     def _parse_balance_holdings(
         cls, balance_data: dict, existing_sector_map: dict
     ) -> tuple[List[HoldingSchema], Dict[str, HoldingSchema]]:
-        """KIS 잔고 데이터에서 KR 보유 목록과 US 보유 dict를 파싱합니다."""
+        """Parse KIS balance data into KR holdings list and US holdings dict."""
         holdings: List[HoldingSchema] = []
         us_by_ticker: Dict[str, HoldingSchema] = {}
         for item in balance_data.get("holdings", []):
@@ -123,7 +123,7 @@ class PortfolioService:
     def _apply_overseas_balance_override(
         cls, overseas_balance: dict, us_by_ticker: Dict[str, HoldingSchema], existing_sector_map: dict
     ) -> None:
-        """해외 잔고 조회 결과로 US 보유를 최신값으로 덮어씁니다."""
+        """Override US holdings with latest overseas balance data."""
         if not overseas_balance or not overseas_balance.get("holdings"):
             return
         for item in overseas_balance["holdings"]:
@@ -148,7 +148,7 @@ class PortfolioService:
 
     @classmethod
     def _extract_kr_cash_from_summary(cls, balance_data: dict) -> tuple[dict, float]:
-        """balance_data에서 최적 summary 항목과 KR 현금을 반환합니다."""
+        """Return the best summary item and KR cash from balance_data."""
         summary_items = balance_data.get("summary", [])
         if len(summary_items) > 1:
             summary = max(
@@ -157,15 +157,15 @@ class PortfolioService:
             )
         else:
             summary = summary_items[0] if summary_items else {}
-        # prvs_rcdl_excc_amt=D+2 매도대금 포함 실제 주문가능금액
-        # dnca_tot_amt=당일 예수금 (D+2 미정산 매도금 미반영으로 과소 계상될 수 있음)
+        # prvs_rcdl_excc_amt = actual orderable amount including D+2 settled sell proceeds
+        # dnca_tot_amt = daily deposit (may understate as unsettled D+2 sell proceeds are excluded)
         prvs = cls._extract_float(summary, "prvs_rcdl_excc_amt")
         dnca = cls._extract_float(summary, "dnca_tot_amt")
         return summary, max(0.0, prvs if prvs > 0 else dnca)
 
     @classmethod
     def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
-        """KIS 실제 잔고와 동기화 (DB 업데이트 포함)"""
+        """Sync with actual KIS balance (includes DB update)."""
         logger.info(f"🔄 Syncing portfolio with KIS for user: {user_id}")
         balance_data = KisService.get_balance()
         if not balance_data:
@@ -189,7 +189,7 @@ class PortfolioService:
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
 
-        # 인-메모리 state 가격 동기화 (VTS WebSocket이 해외 실시간 미지원 대응)
+        # In-memory state price sync (compensates for VTS WebSocket not supporting overseas real-time)
         from services.market.market_data_service import MarketDataService
         for h in holdings:
             price = float(h.current_price or 0)
@@ -204,7 +204,7 @@ class PortfolioService:
 
     @classmethod
     def get_usd_cash_balance(cls) -> float:
-        """미국 외화 현금(USD) 조회: KIS 매수가능금액 API 또는 설정값"""
+        """Query US foreign cash (USD): KIS available buy amount API or settings value."""
         available_usd = KisService.get_overseas_available_cash()
         if available_usd is not None and available_usd > 0:
             return available_usd
@@ -213,7 +213,7 @@ class PortfolioService:
 
     @staticmethod
     def _calc_kr_holding_results(kr_holdings: List[dict]) -> tuple:
-        """KR 보유 종목 투자금/현재가치/결과 리스트를 계산합니다."""
+        """Calculate KR holdings invested amount, current value, and result list."""
         invested = current = 0.0
         results = []
         for h in kr_holdings:
@@ -226,7 +226,7 @@ class PortfolioService:
 
     @staticmethod
     def _calc_us_holding_results(us_holdings: List[dict], exchange_rate: float) -> tuple:
-        """US 보유 종목 투자금/현재가치/결과 리스트를 계산합니다."""
+        """Calculate US holdings invested amount, current value, and result list."""
         invested_usd = current_usd = 0.0
         results = []
         for h in us_holdings:
@@ -245,7 +245,7 @@ class PortfolioService:
 
     @classmethod
     def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
-        """포트폴리오 수익률 분석 (한국/미국 분리)"""
+        """Portfolio return analysis (KR/US separated)."""
         from services.market.macro_service import MacroService
         holdings     = cls.load_portfolio(user_id)
         cash         = cls.load_cash(user_id)
@@ -294,7 +294,7 @@ class PortfolioService:
 
     @classmethod
     def calculate_balances(cls, holdings: List[dict], cash: float, usd_cash: float = 0.0, exchange_rate: float = 1350.0) -> dict:
-        """한국/미국 자산을 분리해서 계산"""
+        """Calculate KR/US assets separately."""
         from services.market.macro_service import MacroService
         
         if exchange_rate <= 0:
@@ -346,7 +346,7 @@ class PortfolioService:
 
     @classmethod
     def build_holding_report_row(cls, holding: dict, cached: dict) -> dict:
-        """보유 종목 한 건의 분석 리포트 row를 생성합니다."""
+        """Build a single holding's analysis report row."""
         price = cached.get("price") or holding.get("buy_price")
         buy_price = holding.get("buy_price") or 0
         profit_pct = ((price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
@@ -386,7 +386,7 @@ class PortfolioService:
 
     @classmethod
     def apply_buy(cls, holdings: list, ticker: str, quantity: float, price: float) -> list:
-        """매수: 기존 보유 시 평단가 계산, 없으면 신규 추가."""
+        """Buy: calculate average cost if already held, otherwise add new."""
         target = next((h for h in holdings if h.get("ticker") == ticker), None)
         if target:
             total_qty = target["quantity"] + quantity
@@ -403,7 +403,7 @@ class PortfolioService:
 
     @classmethod
     def apply_sell(cls, holdings: list, ticker: str, quantity: float) -> list:
-        """매도: 수량 차감 후 0 이하이면 목록에서 제거. 잔고 부족 시 ValueError."""
+        """Sell: deduct quantity, remove from list if zero or below. Raises ValueError if insufficient holdings."""
         target = next((h for h in holdings if h.get("ticker") == ticker), None)
         if not target:
             raise ValueError("Ticker not found in holdings.")
@@ -418,7 +418,7 @@ class PortfolioService:
     def apply_trade_action(
         cls, holdings: list, ticker: str, action: str, quantity: float, price: float
     ) -> list:
-        """매수/매도 액션을 검증하고 실행합니다. 잘못된 action이면 ValueError."""
+        """Validate and execute buy/sell action. Raises ValueError for invalid action."""
         if action.lower() == "buy":
             return cls.apply_buy(holdings, ticker, quantity, price)
         elif action.lower() == "sell":
@@ -427,7 +427,7 @@ class PortfolioService:
 
     @classmethod
     def build_full_report(cls, user_id: str, price_cache: dict) -> list:
-        """보유 종목 전체 상세 분석 데이터 반환 (수익률 내림차순)."""
+        """Return detailed analysis data for all holdings (sorted by return descending)."""
         holdings = cls.load_portfolio(user_id)
         report = [
             cls.build_holding_report_row(h, price_cache.get(h.get("ticker"), {}))
@@ -440,7 +440,7 @@ class PortfolioService:
     def add_holding_manual(
         cls, user_id: str, ticker: str, quantity: float, buy_price: float, name: Optional[str] = None
     ) -> list:
-        """수동으로 보유 종목을 추가합니다 (평단가 계산 포함)."""
+        """Manually add a holding (includes average cost calculation)."""
         holdings = cls.load_portfolio(user_id)
         holdings = cls.apply_buy(holdings, ticker, quantity, buy_price)
         if name:
@@ -452,7 +452,7 @@ class PortfolioService:
 
     @classmethod
     def update_holding_sector(cls, user_id: str, ticker: str, sector: str) -> list:
-        """보유 종목의 섹터를 수동으로 업데이트합니다."""
+        """Manually update a holding's sector."""
         holdings = cls.load_portfolio(user_id)
         target = next((h for h in holdings if h.get("ticker") == ticker), None)
         if not target:
@@ -463,10 +463,10 @@ class PortfolioService:
 
     @classmethod
     def rebalance_portfolio(cls, user_id: str = "sean"):
-        # 기존 로직과 동일하되 sync_with_kis가 DB를 업데이트하므로 이를 활용
+        # Same logic as before; leverages sync_with_kis which updates DB
         return cls._rebalance_logic(user_id)
 
     @classmethod
     def _rebalance_logic(cls, user_id: str):
-        # (기존 rebalance_portfolio 내부 로직 추출 및 유지)
-        pass # 실제 구현 시 위 analyze 및 sync 결과 바탕으로 수행
+        # (Extracted and preserved internal rebalance_portfolio logic)
+        pass # Actual implementation based on analyze and sync results above

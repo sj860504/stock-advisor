@@ -1,4 +1,4 @@
-"""포트폴리오 및 보유 종목 Repository."""
+"""Portfolio and holdings repository."""
 from models.portfolio import Portfolio, PortfolioHolding
 from repositories.database import get_session, session_scope, session_ro
 from utils.logger import get_logger
@@ -7,18 +7,18 @@ logger = get_logger("portfolio_repo")
 
 
 class PortfolioRepo:
-    """Portfolio / PortfolioHolding 테이블 CRUD."""
+    """Portfolio / PortfolioHolding table CRUD."""
 
     @classmethod
     def save(cls, user_id: str, holding_dicts: list, cash_balance: float = None) -> bool:
-        """포트폴리오 전체 저장 (기존 holdings 삭제 후 재삽입)."""
+        """Save entire portfolio (delete existing holdings then re-insert)."""
         try:
             with session_scope() as session:
                 portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
                 if not portfolio:
                     portfolio = Portfolio(user_id=user_id)
                     session.add(portfolio)
-                    session.flush()  # portfolio.id 확보
+                    session.flush()  # ensure portfolio.id is assigned
 
                 if cash_balance is not None:
                     portfolio.cash_balance = cash_balance
@@ -41,7 +41,7 @@ class PortfolioRepo:
 
     @classmethod
     def load_holdings(cls, user_id: str) -> list:
-        """보유 종목 dict 리스트 반환."""
+        """Return list of holding dicts."""
         with session_ro() as session:
             portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
             if not portfolio:
@@ -60,7 +60,7 @@ class PortfolioRepo:
 
     @classmethod
     def load_cash(cls, user_id: str) -> float:
-        """현금 잔고 조회."""
+        """Fetch cash balance."""
         with session_ro() as session:
             portfolio = session.query(Portfolio).filter_by(user_id=user_id).first()
             return portfolio.cash_balance if portfolio else 0.0

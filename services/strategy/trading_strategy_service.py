@@ -22,18 +22,18 @@ from utils.market import is_kr, filter_kr, filter_us
 
 logger = get_logger("strategy_service")
 
-# 캐시 TTL (초)
+# Cache TTL (seconds)
 TOP10_CACHE_TTL_SEC = 6 * 60 * 60
 
 
 class TradingStrategyService:
     """
-    사용자의 투자 전략에 따른 매매 시그널 판단 및 실행 서비스
-    (오케스트레이터 - 실제 로직은 하위 서비스로 위임)
+    Trading signal evaluation and execution service based on user investment strategy.
+    (Orchestrator - delegates actual logic to sub-services)
     """
     _enabled = False
 
-    # ── 활성화 상태 관리 ─────────────────────────────────────────────────────
+    # ── Enabled State Management ─────────────────────────────────────────────────────
 
     @classmethod
     def set_enabled(cls, enabled: bool) -> None:
@@ -50,7 +50,7 @@ class TradingStrategyService:
 
     @classmethod
     def _restore_enabled_state(cls) -> None:
-        """앱 시작 시 저장된 enabled 상태를 복원합니다. JSON → DB 1회 마이그레이션 포함."""
+        """Restore saved enabled state on app startup. Includes one-time JSON -> DB migration."""
         cls._migrate_json_to_db()
         try:
             persisted = SettingsService.get_setting("STRATEGY_ENABLED", None)
@@ -64,7 +64,7 @@ class TradingStrategyService:
 
     @classmethod
     def _migrate_json_to_db(cls) -> None:
-        """strategy_state.json → DB 1회 마이그레이션. JSON 파일이 없으면 스킵."""
+        """One-time strategy_state.json -> DB migration. Skipped if JSON file doesn't exist."""
         import os
         json_path = os.path.join(os.path.dirname(__file__), "..", "data", "strategy_state.json")
         if not os.path.exists(json_path):
@@ -95,60 +95,60 @@ class TradingStrategyService:
         except Exception as e:
             logger.warning(f"strategy_state JSON migration failed: {e}")
 
-    # ── 상태 저장/로드 ────────────────────────────────────────────────────────
+    # ── State Save/Load ────────────────────────────────────────────────────────
 
     @classmethod
     def _load_state(cls, user_id: str = "sean") -> dict:
-        """DB에서 user_id 전략 상태 로드."""
+        """Load user_id strategy state from DB."""
         from repositories.strategy_state_repo import StrategyStateRepo
         user_state = StrategyStateRepo.load(user_id)
         return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}, "split_orders": {}}}
 
     @classmethod
     def _save_state(cls, state: dict) -> None:
-        """state dict에서 user별 상태를 DB에 저장."""
+        """Save per-user state from state dict to DB."""
         from repositories.strategy_state_repo import StrategyStateRepo
         for user_id, user_state in state.items():
             if isinstance(user_state, dict):
                 StrategyStateRepo.save(user_id, user_state)
 
-    # ── 공개 API 위임 래퍼 ───────────────────────────────────────────────────
+    # ── Public API Delegation Wrappers ───────────────────────────────────────────────────
 
     @classmethod
     def calculate_score(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, market_cash_ratio: float = None, market_total_krw: float = 0.0) -> tuple:
-        """개별 종목 투자 점수 계산 (SignalService 위임)"""
+        """Calculate individual stock investment score (delegates to SignalService)."""
         return SignalService.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_cash_ratio, market_total_krw)
 
     @classmethod
     def analyze_ticker(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, exchange_rate: float, market_total_krw: float = 0.0) -> dict:
-        """외부에서 개별 종목 분석 결과를 받을 수 있도록 공개된 인터페이스 (SignalService 위임)"""
+        """Public interface for external individual stock analysis (delegates to SignalService)."""
         return SignalService.analyze_ticker(ticker, state, holding, macro, user_state, cash_balance, exchange_rate, market_total_krw)
 
     @classmethod
     def get_sector_rebalance_status(cls, user_id: str = "sean") -> dict:
-        """섹터 비중 현황 및 리밸런싱 필요 종목 반환 (SectorRebalancerService 위임)"""
+        """Return sector weight status and stocks needing rebalancing (delegates to SectorRebalancerService)."""
         return SectorRebalancerService.get_sector_rebalance_status(user_id)
 
     @classmethod
     def run_sector_rebalance(cls, user_id: str = "sean") -> dict:
-        """주 1회 섹터 그룹 비중 리밸런싱 (SectorRebalancerService 위임)"""
+        """Weekly sector group weight rebalancing (delegates to SectorRebalancerService)."""
         return SectorRebalancerService.run_sector_rebalance(user_id)
 
     @classmethod
     def get_top_weight_overrides(cls) -> dict:
-        """티커별 사용자 가중치 오버라이드 조회 (TradeExecutorService 위임)"""
+        """Get per-ticker user weight overrides (delegates to TradeExecutorService)."""
         return TradeExecutorService.get_top_weight_overrides()
 
     @classmethod
     def set_top_weight_overrides(cls, overrides: dict) -> dict:
-        """티커별 사용자 가중치 오버라이드 저장 (TradeExecutorService 위임)"""
+        """Save per-ticker user weight overrides (delegates to TradeExecutorService)."""
         return TradeExecutorService.set_top_weight_overrides(overrides)
 
-    # ── 자산 계산 ─────────────────────────────────────────────────────────────
+    # ── Asset Calculation ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _log_intramarket_cash_ratio(cls, holdings: list, cash_balance: float, usd_cash: float, exchange_rate: float, target_cash_kr: float, target_cash_us: float) -> None:
-        """각 시장별 현금 비중을 로그로 출력 (경고만, 자동 매도 없음)"""
+        """Log per-market cash ratio (warning only, no auto-sell)."""
         kr_holdings = [h for h in filter_kr(holdings) if h.get('quantity', 0) > 0]
         us_holdings = [h for h in filter_us(holdings) if h.get('quantity', 0) > 0]
 
@@ -174,7 +174,7 @@ class TradingStrategyService:
         if us_cash_ratio < target_cash_us - 0.05 and us_total_usd > 0:
             logger.warning(f"US cash low ({us_cash_ratio:.1%} < target {target_cash_us:.1%}). Consider taking profit.")
 
-    # ── 틱 매매 ──────────────────────────────────────────────────────────────
+    # ── Tick Trading ──────────────────────────────────────────────────────────────
 
     @classmethod
     def _is_near_market_close(cls, ticker: str, minutes: int = 5) -> bool:
@@ -194,7 +194,7 @@ class TradingStrategyService:
 
     @classmethod
     def _evaluate_tick_sell_conditions(cls, ticker: str, holding: dict, state, pnl_pct: float, tp_pct: float, sl_pct: float, trade_state: dict) -> bool:
-        """틱매매 매도 조건 확인 및 실행"""
+        """Check and execute tick trade sell conditions."""
         hold_qty = int(holding.get("quantity", 0))
         if hold_qty > 0 and (pnl_pct >= tp_pct or pnl_pct <= sl_pct):
             result = KisService.send_order(ticker, hold_qty, 0, "sell")
@@ -208,7 +208,7 @@ class TradingStrategyService:
 
     @classmethod
     def _evaluate_tick_buy_conditions(cls, ticker: str, tranche: float, state, holding: dict, pnl_pct: float, add_pct: float, trade_state: dict, low_1h: float, entry_pct: float) -> bool:
-        """틱매매 매수(초기/추가) 조건 확인 및 실행"""
+        """Check and execute tick trade buy (initial/add) conditions."""
         current_price = getattr(state, 'current_price', 0)
         qty = int(tranche // current_price) if current_price > 0 else 0
         if qty <= 0: return False
@@ -236,7 +236,7 @@ class TradingStrategyService:
 
     @classmethod
     def _get_or_reset_tick_state(cls, user_state: dict, today: str) -> dict:
-        """tick_trade 상태를 반환하되 날짜가 바뀌면 초기화."""
+        """Return tick_trade state, resetting if the date has changed."""
         trade_state = user_state.get(
             "tick_trade",
             {"date": today, "second_done": False, "last_sell_price": None, "price_window": []}
@@ -247,7 +247,7 @@ class TradingStrategyService:
 
     @classmethod
     def _update_price_window(cls, trade_state: dict, current_price: float) -> tuple:
-        """1시간 가격 윈도우를 업데이트하고 (price_window, low_1h) 반환."""
+        """Update 1-hour price window and return (price_window, low_1h)."""
         now_ts = datetime.now().timestamp()
         pw = [p for p in trade_state.get("price_window", []) if p[0] >= now_ts - 3600]
         pw.append([now_ts, float(current_price)])
@@ -257,7 +257,7 @@ class TradingStrategyService:
 
     @classmethod
     def _execute_tick_eod_sell(cls, ticker: str, holding: dict, holdings: list, current_price: float, trade_state: dict, user_state: dict, tick_state: dict) -> bool:
-        """장 마감 직전 틱매매 EOD 전량 매도. 성공 시 True 반환."""
+        """Tick trade EOD full sell near market close. Returns True on success."""
         qty = int(holding.get("quantity", 0))
         if qty > 0 and KisService.send_order(ticker, qty, 0, "sell").get("status") == "success":
             OrderService.record_trade(ticker, "sell", qty, current_price, "Tick EOD", "tick_strategy")
@@ -273,7 +273,7 @@ class TradingStrategyService:
 
     @classmethod
     def _run_tick_intraday(cls, ticker: str, state, holding, holdings: list, market_total: float, cash_balance: float, trade_state: dict, low_1h: float) -> bool:
-        """틱매매 장중 매도/매수 조건 실행. Returns executed."""
+        """Execute tick trade intraday sell/buy conditions. Returns executed."""
         tranche = min(cash_balance, max(0.0, market_total * SettingsService.get_float("STRATEGY_TICK_CASH_RATIO", 0.2))) / 2
         buy_price = float(holding.get("buy_price", 1)) if holding and float(holding.get("buy_price", 1)) > 0 else 1.0
         pnl_pct = (getattr(state, 'current_price', 0) - buy_price) / buy_price * 100 if holding else 0
@@ -284,7 +284,7 @@ class TradingStrategyService:
 
     @classmethod
     def _run_tick_trade(cls, user_id: str, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float) -> bool:
-        """하루 1종목 틱매매 (진입/청산/유지)"""
+        """Single-stock daily tick trade (entry/exit/hold)."""
         if SettingsService.get_int("STRATEGY_TICK_ENABLED", 0) != 1: return False
         ticker = (SettingsService.get_setting("STRATEGY_TICK_TICKER", "005930") or "").strip().upper()
         if not ticker: return False
@@ -310,11 +310,11 @@ class TradingStrategyService:
         cls._save_state(tick_state)
         return executed
 
-    # ── 유니버스 관리 ─────────────────────────────────────────────────────────
+    # ── Universe Management ─────────────────────────────────────────────────────────
 
     @classmethod
     def _update_target_universe(cls, user_id: str) -> set:
-        """Top 100 변경 감지 및 유니버스 정리"""
+        """Detect Top 100 changes and clean up universe."""
         def _norm_ticker(t: str) -> str:
             t = str(t or "").strip().upper()
             if not t: return ""
@@ -337,11 +337,11 @@ class TradingStrategyService:
         logger.info(f"Top 100 change detected: universe {len(target_universe)} (KR={len(all_kr)}, US={len(all_us)})")
         return target_universe
 
-    # ── 포트폴리오 리포트 ─────────────────────────────────────────────────────
+    # ── Portfolio Report ─────────────────────────────────────────────────────
 
     @classmethod
     def _send_portfolio_report(cls, user_id: str, before_snapshot: dict) -> None:
-        """매매 전후 잔고를 비교하여 변동된 종목만 리포트 전송"""
+        """Compare pre/post-trade balances and send report for changed positions only."""
         try:
             from services.notification.report_service import ReportService
             PortfolioService.sync_with_kis(user_id)
@@ -354,7 +354,7 @@ class TradingStrategyService:
                 logger.info("No position changes. Skipping trade report.")
                 return
 
-            # 변동된 종목만 필터링 (신규 매수, 수량 변경, 전량 매도)
+            # Filter changed positions only (new buy, qty change, full sell)
             changed_tickers = set()
             all_tickers = set(before_snapshot.keys()) | set(after_snapshot.keys())
             for ticker in all_tickers:
@@ -377,7 +377,7 @@ class TradingStrategyService:
 
     @classmethod
     def _build_sell_rebuy_result(cls, success_count: int, fail_count: int, failed_tickers: list, strategy_error: str = None) -> dict:
-        """sell_all_and_rebuy 결과 dict를 빌드해 반환."""
+        """Build and return sell_all_and_rebuy result dict."""
         if strategy_error is None:
             return {
                 "status": "success",
@@ -397,7 +397,7 @@ class TradingStrategyService:
 
     @classmethod
     def sell_all_and_rebuy(cls, user_id: str = "sean") -> dict:
-        """보유 종목 전량 매도 후 전략대로 재매수."""
+        """Sell all holdings then rebuy according to strategy."""
         logger.info("Sell all holdings & rebuy with strategy starting")
         holdings = PortfolioService.sync_with_kis(user_id)
         if not holdings:
@@ -413,11 +413,11 @@ class TradingStrategyService:
             logger.error(f"Strategy execution error: {e}")
             return cls._build_sell_rebuy_result(success_count, fail_count, failed_tickers, str(e))
 
-    # ── 전략 실행 ─────────────────────────────────────────────────────────────
+    # ── Strategy Execution ─────────────────────────────────────────────────────────────
 
     @classmethod
     def _init_strategy_user_state(cls, state: dict, user_id: str) -> dict:
-        """state 딕셔너리에서 user_id 섹션을 초기화(또는 복원)하여 반환."""
+        """Initialize (or restore) user_id section in state dict and return it."""
         user_state = state.setdefault(user_id, {})
         if 'panic_locks' not in user_state:
             user_state['panic_locks'] = {}
@@ -430,7 +430,7 @@ class TradingStrategyService:
         kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float,
     ) -> bool:
-        """시그널 수집 + 집행 + 틱매매를 수행하고 매매 실행 여부 반환."""
+        """Perform signal collection + execution + tick trading and return whether trades were executed."""
         prepared_signals = SignalService._collect_trading_signals(
             holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us
         )
@@ -447,7 +447,7 @@ class TradingStrategyService:
 
     @classmethod
     def run_strategy(cls, user_id: str = "sean") -> None:
-        """전체 전략 실행 루프"""
+        """Full strategy execution loop."""
         if not cls.is_enabled():
             logger.debug(f"⏳ Trading Strategy is currently DISABLED. Skipping analysis.")
             return
@@ -474,11 +474,11 @@ class TradingStrategyService:
         if trade_executed:
             cls._send_portfolio_report(user_id, before_snapshot)
 
-    # ── 대기 목록 / 기회 조회 ────────────────────────────────────────────────
+    # ── Waiting List / Opportunities ────────────────────────────────────────────────
 
     @classmethod
     def _build_waiting_list_entry(cls, ticker: str, ticker_state, score: int, reasons: list) -> dict:
-        """대기 목록 개별 항목 dict 생성."""
+        """Build individual waiting list entry dict."""
         action = "BUY" if score <= SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30) else "SELL"
         return {
             "ticker": ticker,
@@ -492,7 +492,7 @@ class TradingStrategyService:
 
     @classmethod
     def get_waiting_list(cls, user_id: str = "sean") -> list:
-        """매매 대기 목록 조회 (BUY/SELL 시그널 종목)"""
+        """Get trading waiting list (stocks with BUY/SELL signals)."""
         all_states = MarketDataService.get_all_states()
         all_state_items = list(all_states.items())
         holdings = PortfolioService.load_portfolio(user_id)
@@ -519,14 +519,14 @@ class TradingStrategyService:
 
     @classmethod
     def get_opportunities(cls, user_id: str = "sean") -> list:
-        """스크립트 호환성을 위한 get_waiting_list 별칭"""
+        """Alias for get_waiting_list for script compatibility."""
         return cls.get_waiting_list(user_id)
 
-    # ── 수동 매도 ────────────────────────────────────────────────────────────
+    # ── Manual Sell ────────────────────────────────────────────────────────────
 
     @classmethod
     def execute_sell(cls, ticker: str, quantity: int = 0, user_id: str = "sean") -> dict:
-        """수동 매도 실행"""
+        """Execute manual sell."""
         holdings = PortfolioService.sync_with_kis(user_id)
         holding = next((h for h in holdings if h['ticker'] == ticker), None)
 

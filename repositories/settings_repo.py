@@ -1,4 +1,4 @@
-"""시스템 설정 Repository."""
+"""System settings repository."""
 from typing import Optional
 
 from models.settings import Settings
@@ -9,11 +9,11 @@ logger = get_logger("settings_repo")
 
 
 class SettingsRepo:
-    """Settings 테이블 CRUD."""
+    """Settings table CRUD."""
 
     @classmethod
     def get(cls, key: str) -> Optional[str]:
-        """설정값 조회. 없으면 None."""
+        """Fetch setting value. Returns None if not found."""
         session = get_session()
         try:
             row = session.query(Settings).filter_by(key=key).first()
@@ -23,7 +23,7 @@ class SettingsRepo:
 
     @classmethod
     def set(cls, key: str, value: str, description: str = "") -> Optional[Settings]:
-        """설정값 upsert. 성공 시 detached Settings, 실패 시 None."""
+        """Upsert setting value. Returns detached Settings on success, None on failure."""
         try:
             with session_scope() as session:
                 row = session.query(Settings).filter_by(key=key).first()
@@ -41,7 +41,7 @@ class SettingsRepo:
 
     @classmethod
     def get_all(cls) -> dict:
-        """{key: {value, description}} 전체 조회."""
+        """Fetch all settings as {key: {value, description}}."""
         session = get_session()
         try:
             rows = session.query(Settings).all()
@@ -51,7 +51,7 @@ class SettingsRepo:
 
     @classmethod
     def upsert_many(cls, items: dict[str, tuple[str, str]]) -> None:
-        """items: {key: (value, description)} — 없는 것만 삽입."""
+        """items: {key: (value, description)} — insert only if key does not exist."""
         try:
             with session_scope() as session:
                 existing = {r.key for r in session.query(Settings.key).all()}

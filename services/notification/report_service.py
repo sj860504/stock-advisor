@@ -8,11 +8,11 @@ from models.schemas import ComprehensiveReport
 
 
 class ReportService:
-    """Slack 메시지 및 리포트 텍스트 생성 전담. 데이터를 받아 문자열로 변환합니다."""
+    """Dedicated Slack message and report text generation. Converts data to formatted strings."""
 
     @staticmethod
     def _format_price_portfolio_lines(price_info: dict, portfolio: dict) -> str:
-        """현재가·보유 현황 섹션 문자열 반환."""
+        """Return current price and holdings section string."""
         change_pct = price_info.get("change_pct", 0)
         change_icon = "📈" if change_pct > 0 else "📉"
         lines = f"💰 **Price**: ${price_info.get('current')} ({change_pct:+.2f}%) {change_icon}\n"
@@ -22,7 +22,7 @@ class ReportService:
 
     @staticmethod
     def _format_fundamental_lines(fundamental: dict) -> str:
-        """내재 가치 분석 섹션 문자열 반환."""
+        """Return intrinsic value analysis section string."""
         dcf_fair   = fundamental.get("dcf_fair", "N/A")
         upside_dcf = fundamental.get("upside_dcf", 0)
         lines = f"💎 **Intrinsic Value**\n🔸 DCF Fair: **${dcf_fair}** (Upside {upside_dcf:+.1f}%)\n"
@@ -34,7 +34,7 @@ class ReportService:
 
     @staticmethod
     def _format_technical_lines(technical: dict, current_price: float) -> str:
-        """기술적 지표 섹션 문자열 반환."""
+        """Return technical indicators section string."""
         rsi = technical.get("rsi", 50)
         rsi_status = "🔥 Overbought" if rsi > 70 else ("🥶 Oversold" if rsi < 30 else "⚖️ Neutral")
         lines = f"🛠 **Technical Indicators**\n🔸 RSI: {rsi} ({rsi_status})\n"
@@ -46,7 +46,7 @@ class ReportService:
 
     @staticmethod
     def _build_conclusion_line(upside_dcf, rsi: float) -> str:
-        """매매 결론 문자열 반환."""
+        """Return trade conclusion string."""
         if isinstance(upside_dcf, (int, float)) and upside_dcf > 20 and rsi < 40:
             return "🚀 **Strong Buy (Undervalued + Oversold)**"
         if isinstance(upside_dcf, (int, float)) and upside_dcf > 10:
@@ -57,7 +57,7 @@ class ReportService:
 
     @staticmethod
     def format_comprehensive_report(data: Union[dict, ComprehensiveReport]) -> str:
-        """종합 분석 데이터(딕셔너리 또는 ComprehensiveReport)를 Slack 메시지 텍스트로 변환합니다."""
+        """Convert comprehensive analysis data (dict or ComprehensiveReport) to Slack message text."""
         if isinstance(data, ComprehensiveReport):
             data = data.to_report_dict()
         if "error" in data:
@@ -85,48 +85,49 @@ class ReportService:
 
     @staticmethod
     def format_hourly_gainers(gainers: list, macro: dict) -> str:
-        """시간별 급등 종목 리포트 포맷팅"""
+        """Format hourly top gainers report."""
         msg = f"🌍 **Market Summary**\n"
         if macro:
-            regime = macro.get('market_regime', {})
-            regime_score = regime.get('regime_score', 50)
-            comp = regime.get('components', {})
-            od = comp.get('other_detail', {})
-            t_s = comp.get('technical', 10)
-            v_s = comp.get('vix', 10)
-            f_s = comp.get('fear_greed', 10)
-            e_s = comp.get('economic', 10)
-            o_s = comp.get('other', 10)
-            td = comp.get('technical_detail', {})
-            spx_1m = td.get('spx_1m_ret')
-            spread = od.get('yield_spread_10y2y')
-            vix_1m = od.get('vix_1m_chg')
-            btc_ret = od.get('btc_1m_ret')
-            dxy_ret = od.get('dxy_1m_ret')
-            gold_ret = od.get('gold_1m_ret')
+            regime = macro.get('market_regime')
+            regime_score = getattr(regime, 'regime_score', 50)
+            comp = getattr(regime, 'components', None)
+            od = getattr(comp, 'other_detail', None) if comp else None
+            t_s = getattr(comp, 'technical', 10) if comp else 10
+            v_s = getattr(comp, 'vix', 10) if comp else 10
+            f_s = getattr(comp, 'fear_greed', 10) if comp else 10
+            e_s = getattr(comp, 'economic', 10) if comp else 10
+            o_s = getattr(comp, 'other', 10) if comp else 10
+            td = getattr(comp, 'technical_detail', {}) if comp else {}
+            spx_1m = td.get('spx_1m_ret') if isinstance(td, dict) else getattr(td, 'spx_1m_ret', None)
+            spread = getattr(od, 'yield_spread_10y2y', None) if od else None
+            vix_1m = getattr(od, 'vix_1m_chg', None) if od else None
+            btc_ret = getattr(od, 'btc_1m_ret', None) if od else None
+            dxy_ret = getattr(od, 'dxy_1m_ret', None) if od else None
+            gold_ret = getattr(od, 'gold_1m_ret', None) if od else None
             spx_str = f"SPX1M{spx_1m:+.1f}%" if spx_1m is not None else ""
             spread_str = f"{spread:+.2f}%" if spread is not None else "-"
             vix_str = f"(1M{vix_1m:+.0f}%)" if vix_1m is not None else ""
-            oil_ret = od.get('oil_1m_ret')
+            oil_ret = getattr(od, 'oil_1m_ret', None) if od else None
             btc_str = f"BTC{btc_ret:+.1f}%" if btc_ret is not None else "BTC-"
             dxy_str = f"DXY{dxy_ret:+.1f}%" if dxy_ret is not None else "DXY-"
             gold_str = f"Gold{gold_ret:+.1f}%" if gold_ret is not None else "Gold-"
             oil_str = f"Oil{oil_ret:+.1f}%" if oil_ret is not None else "Oil-"
-            phase = regime.get('economic_phase', '')
-            phase_mod = regime.get('phase_modifier', 0)
+            phase = getattr(regime, 'economic_phase', '') if regime else ''
+            phase_mod = getattr(regime, 'phase_modifier', 0) if regime else 0
             phase_str = f" [{phase}{phase_mod:+d}]" if phase and phase != "Neutral" else ""
-            msg += f"🔸 **Status**: {regime.get('status')} | **{regime_score}/100** (Tech{t_s} VIX{v_s} F&G{f_s} Econ{e_s} Other{o_s}){phase_str}\n"
-            msg += f"🔸 **SPX**: MA200 {regime.get('diff_pct', 0):+.1f}% {spx_str} | Yield {macro.get('us_10y_yield')}% | Curve {spread_str} | VIX {macro.get('vix')}{vix_str} | {btc_str} | {dxy_str} | {gold_str} | {oil_str}\n"
-            
-            btc = macro.get('crypto', {}).get('BTC')
+            msg += f"🔸 **Status**: {getattr(regime, 'status', '?')} | **{regime_score}/100** (Tech{t_s} VIX{v_s} F&G{f_s} Econ{e_s} Other{o_s}){phase_str}\n"
+            msg += f"🔸 **SPX**: MA200 {getattr(regime, 'diff_pct', 0):+.1f}% {spx_str} | Yield {macro.get('us_10y_yield')}% | Curve {spread_str} | VIX {macro.get('vix')}{vix_str} | {btc_str} | {dxy_str} | {gold_str} | {oil_str}\n"
+
+            crypto = macro.get('crypto', {})
+            btc = crypto.get('BTC') if isinstance(crypto, dict) else None
             if btc:
-                msg += f"🔸 **BTC**: ${btc['price']:,.0f} ({btc['change']:+.2f}%)\n"
-            
+                msg += f"🔸 **BTC**: ${btc.price:,.0f} ({btc.change:+.2f}%)\n"
+
             commodities = macro.get('commodities', {})
-            gold = commodities.get('Gold')
-            oil = commodities.get('Oil')
+            gold = commodities.get('Gold') if isinstance(commodities, dict) else None
+            oil = commodities.get('Oil') if isinstance(commodities, dict) else None
             if gold and oil:
-                msg += f"🔸 **Gold**: ${gold['price']:,.1f} ({gold['change']:+.2f}%) | **Oil**: ${oil['price']:,.2f} ({oil['change']:+.2f}%)\n"
+                msg += f"🔸 **Gold**: ${gold.price:,.1f} ({gold.change:+.2f}%) | **Oil**: ${oil.price:,.2f} ({oil.change:+.2f}%)\n"
         
         msg += "\n🚀 **Signal Gainers Report**\n"
         for gainer in gainers:
@@ -136,7 +137,7 @@ class ReportService:
 
     @staticmethod
     def _get_holding_price(holding: dict, ticker: str, states: dict) -> tuple[float, float]:
-        """보유 종목의 현재가와 등락률을 states 캐시 우선으로 반환합니다."""
+        """Return holding's current price and change rate, preferring states cache."""
         current_price = holding.get("current_price", 0)
         change_rate = float(holding.get("change_rate", 0) or 0)
         if states and ticker in states:
@@ -149,7 +150,7 @@ class ReportService:
 
     @staticmethod
     def _format_kr_holding_line(holding: dict, states: dict) -> str:
-        """국내 보유 종목 한 줄 포맷팅 (원화 기준)."""
+        """Format a single KR holding line (KRW based)."""
         ticker = holding.get("ticker", "")
         name = holding.get("name") or ""
         qty = holding.get("quantity", 0)
@@ -165,7 +166,7 @@ class ReportService:
 
     @staticmethod
     def _format_us_holding_line(holding: dict, states: dict, exchange_rate: float) -> str:
-        """미국 보유 종목 한 줄 포맷팅 (달러 기준, 원화 환산 병기)."""
+        """Format a single US holding line (USD based, with KRW conversion)."""
         ticker = holding.get("ticker", "")
         name = holding.get("name") or ""
         qty = holding.get("quantity", 0)
@@ -180,8 +181,8 @@ class ReportService:
         )
 
     @staticmethod
-    def format_portfolio_report(holdings: list, cash: float, states: dict = None, summary: dict = None) -> str:
-        """포트폴리오 현황 리포트 — 원화/외화 자산을 분리하여 표시합니다."""
+    def _compute_portfolio_totals(holdings: list, cash: float, summary: dict = None) -> dict:
+        """Return portfolio totals, P&L, and ratios as dict."""
         from services.config.settings_service import SettingsService
         from services.market.macro_service import MacroService
 
@@ -202,7 +203,6 @@ class ReportService:
         us_stock_usd = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in us_holdings)
         us_invested_usd = sum(h.get("buy_price", 0) * h.get("quantity", 0) for h in us_holdings)
         us_stock_krw = us_stock_usd * exchange_rate
-        us_invested_krw = us_invested_usd * exchange_rate
         cash_krw = max(0.0, float(cash)) if cash is not None else 0.0
         usd_cash_krw = usd_cash * exchange_rate
 
@@ -223,10 +223,29 @@ class ReportService:
         kr_ratio = (kr_total_krw / total_eval * 100) if total_eval > 0 else 0.0
         us_ratio = (us_total_krw / total_eval * 100) if total_eval > 0 else 0.0
 
+        return {
+            "kr_holdings": kr_holdings, "us_holdings": us_holdings,
+            "kr_stock_val": kr_stock_val, "kr_invested": kr_invested,
+            "us_stock_usd": us_stock_usd, "us_invested_usd": us_invested_usd,
+            "cash_krw": cash_krw, "usd_cash": usd_cash, "usd_cash_krw": usd_cash_krw,
+            "kr_total_krw": kr_total_krw, "us_total_usd": us_total_usd, "us_total_krw": us_total_krw,
+            "total_eval": total_eval,
+            "kr_profit": kr_profit, "kr_profit_pct": kr_profit_pct,
+            "us_profit_usd": us_profit_usd, "us_profit_pct": us_profit_pct,
+            "principal_profit": principal_profit, "principal_profit_pct": principal_profit_pct,
+            "principal_color": principal_color,
+            "kr_ratio": kr_ratio, "us_ratio": us_ratio, "exchange_rate": exchange_rate,
+        }
+
+    @staticmethod
+    def format_portfolio_report(holdings: list, cash: float, states: dict = None, summary: dict = None) -> str:
+        """Portfolio status report — displays KRW/foreign currency assets separately."""
+        t = ReportService._compute_portfolio_totals(holdings, cash, summary)
+
         lines = [
             "📌 **Portfolio Overview**",
-            f"- Total Value: {total_eval:,.0f}KRW | Holdings: {len(holdings)}",
-            f"- P&L vs Principal: {principal_color} {principal_profit:,.0f}KRW ({principal_profit_pct:+.2f}%)",
+            f"- Total Value: {t['total_eval']:,.0f}KRW | Holdings: {len(holdings)}",
+            f"- P&L vs Principal: {t['principal_color']} {t['principal_profit']:,.0f}KRW ({t['principal_profit_pct']:+.2f}%)",
         ]
 
         account_eval_profit = None
@@ -240,11 +259,13 @@ class ReportService:
             lines.append(f"- Account P&L (KIS): {kis_color} {account_eval_profit:,.0f}KRW")
 
         lines.extend(ReportService._format_kr_section(
-            kr_holdings, kr_stock_val, kr_invested, kr_profit, kr_profit_pct, cash_krw, kr_total_krw, kr_ratio, states
+            t['kr_holdings'], t['kr_stock_val'], t['kr_invested'], t['kr_profit'], t['kr_profit_pct'],
+            t['cash_krw'], t['kr_total_krw'], t['kr_ratio'], states
         ))
         lines.extend(ReportService._format_us_section(
-            us_holdings, us_stock_usd, us_invested_usd, us_profit_usd, us_profit_pct,
-            usd_cash, usd_cash_krw, us_total_usd, us_total_krw, us_ratio, exchange_rate, states
+            t['us_holdings'], t['us_stock_usd'], t['us_invested_usd'], t['us_profit_usd'], t['us_profit_pct'],
+            t['usd_cash'], t['usd_cash_krw'], t['us_total_usd'], t['us_total_krw'], t['us_ratio'],
+            t['exchange_rate'], states
         ))
         return "\n".join(lines)
 
@@ -254,7 +275,7 @@ class ReportService:
         kr_profit: float, kr_profit_pct: float, cash_krw: float,
         kr_total_krw: float, kr_ratio: float, states: dict,
     ) -> list:
-        """원화 자산 섹션 lines 반환."""
+        """Return KRW assets section lines."""
         color = "🔴" if kr_profit > 0 else ("🔵" if kr_profit < 0 else "⚪")
         lines = [
             "",
@@ -274,7 +295,7 @@ class ReportService:
         usd_cash_krw: float, us_total_usd: float, us_total_krw: float,
         us_ratio: float, exchange_rate: float, states: dict,
     ) -> list:
-        """외화 자산 섹션 lines 반환."""
+        """Return USD assets section lines."""
         color = "🔴" if us_profit_usd > 0 else ("🔵" if us_profit_usd < 0 else "⚪")
         lines = [
             "",
@@ -288,15 +309,41 @@ class ReportService:
         return lines
 
     @staticmethod
+    def _format_changed_ticker_line(
+        ticker: str, before_qty: int, after_qty: int, changed_holdings: list,
+    ) -> tuple:
+        """Format a single changed ticker line. Returns (line_str, is_buy)."""
+        diff = after_qty - before_qty
+        holding = next((h for h in changed_holdings if h["ticker"] == ticker), None)
+        if diff > 0:
+            label = "New Buy" if before_qty == 0 else "Add Buy"
+            if holding:
+                price = holding.get("current_price", 0)
+                name = holding.get("name") or ticker
+                if is_kr(ticker):
+                    return f"  🟢 {ticker} {name} | {label} {diff}sh | Price {price:,.0f}KRW (Hold {after_qty}sh)", True
+                else:
+                    return f"  🟢 {ticker} {name} | {label} {diff}sh | Price ${price:,.2f} (Hold {after_qty}sh)", True
+            return f"  🟢 {ticker} | {label} {diff}sh (Hold {after_qty}sh)", True
+        else:
+            sold = abs(diff)
+            label = "Sell All" if after_qty == 0 else "Partial Sell"
+            if holding:
+                price = holding.get("current_price", 0)
+                name = holding.get("name") or ticker
+                buy_price = holding.get("buy_price", 0)
+                profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
+                color = "🔴" if profit_pct > 0 else "🔵"
+                return f"  {color} {ticker} {name} | {label} {sold}sh | {profit_pct:+.2f}% (Remain {after_qty}sh)", False
+            return f"  ⚪ {ticker} | {label} {sold}sh", False
+
+    @staticmethod
     def format_trade_result_report(
         changed_holdings: list, changed_tickers: set,
         before_snapshot: dict, after_snapshot: dict,
         cash: float, states: dict = None, summary: dict = None,
     ) -> str:
-        """매매 후 변동된 종목만 표시하는 거래 결과 리포트."""
-        from services.market.macro_service import MacroService
-        exchange_rate = MacroService.get_exchange_rate()
-
+        """Trade result report showing only changed holdings after execution."""
         lines = ["📈 **Trade Execution Report**", ""]
 
         buy_lines, sell_lines = [], []
@@ -304,34 +351,15 @@ class ReportService:
             before_qty = before_snapshot.get(ticker, 0)
             after_qty = after_snapshot.get(ticker, 0)
             diff = after_qty - before_qty
-            holding = next((h for h in changed_holdings if h["ticker"] == ticker), None)
-
-            if diff > 0:
-                label = "New Buy" if before_qty == 0 else "Add Buy"
-                if holding:
-                    price = holding.get("current_price", 0)
-                    name = holding.get("name") or ticker
-                    if is_kr(ticker):
-                        buy_lines.append(f"  🟢 {ticker} {name} | {label} {diff}sh | Price {price:,.0f}KRW (Hold {after_qty}sh)")
-                    else:
-                        buy_lines.append(f"  🟢 {ticker} {name} | {label} {diff}sh | Price ${price:,.2f} (Hold {after_qty}sh)")
-                else:
-                    buy_lines.append(f"  🟢 {ticker} | {label} {diff}sh (Hold {after_qty}sh)")
-            elif diff < 0:
-                sold = abs(diff)
-                label = "Sell All" if after_qty == 0 else "Partial Sell"
-                if holding:
-                    price = holding.get("current_price", 0)
-                    name = holding.get("name") or ticker
-                    buy_price = holding.get("buy_price", 0)
-                    profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
-                    color = "🔴" if profit_pct > 0 else "🔵"
-                    if is_kr(ticker):
-                        sell_lines.append(f"  {color} {ticker} {name} | {label} {sold}sh | {profit_pct:+.2f}% (Remain {after_qty}sh)")
-                    else:
-                        sell_lines.append(f"  {color} {ticker} {name} | {label} {sold}sh | {profit_pct:+.2f}% (Remain {after_qty}sh)")
-                else:
-                    sell_lines.append(f"  ⚪ {ticker} | {label} {sold}sh")
+            if diff == 0:
+                continue
+            line, is_buy = ReportService._format_changed_ticker_line(
+                ticker, before_qty, after_qty, changed_holdings,
+            )
+            if is_buy:
+                buy_lines.append(line)
+            else:
+                sell_lines.append(line)
 
         if buy_lines:
             lines.append(f"**Buy** ({len(buy_lines)})")
@@ -349,7 +377,7 @@ class ReportService:
 
     @staticmethod
     def _aggregate_by_ticker(trade_list: List) -> dict:
-        """매매 내역을 티커별로 집계합니다."""
+        """Aggregate trade records by ticker."""
         grouped = defaultdict(lambda: {"qty": 0, "total_amt": 0.0, "is_kr": True})
         for t in trade_list:
             grouped[t.ticker]["qty"] += t.quantity
@@ -359,7 +387,7 @@ class ReportService:
 
     @staticmethod
     def _format_trade_group_lines(trade_list: List, label: str, icon: str) -> str:
-        """매수 또는 매도 그룹을 집계하여 Slack 메시지 섹션으로 반환합니다."""
+        """Aggregate buy or sell group and return as Slack message section."""
         groups = ReportService._aggregate_by_ticker(trade_list)
         total_krw = sum(v["total_amt"] for v in groups.values() if v["is_kr"])
         total_usd = sum(v["total_amt"] for v in groups.values() if not v["is_kr"])
@@ -379,7 +407,7 @@ class ReportService:
 
     @staticmethod
     def format_daily_trade_history(trades: list, start_dt: datetime, end_dt: datetime) -> str:
-        """일일 매매 내역을 Slack 메시지로 포맷팅합니다. 티커별로 집계하여 보여줍니다."""
+        """Format daily trade history as Slack message. Aggregated by ticker."""
         date_str = start_dt.strftime("%m/%d %H:%M") + " ~ " + end_dt.strftime("%m/%d %H:%M")
         msg = f"📋 **Daily Trade History** ({date_str})\n\n"
 
