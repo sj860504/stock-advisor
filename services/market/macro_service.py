@@ -203,7 +203,7 @@ class MacroService:
         result: Dict[str, CryptoQuote] = {"BTC": CryptoQuote()}
         try:
             import yfinance as yf
-            hist = yf.Ticker("BTC-USD").history(period="2d")
+            hist = yf.Ticker("BTC-USD").history(period="5d")
             if len(hist) >= 2:
                 price = float(hist["Close"].iloc[-1])
                 prev = float(hist["Close"].iloc[-2])
@@ -219,7 +219,7 @@ class MacroService:
         try:
             import yfinance as yf
             for name, symbol in [("Gold", "GC=F"), ("Oil", "CL=F")]:
-                hist = yf.Ticker(symbol).history(period="2d")
+                hist = yf.Ticker(symbol).history(period="5d")
                 if len(hist) >= 2:
                     price = float(hist["Close"].iloc[-1])
                     prev = float(hist["Close"].iloc[-2])
