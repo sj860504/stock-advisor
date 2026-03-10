@@ -194,6 +194,16 @@
             white-space: nowrap;
         }
 
+        th.sortable { cursor:pointer; user-select:none; }
+        th.sortable:hover { color:var(--text); }
+        th.sort-asc::after { content:' ▲'; font-size:0.7rem; }
+        th.sort-desc::after { content:' ▼'; font-size:0.7rem; }
+        .tbl-search {
+            background:var(--bg); border:1px solid var(--border); border-radius:6px;
+            padding:5px 10px; font-size:0.82rem; color:var(--text); width:180px;
+        }
+        .tbl-search::placeholder { color:var(--sub); }
+
         td {
             padding: 12px 8px;
             border-bottom: 1px solid #1e2430;
@@ -756,7 +766,6 @@
         <div class="logo">🚀 Stock Advisor Pro</div>
         <div class="nav-links">
             <div class="nav-item active" data-tab="dashboard" onclick="switchTab(this,'dashboard')">Dashboard</div>
-            <div class="nav-item" data-tab="portfolio" onclick="switchTab(this,'portfolio')">Portfolio</div>
             <div class="nav-item" data-tab="history" onclick="switchTab(this,'history')">History</div>
             <div class="nav-item" data-tab="market" onclick="switchTab(this,'market')">Market</div>
             <div class="nav-item" data-tab="trading" onclick="switchTab(this,'trading')">Trading</div>
@@ -783,17 +792,21 @@
                 </div>
             </div>
 
+            <!-- Dashboard unified market filter -->
+            <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+                <span style="font-size:.85rem;color:var(--sub)">시장 필터:</span>
+                <button id="df-all" class="btn btn-primary btn-sm" onclick="setDashFilter('all')">전체</button>
+                <button id="df-kr" class="btn btn-outline btn-sm" onclick="setDashFilter('kr')">🇰🇷 한국</button>
+                <button id="df-us" class="btn btn-outline btn-sm" onclick="setDashFilter('us')">🇺🇸 미국</button>
+                <input type="text" class="tbl-search" placeholder="종목 검색..."
+                    oninput="searchState['portfolio-tbody']=this.value.toLowerCase();renderPortfolioTable(_portfolioDataCache)">
+            </div>
+
             <!-- Single Full-Width Balance Card -->
             <div class="card" id="balance-card" style="margin-bottom: 20px;">
                 <div class="card-title">
                     <span>💰 잔고</span>
                     <div style="display:flex;gap:6px;align-items:center">
-                        <button class="btn btn-outline btn-sm dash-bal-tab active" id="dash-bal-all"
-                            onclick="switchBalanceTab('all')">전체</button>
-                        <button class="btn btn-outline btn-sm dash-bal-tab" id="dash-bal-kr"
-                            onclick="switchBalanceTab('kr')">🇰🇷 한국</button>
-                        <button class="btn btn-outline btn-sm dash-bal-tab" id="dash-bal-us"
-                            onclick="switchBalanceTab('us')">🇺🇸 미국</button>
                         <button class="btn btn-outline btn-sm" onclick="fetchBalance()">🔄 조회</button>
                         <button class="btn btn-outline btn-sm" onclick="syncPortfolio()">🔄 KIS 동기화</button>
                         <button class="btn btn-primary btn-sm" onclick="openTradeModal()">+ 매매 기록</button>
@@ -801,6 +814,45 @@
                 </div>
                 <div id="balance-content">
                     <div class="empty" style="color:var(--sub);font-size:0.88rem;padding:10px 0;">조회 중...</div>
+                </div>
+            </div>
+
+            <!-- Portfolio Table (integrated from Portfolio tab) -->
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-title">
+                    <span>💼 보유 종목</span>
+                    <div style="display:flex;gap:6px;align-items:center">
+                        <input type="file" id="excelInput" accept=".xlsx,.xls" style="display:none"
+                            onchange="uploadExcel()">
+                        <button class="btn btn-outline btn-sm"
+                            onclick="document.getElementById('excelInput').click()">📂 Excel 업로드</button>
+                        <button class="btn btn-outline btn-sm" onclick="syncPortfolio()">🔄 KIS 동기화</button>
+                        <button class="btn btn-primary btn-sm" onclick="openTradeModal()">+ 매매 기록</button>
+                    </div>
+                </div>
+                <div id="port-asset-summary" style="display:flex;gap:12px;margin-bottom:10px;font-size:0.85rem;"></div>
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',0,()=>renderPortfolioTable(_portfolioDataCache))">종목</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',1,()=>renderPortfolioTable(_portfolioDataCache))">매수가</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',2,()=>renderPortfolioTable(_portfolioDataCache))">현재가</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',3,()=>renderPortfolioTable(_portfolioDataCache))">수량</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',4,()=>renderPortfolioTable(_portfolioDataCache))">평가금액</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',5,()=>renderPortfolioTable(_portfolioDataCache))">수익률</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',6,()=>renderPortfolioTable(_portfolioDataCache))">DCF 적정가</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',7,()=>renderPortfolioTable(_portfolioDataCache))">RSI</th>
+                                <th>섹터</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="portfolio-tbody">
+                            <tr>
+                                <td colspan="10" class="empty">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -826,72 +878,7 @@
             </div>
         </div>
 
-        <!-- ═══════════════════════════════════════════════════════
-     2. PORTFOLIO
-═══════════════════════════════════════════════════════ -->
-        <div id="portfolio" class="page-section">
-            <div class="card" style="margin-bottom:16px">
-                <div class="card-title">
-                    <span>💼 보유 종목</span>
-                    <div style="display:flex;gap:6px;align-items:center">
-                        <button class="btn btn-outline btn-sm portfolio-mkt-tab active" id="ptab-all"
-                            onclick="switchPortfolioTab('all')">전체</button>
-                        <button class="btn btn-outline btn-sm portfolio-mkt-tab" id="ptab-kr"
-                            onclick="switchPortfolioTab('kr')">🇰🇷 한국</button>
-                        <button class="btn btn-outline btn-sm portfolio-mkt-tab" id="ptab-us"
-                            onclick="switchPortfolioTab('us')">🇺🇸 미국</button>
-                        <div style="width:1px;height:20px;background:var(--border);margin:0 2px"></div>
-                        <input type="file" id="excelInput" accept=".xlsx,.xls" style="display:none"
-                            onchange="uploadExcel()">
-                        <button class="btn btn-outline btn-sm"
-                            onclick="document.getElementById('excelInput').click()">📂 Excel 업로드</button>
-                        <button class="btn btn-outline btn-sm" onclick="syncPortfolio()">🔄 KIS 동기화</button>
-                        <button class="btn btn-primary btn-sm" onclick="openTradeModal()">+ 매매 기록</button>
-                    </div>
-                </div>
-                <div id="port-asset-summary" style="display:flex;gap:12px;margin-bottom:10px;font-size:0.85rem;"></div>
-                <div class="tbl-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>종목</th>
-                                <th>매수가</th>
-                                <th>현재가</th>
-                                <th>수량</th>
-                                <th>평가금액</th>
-                                <th>수익률</th>
-                                <th>DCF 적정가</th>
-                                <th>RSI</th>
-                                <th>섹터</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody id="portfolio-tbody">
-                            <tr>
-                                <td colspan="10" class="empty">Loading...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <!-- Sector Weights Card -->
-            <div class="card" style="margin-bottom:16px">
-                <div class="card-title">
-                    <span>🏗️ 섹터 비중 관리</span>
-                    <div style="display:flex;gap:6px;align-items:center">
-                        <button class="btn btn-outline btn-sm sector-mkt-tab active" id="sector-tab-kr"
-                            onclick="switchSectorTab('kr')">🇰🇷 한국</button>
-                        <button class="btn btn-outline btn-sm sector-mkt-tab" id="sector-tab-us"
-                            onclick="switchSectorTab('us')">🇺🇸 미국</button>
-                        <button class="btn btn-outline btn-sm" onclick="fetchSectorWeights()">🔄 새로고침</button>
-                    </div>
-                </div>
-                <div id="sector-weights-content">
-                    <div class="empty">Loading...</div>
-                </div>
-            </div>
-
-        </div>
+        <!-- Portfolio tab removed - integrated into Dashboard -->
 
         <!-- ═══════════════════════════════════════════════════════
      3. HISTORY
@@ -913,19 +900,21 @@
                         </select>
                         <input type="date" id="hist-date" style="width:140px;padding:5px 8px;font-size:0.82rem">
                         <button class="btn btn-primary btn-sm" onclick="fetchHistory()">조회</button>
+                        <input type="text" class="tbl-search" placeholder="종목 검색..."
+                            oninput="searchState['history-tbody']=this.value.toLowerCase();renderHistoryTable()">
                     </div>
                 </div>
                 <div class="tbl-wrap" style="height:calc(100vh - 200px);overflow-y:auto">
                     <table>
                         <thead>
                             <tr>
-                                <th>일시</th>
-                                <th>종목</th>
-                                <th>구분</th>
-                                <th>가격</th>
-                                <th>수량</th>
-                                <th>금액</th>
-                                <th>수익률</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',0,renderHistoryTable)">일시</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',1,renderHistoryTable)">종목</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',2,renderHistoryTable)">구분</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',3,renderHistoryTable)">가격</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',4,renderHistoryTable)">수량</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',5,renderHistoryTable)">금액</th>
+                                <th class="sortable" onclick="handleSort('history-tbody',6,renderHistoryTable)">수익률</th>
                             </tr>
                         </thead>
                         <tbody id="history-tbody">
@@ -948,6 +937,8 @@
                 <button id="mf-all" class="btn btn-primary btn-sm" onclick="setMarketFilter('all')">전체</button>
                 <button id="mf-us" class="btn btn-outline btn-sm" onclick="setMarketFilter('us')">🇺🇸 미국</button>
                 <button id="mf-kr" class="btn btn-outline btn-sm" onclick="setMarketFilter('kr')">🇰🇷 한국</button>
+                <input type="text" class="tbl-search" placeholder="종목 검색..."
+                    oninput="searchState['top20-tbody']=this.value.toLowerCase();renderTop20Filtered();searchState['signals-tbody']=this.value.toLowerCase();renderSignalsFiltered()">
             </div>
             <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px">
                 <div class="card">
@@ -958,11 +949,11 @@
                         <table style="width:100%">
                             <thead>
                                 <tr>
-                                    <th>종목</th>
-                                    <th>이름</th>
-                                    <th>현재가</th>
-                                    <th>등락</th>
-                                    <th>RSI</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',0,renderTop20Filtered)">종목</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',1,renderTop20Filtered)">이름</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',2,renderTop20Filtered)">현재가</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',3,renderTop20Filtered)">등락</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',4,renderTop20Filtered)">RSI</th>
                                     <th>신호</th>
                                     <th>갱신</th>
                                     <th>액션</th>
@@ -1410,8 +1401,7 @@
             document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
             document.getElementById(tabId).classList.add('active');
             const loaders = {
-                dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchSectorWeightsMini(); },
-                portfolio: () => { fetchPortfolioFull(true); fetchSectorWeights(); },
+                dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchSectorWeightsMini(); fetchPortfolioFull(); },
                 history: () => { fetchHistory(); },
                 market: () => { fetchTop20(); fetchSignals(); },
                 trading: () => { fetchWaitingList(); fetchStrategyStatus(); },
@@ -1497,19 +1487,95 @@
             } catch (e) { showToast('❌ ' + e.message, false); }
         }
 
-        // ─── Portfolio ─────────────────────────────────────────────────
-        let portfolioMarketFilter = 'all';   // 'all' | 'kr' | 'us'
-        let _portfolioDataCache = null;
+        // ─── Sort / Search Infrastructure ────────────────────────────
+        const sortState = {};   // { tableId: { col: index, dir: 'asc'|'desc' } }
+        const searchState = {}; // { tableId: 'search string' }
 
-        function switchPortfolioTab(market) {
-            portfolioMarketFilter = market;
-            document.querySelectorAll('.portfolio-mkt-tab').forEach(b => b.classList.remove('active'));
-            const tab = document.getElementById('ptab-' + market);
-            if (tab) tab.classList.add('active');
+        const sortKeys = {
+            'portfolio-tbody': [
+                d => (d.ticker||'').toLowerCase(),
+                d => d.buy_price ?? d.avg_price ?? 0,
+                d => d.price ?? d.current_price ?? 0,
+                d => d.quantity ?? 0,
+                d => d.current_value || ((d.price??0)*(d.quantity||0)),
+                d => d.return_pct ?? d.profit_pct ?? 0,
+                d => d.dcf_fair ?? 0,
+                d => d.rsi ?? 0,
+            ],
+            'top20-tbody': [
+                ([t]) => t.toLowerCase(),
+                ([,i]) => (i.name||'').toLowerCase(),
+                ([,i]) => i.price ?? 0,
+                ([,i]) => i.change_pct ?? 0,
+                ([,i]) => i.rsi ?? 0,
+            ],
+            'history-tbody': [
+                d => d.created_at || d.timestamp || d.date || '',
+                d => (d.ticker||'').toLowerCase(),
+                d => (d.action||d.order_type||''),
+                d => d.price ?? 0,
+                d => d.quantity ?? 0,
+                d => d.amount ?? ((d.price||0)*(d.quantity||0)),
+                d => d.profit_pct ?? 0,
+            ],
+        };
+
+        function handleSort(tableId, colIndex, renderFn) {
+            const st = sortState[tableId];
+            if (st && st.col === colIndex) {
+                st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortState[tableId] = { col: colIndex, dir: 'asc' };
+            }
+            // Update th classes
+            const tbody = document.getElementById(tableId);
+            if (tbody) {
+                const ths = tbody.closest('table').querySelectorAll('th.sortable');
+                ths.forEach((th, i) => {
+                    th.classList.remove('sort-asc', 'sort-desc');
+                });
+                // Find the correct th by col index among sortable ths
+                const allThs = tbody.closest('table').querySelectorAll('thead th');
+                allThs.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+                const targetTh = allThs[colIndex];
+                if (targetTh) targetTh.classList.add('sort-' + sortState[tableId].dir);
+            }
+            renderFn();
+        }
+
+        function applySortToData(tableId, data) {
+            const st = sortState[tableId];
+            if (!st) return data;
+            const keys = sortKeys[tableId];
+            if (!keys || !keys[st.col]) return data;
+            const keyFn = keys[st.col];
+            const dir = st.dir === 'asc' ? 1 : -1;
+            return [...data].sort((a, b) => {
+                const va = keyFn(a), vb = keyFn(b);
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        }
+
+        // ─── Dashboard unified market filter ─────────────────────────
+        let dashMarketFilter = 'all';
+
+        function setDashFilter(market) {
+            dashMarketFilter = market;
+            ['all', 'kr', 'us'].forEach(id => {
+                const btn = document.getElementById('df-' + id);
+                if (btn) btn.className = id === market ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+            });
+            if (_balanceDataCache) renderBalanceContent(_balanceDataCache);
+            else fetchBalance();
             if (_portfolioDataCache) renderPortfolioTable(_portfolioDataCache);
         }
 
-        async function fetchPortfolioFull(portfolioTab = false) {
+        // ─── Portfolio ─────────────────────────────────────────────────
+        let _portfolioDataCache = null;
+
+        async function fetchPortfolioFull() {
             try {
                 const data = await apiFetch('/portfolio/' + USER + '/full-report');
                 _portfolioDataCache = data;
@@ -1535,13 +1601,10 @@
                     </div>
                 `;
 
-                const dashSumm = document.getElementById('dash-asset-summary');
-                if (dashSumm) dashSumm.innerHTML = summaryHtml;
                 const portSumm = document.getElementById('port-asset-summary');
                 if (portSumm) portSumm.innerHTML = summaryHtml;
 
-                renderDashTable(data);
-                if (portfolioTab) renderPortfolioTable(data);
+                renderPortfolioTable(data);
                 setUpdated();
             } catch (e) { console.error(e); }
         }
@@ -1555,31 +1618,7 @@
             } catch (e) { showToast('❌ ' + e.message, false); }
         }
 
-        function renderDashTable(data) {
-            const tbody = document.getElementById('dash-tbody');
-            if (!data?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">보유 종목 없음</td></tr>'; return; }
-            tbody.innerHTML = data.map(d => {
-                const ret = d.return_pct ?? d.profit_pct;
-                const rsi = d.rsi;
-                const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
-                const ema200 = d.ema200 ?? d.ema?.['200'];
-                const price = d.price ?? d.current_price ?? 0;
-                const changeRate = d.change_rate ?? d.change_pct ?? 0;
-                const s = getSym(d);
-                return `<tr>
-            <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name || ''}</span></td>
-            <td><b>${fmtCurr(price, s)}</b></td>
-            <td class="${cls(changeRate)}">${fmtPct(changeRate)}</td>
-            <td>${fmtCurr(d.buy_price ?? d.avg_price, s)}</td>
-            <td>${fmt(d.quantity, 0)}</td>
-            <td>${badge(ret)}</td>
-            <td>${fmtCurr(d.current_value || (price * (d.quantity || 0)), s)}<span class="${cls(d.profit_loss || 0)}" style="font-size:.8rem;display:block">${d.profit_loss ? (d.profit_loss > 0 ? '+' : '') + fmtCurr(d.profit_loss, s) : ''}</span></td>
-            <td style="color:var(--sub);font-size:.8rem">${fmtCurr(ema200, s)}</td>
-            <td><span class="badge ${rsiCls}">${fmt(rsi, 1)}</span></td>
-            <td style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) : '-'}</td>
-        </tr>`;
-            }).join('');
-        }
+        // renderDashTable removed - portfolio table is now integrated into Dashboard
 
         const SECTOR_OPTIONS = [
             { value: 'other', label: '── 미분류/ETF ──', group: '' },
@@ -1592,9 +1631,14 @@
             const tbody = document.getElementById('portfolio-tbody');
             if (!data?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">보유 종목 없음</td></tr>'; return; }
             // 시장 필터 적용
-            if (portfolioMarketFilter === 'kr') data = data.filter(d => isKr(d));
-            else if (portfolioMarketFilter === 'us') data = data.filter(d => !isKr(d));
-            if (!data.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">해당 시장 종목 없음</td></tr>'; return; }
+            if (dashMarketFilter === 'kr') data = data.filter(d => isKr(d));
+            else if (dashMarketFilter === 'us') data = data.filter(d => !isKr(d));
+            // 키워드 검색
+            const q = searchState['portfolio-tbody'];
+            if (q) data = data.filter(d => (d.ticker||'').toLowerCase().includes(q) || (d.name||'').toLowerCase().includes(q));
+            if (!data.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">해당 종목 없음</td></tr>'; return; }
+            // 정렬
+            data = applySortToData('portfolio-tbody', data);
             const sectorOpts = SECTOR_OPTIONS.map(o =>
                 `<option value="${o.value}">${o.label}</option>`
             ).join('');
@@ -1644,11 +1688,13 @@
             try {
                 await apiFetch('/portfolio/' + USER + '/' + ticker, { method: 'DELETE' });
                 showToast('✅ 삭제됨');
-                fetchPortfolioFull(true);
+                fetchPortfolioFull();
             } catch (e) { showToast('❌ ' + e.message, false); }
         }
 
         // ─── Trade History ─────────────────────────────────────────────
+        let _historyDataCache = null;
+
         async function fetchHistory() {
             const action = document.getElementById('hist-type').value;
             const market = document.getElementById('hist-market').value;
@@ -1659,15 +1705,28 @@
             if (date) url += '&date=' + date;
             try {
                 const data = await apiFetch(url);
-                const tbody = document.getElementById('history-tbody');
-                if (!data?.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">내역 없음</td></tr>'; return; }
-                tbody.innerHTML = data.map(d => {
-                    const isBuy = (d.action || d.order_type || '').toLowerCase() === 'buy';
-                    const s = isKr(d) ? '₩' : '$';
-                    const retBadge = d.profit_pct != null
-                        ? `${badge(d.profit_pct)}<span class="${cls(d.profit || 0)}" style="font-size:.75rem;display:block">${d.profit > 0 ? '+' : ''}${fmtCurr(d.profit, s)}</span>`
-                        : '-';
-                    return `<tr>
+                _historyDataCache = data;
+                renderHistoryTable();
+            } catch (e) { showToast('❌ ' + e.message, false); }
+        }
+
+        function renderHistoryTable() {
+            const tbody = document.getElementById('history-tbody');
+            let data = _historyDataCache;
+            if (!data?.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">내역 없음</td></tr>'; return; }
+            // 키워드 검색
+            const q = searchState['history-tbody'];
+            if (q) data = data.filter(d => (d.ticker||'').toLowerCase().includes(q) || (d.name||'').toLowerCase().includes(q));
+            if (!data.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">해당 종목 없음</td></tr>'; return; }
+            // 정렬
+            data = applySortToData('history-tbody', data);
+            tbody.innerHTML = data.map(d => {
+                const isBuy = (d.action || d.order_type || '').toLowerCase() === 'buy';
+                const s = isKr(d) ? '₩' : '$';
+                const retBadge = d.profit_pct != null
+                    ? `${badge(d.profit_pct)}<span class="${cls(d.profit || 0)}" style="font-size:.75rem;display:block">${d.profit > 0 ? '+' : ''}${fmtCurr(d.profit, s)}</span>`
+                    : '-';
+                return `<tr>
                 <td style="font-size:.8rem;white-space:nowrap">${(d.created_at || d.timestamp || d.date || '').slice(0, 16)}</td>
                 <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name || ''}</span></td>
                 <td><span class="badge ${isBuy ? 'b-up' : 'b-down'}">${isBuy ? 'BUY' : 'SELL'}</span></td>
@@ -1676,22 +1735,11 @@
                 <td>${fmtCurr(d.amount ?? ((d.price || 0) * (d.quantity || 0)), s)}</td>
                 <td>${retBadge}</td>
             </tr>`;
-                }).join('');
-            } catch (e) { showToast('❌ ' + e.message, false); }
+            }).join('');
         }
 
         // ─── Balance ───────────────────────────────────────────────────
-        let balanceMarketTab = 'all';
         let _balanceDataCache = null;
-
-        function switchBalanceTab(market) {
-            balanceMarketTab = market;
-            document.querySelectorAll('.dash-bal-tab').forEach(b => b.classList.remove('active'));
-            const tabBtn = document.getElementById('dash-bal-' + market);
-            if (tabBtn) tabBtn.classList.add('active');
-            if (_balanceDataCache) renderBalanceContent(_balanceDataCache);
-            else fetchBalance();
-        }
 
         async function fetchBalance() {
             const el = document.getElementById('balance-content');
@@ -1722,10 +1770,7 @@
             let dispCashStr = '';
             let dispStockStr = '';
 
-            let holdings = data.holdings || [];
-
-            if (balanceMarketTab === 'kr') {
-                holdings = holdings.filter(isKr);
+            if (dashMarketFilter === 'kr') {
                 dispTotal = kr.total || 0;
                 dispCash = kr.cash || 0;
                 dispStock = kr.current || 0;
@@ -1733,8 +1778,7 @@
                 dispTotalStr = '₩' + Math.round(dispTotal).toLocaleString();
                 dispCashStr = '₩' + Math.round(dispCash).toLocaleString();
                 dispStockStr = '₩' + Math.round(dispStock).toLocaleString();
-            } else if (balanceMarketTab === 'us') {
-                holdings = holdings.filter(h => !isKr(h));
+            } else if (dashMarketFilter === 'us') {
                 dispTotal = us.total_krw || 0;
                 dispCash = us.cash_krw || 0;
                 dispStock = us.current_krw || 0;
@@ -1767,50 +1811,7 @@
                 </div>
             `;
 
-            let holdingTable = '';
-            if (holdings.length) {
-                // sort holdings by evaluation amount descending
-                holdings.sort((a, b) => {
-                    const evalA = !isKr(a) ? ((a.quantity || 0) * (a.current_price || 0) * (analysis.exchange_rate || 1400)) : ((a.quantity || 0) * (a.current_price || 0));
-                    const evalB = !isKr(b) ? ((b.quantity || 0) * (b.current_price || 0) * (analysis.exchange_rate || 1400)) : ((b.quantity || 0) * (b.current_price || 0));
-                    return evalB - evalA;
-                });
-
-                holdingTable = `<div style="overflow-x:auto;"><table style="font-size:.85rem; width:100%;">
-                    <thead><tr>
-                        <th style="text-align:left">종목명</th>
-                        <th style="text-align:right">수량</th>
-                        <th style="text-align:right">평가금액</th>
-                        <th style="text-align:right">수익률</th>
-                        <th style="text-align:right">비중(%)</th>
-                    </tr></thead>
-                    <tbody>
-                        ${holdings.map(h => {
-                    const is_us = !isKr(h);
-                    const sym = is_us ? '$' : '₩';
-                    const pname = h.name || h.ticker;
-                    const qty = h.quantity || 0;
-                    const evalAmtNative = qty * (h.current_price || 0);
-                    // USD evaluation converted to KRW to calculate weight
-                    const evalAmtKrw = is_us ? (evalAmtNative * (analysis.exchange_rate || 1400)) : evalAmtNative;
-                    const ret = h.profit_pct ?? 0;
-                    const weightPct = dispTotal > 0 ? (evalAmtKrw / dispTotal * 100) : 0;
-
-                    return '<tr>' +
-                        '<td style="text-align:left"><b>' + pname + '</b><br><span class="sub-text">' + h.ticker + '</span></td>' +
-                        '<td style="text-align:right">' + qty.toLocaleString() + '</td>' +
-                        '<td style="text-align:right">' + fmtCurr(evalAmtNative, sym) + (is_us ? `<br><span class="sub-text">₩${Math.round(evalAmtKrw).toLocaleString()}</span>` : '') + '</td>' +
-                        '<td style="text-align:right">' + badge(ret) + '</td>' +
-                        '<td style="text-align:right">' + fmtPct(weightPct, false) + '</td>' +
-                        '</tr>';
-                }).join('')}
-                    </tbody>
-                </table></div>`;
-            } else {
-                holdingTable = `<div class="empty" style="padding:10px 0;font-size:0.82rem;">보유 종목 없음</div>`;
-            }
-
-            el.innerHTML = summaryHtml + holdingTable;
+            el.innerHTML = summaryHtml;
         }
 
         // ─── Sector Weights ────────────────────────────────────────────
@@ -2268,6 +2269,11 @@
             let entries = Object.entries(top20Cache).filter(([k]) => !k.startsWith('message'));
             if (marketFilter === 'us') entries = entries.filter(([t]) => !/^\d{6}$/.test(t));
             if (marketFilter === 'kr') entries = entries.filter(([t]) => /^\d{6}$/.test(t));
+            // 키워드 검색
+            const q = searchState['top20-tbody'];
+            if (q) entries = entries.filter(([t, i]) => t.toLowerCase().includes(q) || (i.name||'').toLowerCase().includes(q));
+            // 정렬
+            entries = applySortToData('top20-tbody', entries);
             if (!entries.length) {
                 const msg = marketFilter === 'all' ? '수집 중...' : '해당 시장 종목 없음';
                 tbody.innerHTML = `<tr><td colspan="8" class="empty">${msg}</td></tr>`;
@@ -2312,18 +2318,20 @@
             if (!signalsCache) return;
             const data = signalsCache;
 
+            // top20Cache 또는 monitored 데이터에서 종목명 조회
+            const getName = (t) => top20Cache?.[t]?.name || top20Cache?.[t]?.prdt_name || '';
+            const sigQ = searchState['signals-tbody'];
             const filterTicker = (t) => {
                 const kr = /^\d{6}$/.test(String(t));
-                if (marketFilter === 'us') return !kr;
-                if (marketFilter === 'kr') return kr;
+                if (marketFilter === 'us' && kr) return false;
+                if (marketFilter === 'kr' && !kr) return false;
+                if (sigQ && !String(t).toLowerCase().includes(sigQ) && !(getName(t)||'').toLowerCase().includes(sigQ)) return false;
                 return true;
             };
             const fmtSigPrice = (t, p) => {
                 if (p == null || p === 0) return '-';
                 return /^\d{6}$/.test(String(t)) ? '₩' + Math.round(p).toLocaleString() : '$' + fmt(p);
             };
-            // top20Cache 또는 monitored 데이터에서 종목명 조회
-            const getName = (t) => top20Cache?.[t]?.name || top20Cache?.[t]?.prdt_name || '';
 
             const rows = [];
             // RSI=0 (데이터 없음) 제외, 유효한 과매도만 표시
@@ -2608,7 +2616,7 @@
                 });
                 showToast('✅ DCF 설정 저장됨');
                 closeModal('dcfOverrideModal');
-                fetchPortfolioFull(true);
+                fetchPortfolioFull();
             } catch (e) { showToast('❌ ' + e.message, false); }
         }
 
@@ -2661,7 +2669,7 @@
                 if (!res.ok) throw new Error((await res.json()).detail || '실패');
                 const data = await res.json();
                 showToast('✅ ' + (data.message || '업로드 완료'));
-                fetchPortfolioFull(true);
+                fetchPortfolioFull();
             } catch (e) { showToast('❌ ' + e.message, false); }
             finally { input.value = ''; }
         }
@@ -2681,11 +2689,12 @@
                 fetchMacroBar(),
                 fetchStrategyStatus(),
                 fetchSectorWeightsMini(),
+                fetchPortfolioFull(),
             ]);
             // Refresh dashboard data less frequently (every 2 minutes)
             setInterval(() => {
                 const active = document.querySelector('.nav-item.active')?.dataset?.tab;
-                if (active === 'dashboard') { fetchBalance(); fetchMacroBar(); }
+                if (active === 'dashboard') { fetchBalance(); fetchMacroBar(); fetchPortfolioFull(); }
                 if (active === 'market') { fetchTop20(); fetchSignals(); }
             }, 120000);
         }
