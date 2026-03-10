@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Dict, List, Optional, Any
 
 class StockRequest(BaseModel):
@@ -268,7 +268,15 @@ class MacroDataSnapshot(BaseModel):
 
 class TradeRecordDto(BaseModel):
     """Single trade record (API response DTO)."""
-    id: Optional[int] = None
+    id: Optional[str] = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v):
+        if v is None:
+            return None
+        return str(v)
+
     ticker: str = ""
     order_type: str = ""
     quantity: int = 0

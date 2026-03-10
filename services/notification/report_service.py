@@ -140,9 +140,29 @@ class ReportService:
 
     @staticmethod
     def _compute_portfolio_totals(holdings: list, cash: float, summary: dict = None) -> dict:
-        """Return portfolio totals, P&L, and ratios as dict."""
+        """Return portfolio totals, P&L, and ratios as dict.
+
+        Uses KIS output2 summary fields when available:
+          dnca_tot_amt          예수금총금액
+          prvs_rcdl_excc_amt    가수도정산금액 (D+2 예수금)
+          scts_evlu_amt         유가평가금액
+          tot_evlu_amt          총평가금액 (= 유가평가 + D+2 예수금)
+          nass_amt              순자산금액
+          pchs_amt_smtl_amt     매입금액합계금액
+          evlu_amt_smtl_amt     평가금액합계금액
+          evlu_pfls_smtl_amt    평가손익합계금액
+        """
         from services.config.settings_service import SettingsService
         from services.market.macro_service import MacroService
+
+        def _sf(key: str) -> float:
+            """Extract float from KIS summary."""
+            if not summary:
+                return 0.0
+            try:
+                return float(summary.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
 
         initial_principal = SettingsService.get_float("PORTFOLIO_INITIAL_PRINCIPAL", 10000000.0)
         usd_cash = SettingsService.get_float("PORTFOLIO_USD_CASH_BALANCE", 0.0)
@@ -156,12 +176,25 @@ class ReportService:
         kr_holdings = filter_kr(holdings)
         us_holdings = filter_us(holdings)
 
-        kr_stock_val = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in kr_holdings)
-        kr_invested = sum(h.get("buy_price", 0) * h.get("quantity", 0) for h in kr_holdings)
+        # KR: prefer KIS summary values, fallback to holdings calculation
+        kis_scts_evlu = _sf("scts_evlu_amt")          # 유가평가금액
+        kis_pchs_amt = _sf("pchs_amt_smtl_amt")       # 매입금액합계
+        kis_evlu_amt = _sf("evlu_amt_smtl_amt")        # 평가금액합계
+        kis_evlu_pfls = _sf("evlu_pfls_smtl_amt")      # 평가손익합계
+        kis_tot_evlu = _sf("tot_evlu_amt")             # 총평가금액
+        kis_nass = _sf("nass_amt")                     # 순자산금액
+
+        kr_stock_val_calc = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in kr_holdings)
+        kr_invested_calc = sum(h.get("buy_price", 0) * h.get("quantity", 0) for h in kr_holdings)
+
+        # Use KIS-provided values when available (more accurate than local calculation)
+        kr_stock_val = kis_evlu_amt if kis_evlu_amt > 0 else kr_stock_val_calc
+        kr_invested = kis_pchs_amt if kis_pchs_amt > 0 else kr_invested_calc
+
         us_stock_usd = sum(h.get("current_price", 0) * h.get("quantity", 0) for h in us_holdings)
         us_invested_usd = sum(h.get("buy_price", 0) * h.get("quantity", 0) for h in us_holdings)
         us_stock_krw = us_stock_usd * exchange_rate
-        cash_krw = max(0.0, float(cash)) if cash is not None else 0.0
+        cash_krw = float(cash) if cash is not None else 0.0
         usd_cash_krw = usd_cash * exchange_rate
 
         kr_total_krw = kr_stock_val + cash_krw
@@ -169,7 +202,7 @@ class ReportService:
         us_total_krw = us_stock_krw + usd_cash_krw
         total_eval = kr_total_krw + us_total_krw
 
-        kr_profit = kr_stock_val - kr_invested
+        kr_profit = kis_evlu_pfls if kis_evlu_pfls != 0 else (kr_stock_val - kr_invested)
         kr_profit_pct = (kr_profit / kr_invested * 100) if kr_invested > 0 else 0.0
         us_profit_usd = us_stock_usd - us_invested_usd
         us_profit_pct = (us_profit_usd / us_invested_usd * 100) if us_invested_usd > 0 else 0.0
@@ -193,6 +226,8 @@ class ReportService:
             "principal_profit": principal_profit, "principal_profit_pct": principal_profit_pct,
             "principal_color": principal_color,
             "kr_ratio": kr_ratio, "us_ratio": us_ratio, "exchange_rate": exchange_rate,
+            # KIS raw summary values for display
+            "kis_tot_evlu": kis_tot_evlu, "kis_nass": kis_nass,
         }
 
     @staticmethod
@@ -206,6 +241,11 @@ class ReportService:
             f"- P&L vs Principal: {t['principal_color']} {t['principal_profit']:,.0f}KRW ({t['principal_profit_pct']:+.2f}%)",
         ]
 
+        # KIS output2 summary fields (주식잔고조회 v1_국내주식-006)
+        # tot_evlu_amt = 유가평가 + D+2 예수금 (미수금 차감된 순자산 개념)
+        if t.get("kis_tot_evlu"):
+            lines.append(f"- KIS 국내순자산 (주식+예수금): {t['kis_tot_evlu']:,.0f}KRW")
+
         account_eval_profit = None
         if summary:
             try:
@@ -214,7 +254,7 @@ class ReportService:
                 pass
         if account_eval_profit is not None:
             kis_color = "🔴" if account_eval_profit > 0 else ("🔵" if account_eval_profit < 0 else "⚪")
-            lines.append(f"- Account P&L (KIS): {kis_color} {account_eval_profit:,.0f}KRW")
+            lines.append(f"- KIS 평가손익합계: {kis_color} {account_eval_profit:,.0f}KRW")
 
         lines.extend(ReportService._format_kr_section(
             t['kr_holdings'], t['kr_stock_val'], t['kr_invested'], t['kr_profit'], t['kr_profit_pct'],

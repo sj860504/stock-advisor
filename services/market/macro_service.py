@@ -146,8 +146,18 @@ class MacroService:
 
     @classmethod
     def get_exchange_rate(cls) -> float:
-        """Exchange rate via KIS (fixed value for now, extensible via API)."""
-        # KIS provides exchange rate data, but simplified to 1400 for now
+        """USD/KRW exchange rate via yfinance, fallback to 1400."""
+        try:
+            import yfinance as yf
+            data = yf.Ticker("USDKRW=X").history(period="5d")
+            if data is not None and not data.empty and "Close" in data.columns:
+                rate = float(data["Close"].dropna().iloc[-1])
+                if rate > 0:
+                    logger.info(f"💱 Exchange rate (yfinance): {rate:.2f}")
+                    return rate
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch exchange rate from yfinance: {e}")
+        logger.warning("⚠️ Using fallback exchange rate: 1400.0")
         return 1400.0
 
     # yfinance fallback symbols (used when KIS IDX returns 0)

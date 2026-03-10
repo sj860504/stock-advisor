@@ -148,7 +148,18 @@ class PortfolioService:
 
     @classmethod
     def _extract_kr_cash_from_summary(cls, balance_data: dict) -> tuple[dict, float]:
-        """Return the best summary item and KR cash from balance_data."""
+        """Return the best summary item and KR cash from balance_data.
+
+        KIS output2 key fields (from API docs 주식잔고조회 v1_국내주식-006):
+          dnca_tot_amt          예수금총금액
+          prvs_rcdl_excc_amt    가수도정산금액 (D+2 예수금, 실질 주문가능현금)
+          scts_evlu_amt         유가평가금액 (보유주식 평가합계)
+          tot_evlu_amt          총평가금액 (= 유가평가금액 + D+2 예수금)
+          nass_amt              순자산금액
+          pchs_amt_smtl_amt     매입금액합계금액
+          evlu_amt_smtl_amt     평가금액합계금액
+          evlu_pfls_smtl_amt    평가손익합계금액
+        """
         summary_items = balance_data.get("summary", [])
         if len(summary_items) > 1:
             summary = max(
@@ -157,11 +168,11 @@ class PortfolioService:
             )
         else:
             summary = summary_items[0] if summary_items else {}
-        # prvs_rcdl_excc_amt = actual orderable amount including D+2 settled sell proceeds
-        # dnca_tot_amt = daily deposit (may understate as unsettled D+2 sell proceeds are excluded)
+        # D+2 예수금 = 실질 현금 (미수/신용 시 음수 가능)
         prvs = cls._extract_float(summary, "prvs_rcdl_excc_amt")
         dnca = cls._extract_float(summary, "dnca_tot_amt")
-        return summary, max(0.0, prvs if prvs > 0 else dnca)
+        cash = prvs if prvs != 0 else dnca
+        return summary, cash
 
     @classmethod
     def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
@@ -180,11 +191,26 @@ class PortfolioService:
         }
 
         holdings, us_by_ticker = cls._parse_balance_holdings(balance_data, existing_sector_map)
-        cls._apply_overseas_balance_override(KisService.get_overseas_balance(), us_by_ticker, existing_sector_map)
+        overseas_balance = KisService.get_overseas_balance()
+        cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
         holdings.extend(us_by_ticker.values() if us_by_ticker else existing_us_map.values())
 
         summary, cash = cls._extract_kr_cash_from_summary(balance_data)
-        summary["_usd_cash_balance"] = cls.get_usd_cash_balance()
+
+        # Store overseas KRW evaluation from overseas balance summary
+        if overseas_balance and overseas_balance.get("summary"):
+            ovrs_summary = overseas_balance["summary"]
+            if isinstance(ovrs_summary, list) and ovrs_summary:
+                ovrs_summary = ovrs_summary[0]
+            if isinstance(ovrs_summary, dict):
+                ovrs_tot_pfls = cls._extract_float(ovrs_summary, "ovrs_tot_pfls")
+                frcr_pchs_amt = cls._extract_float(ovrs_summary, "frcr_pchs_amt1")
+                tot_evlu_pfls = cls._extract_float(ovrs_summary, "tot_evlu_pfls_amt")
+                summary["_overseas_summary"] = ovrs_summary
+                if tot_evlu_pfls != 0:
+                    summary["_overseas_evlu_pfls_krw"] = tot_evlu_pfls
+
+        summary["_usd_cash_balance"] = cls.get_usd_cash_balance(overseas_balance=overseas_balance)
         cls._last_balance_summary = summary
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
@@ -203,12 +229,34 @@ class PortfolioService:
         return cls._last_balance_summary or {}
 
     @classmethod
-    def get_usd_cash_balance(cls) -> float:
-        """Query US foreign cash (USD): KIS available buy amount API or settings value."""
+    def get_usd_cash_balance(cls, overseas_balance: Optional[dict] = None) -> float:
+        """Query US foreign cash (USD): KIS available buy amount API → overseas balance reverse-calc → settings."""
+        # 1. Try direct API query
         available_usd = KisService.get_overseas_available_cash()
         if available_usd is not None and available_usd > 0:
             return available_usd
-        
+
+        # 2. Reverse-calculate from overseas balance summary
+        if overseas_balance and overseas_balance.get("summary"):
+            try:
+                ovrs_summary = overseas_balance["summary"]
+                if isinstance(ovrs_summary, list) and ovrs_summary:
+                    ovrs_summary = ovrs_summary[0]
+                if isinstance(ovrs_summary, dict):
+                    # tot_aset_amt = total asset (holdings + cash) in USD
+                    # frcr_pchs_amt1 = foreign currency purchase amount (holdings cost)
+                    tot_aset = cls._extract_float(ovrs_summary, "tot_aset_amt")
+                    frcr_evlu = cls._extract_float(ovrs_summary, "frcr_evlu_amt2", "evlu_amt_smtl_amt")
+                    if tot_aset > 0 and frcr_evlu > 0:
+                        usd_cash = tot_aset - frcr_evlu
+                        if usd_cash > 0:
+                            logger.info(f"💰 USD cash (reverse-calc from overseas summary): ${usd_cash:,.2f}")
+                            SettingsService.set_setting("PORTFOLIO_USD_CASH_BALANCE", str(usd_cash))
+                            return usd_cash
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to reverse-calc USD cash from overseas summary: {e}")
+
+        # 3. Fall back to settings
         return SettingsService.get_float("PORTFOLIO_USD_CASH_BALANCE", 0.0)
 
     @staticmethod

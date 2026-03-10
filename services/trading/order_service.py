@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from models.schemas import TradeRecordDto
+from repositories.stock_meta_repo import StockMetaRepo
 from repositories.trade_history_repo import TradeHistoryRepo
 from utils.logger import get_logger
 from utils.market import is_kr
@@ -123,81 +124,41 @@ class OrderService:
         date: Optional[str] = None,
         action: Optional[str] = None,
     ) -> List[TradeRecordDto]:
-        """Retrieve recent trade history from KIS API. limit/date/action are somewhat loosely applied to the fetched batch."""
-        from services.kis.kis_service import KisService
-        from datetime import datetime, timedelta
-        
+        """Retrieve recent trade history from DB."""
         try:
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
-            
-            kis_trades = []
-            
-            # Domestic
-            if market in (None, "kr", "KR"):
-                dom_raw = KisService.get_domestic_trade_history(start_date, end_date)
-                for r in dom_raw:
-                    # '01' is typically sell, '02' is buy in KIS
-                    act = "sell" if r.get("sll_buy_dvsn_cd") in ("01", "1") else "buy"
-                    qty = int(r.get("tot_ccld_qty", 0) or 0)
-                    if qty > 0:
-                        prdt_name = r.get("prdt_name") or r.get("pdno")
-                        ts_str = f"{r.get('ord_dt', '')} {r.get('ord_tmd', '')}"
-                        kis_trades.append(TradeRecordDto(
-                            id=f"kr_{r.get('ord_dt')}_{r.get('odno')}",
-                            ticker=r.get("pdno"),
-                            order_type=act,
-                            quantity=qty,
-                            price=float(r.get("avg_prvs", 0) or 0),
-                            result_msg="KIS Sync",
-                            timestamp=ts_str,
-                            strategy_name="KIS_BROKER",
-                            name=prdt_name,
-                            buy_price=None,
-                            profit=None,
-                            profit_pct=None
-                        ))
-                        
-            # Overseas
-            if market in (None, "us", "US"):
-                ovs_raw = KisService.get_overseas_trade_history(start_date, end_date)
-                for r in ovs_raw:
-                    # '01' is sell, '02' is buy typically
-                    act = "sell" if r.get("sll_buy_dvsn_cd") in ("01", "1") else "buy"
-                    qty = int(float(r.get("ft_ccld_qty", 0) or 0))
-                    if qty > 0:
-                        prdt_name = r.get("prdt_name") or r.get("pdno")
-                        ts_str = f"{r.get('ord_dt', '')} {r.get('ord_tmd', '')}"
-                        kis_trades.append(TradeRecordDto(
-                            id=f"us_{r.get('ord_dt')}_{r.get('odno')}",
-                            ticker=r.get("pdno"),
-                            order_type=act,
-                            quantity=qty,
-                            price=float(r.get("ft_ccld_pr3", 0) or 0),
-                            result_msg="KIS Sync",
-                            timestamp=ts_str,
-                            strategy_name="KIS_BROKER",
-                            name=prdt_name,
-                            buy_price=None,
-                            profit=None,
-                            profit_pct=None
-                        ))
-            
-            # Apply filters
-            if action:
-                kis_trades = [t for t in kis_trades if t.order_type == action.lower()]
-            if date:
-                kis_trades = [t for t in kis_trades if t.timestamp and t.timestamp.startswith(date.replace("-", ""))]
-                
-            # Sort descending by timestamp
-            kis_trades = sorted(kis_trades, key=lambda x: x.timestamp or "", reverse=True)
-            
-            # Limit
-            return kis_trades[:limit]
-            
+            # Normalize market filter
+            mkt = market.lower() if market else None
+            trades = TradeHistoryRepo.query(market=mkt, date=date, action=action, limit=limit)
+            tickers = list(set(t.ticker for t in trades))
+            name_map = StockMetaRepo.get_name_map(tickers)
+            return [cls._to_trade_record_dto(t, name_map) for t in trades]
         except Exception as e:
-            logger.error(f"❌ Error fetching trade history from KIS: {e}")
+            logger.error(f"❌ Error fetching trade history from DB: {e}")
             return []
+
+    @staticmethod
+    def _to_trade_record_dto(t, name_map: dict = None) -> TradeRecordDto:
+        """Convert TradeHistory DB model to TradeRecordDto."""
+        profit = None
+        profit_pct = None
+        if t.order_type == "sell" and t.buy_price_at_trade and t.buy_price_at_trade > 0:
+            profit = round((t.price - t.buy_price_at_trade) * t.quantity, 2)
+            profit_pct = round((t.price - t.buy_price_at_trade) / t.buy_price_at_trade * 100, 2)
+        name = name_map.get(t.ticker) if name_map else None
+        return TradeRecordDto(
+            id=str(t.id),
+            ticker=t.ticker,
+            order_type=t.order_type,
+            quantity=t.quantity,
+            price=t.price,
+            result_msg=t.result_msg,
+            timestamp=t.timestamp.strftime("%Y-%m-%d %H:%M:%S") if t.timestamp else None,
+            strategy_name=t.strategy_name or "",
+            name=name,
+            buy_price=t.buy_price_at_trade,
+            profit=profit,
+            profit_pct=profit_pct,
+        )
 
     @classmethod
     def get_trade_history_by_date_range(

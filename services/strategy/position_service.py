@@ -10,6 +10,7 @@ from typing import Optional
 
 import pytz
 
+from services.market.market_data_service import MarketDataService
 from services.market.macro_service import MacroService
 from services.config.settings_service import SettingsService
 from services.strategy.execution_service_v2 import TradeExecutorService
@@ -291,7 +292,9 @@ class PositionService:
             if not qty or qty <= 0:
                 continue
             buy_price = float(h.get('buy_price') or 0)
-            current_price = float(h.get('current_price') or 0)
+            cached_state = MarketDataService.get_state(ticker)
+            cached_price = getattr(cached_state, 'current_price', 0) if cached_state else 0
+            current_price = cached_price if cached_price > 0 else float(h.get('current_price') or 0)
             if buy_price <= 0 or current_price <= 0:
                 continue
             profit_pct = (current_price - buy_price) / buy_price * 100

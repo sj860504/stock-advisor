@@ -65,5 +65,13 @@
 
 ---
 
-**Last Updated**: 2026-03-06
+## Development Rules
+
+- **Trade history 조회는 반드시 DB(`TradeHistoryRepo`)를 사용할 것. KIS API 히스토리 조회 사용 금지.**
+- **KIS 토큰은 DB에서 조회하여 사용할 것. 파일 기반 토큰 사용 금지.**
+- **가상환경 활성화**: `source /root/stock-advisor/venv/bin/activate`
+
+---
+
+**Last Updated**: 2026-03-10
 **Optimized with**: [Claude Token Optimizer](https://github.com/nadimtuhin/claude-token-optimizer)

@@ -25,6 +25,7 @@ class KisService:
     _access_token = None
     _token_expiry = None
     _last_balance_data = None
+    _last_overseas_balance_data = None
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
     _min_req_interval = 0.55  # ~2 TPS rate limit for VTS
@@ -220,10 +221,12 @@ class KisService:
 
     @classmethod
     def _parse_balance_response(cls, data: dict) -> dict:
-        """Convert output1/output2 to holdings/summary dict."""
+        """Convert output1/output2 to holdings/summary dict, preserving ctx tokens."""
         return {
             "holdings": data.get("output1", []),
-            "summary": data.get("output2", [])
+            "summary": data.get("output2", []),
+            "ctx_area_fk100": data.get("ctx_area_fk100", ""),
+            "ctx_area_nk100": data.get("ctx_area_nk100", ""),
         }
 
     @classmethod
@@ -268,7 +271,7 @@ class KisService:
 
     @classmethod
     def get_balance(cls) -> Optional[dict]:
-        """Get stock balance (domestic paper trading)."""
+        """Get stock balance (domestic) — fetches ALL pages."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -284,15 +287,36 @@ class KisService:
             "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
             "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""
         }
-        result, last_err = cls._balance_retry_loop(url, headers, params)
-        if result is not None:
-            cls._last_balance_data = result
-            return result
-        logger.error(f"❌ Error fetching balance after retries: {last_err}")
-        if cls._last_balance_data:
-            logger.warning("⚠️ Using last successful balance response as fallback.")
-            return cls._last_balance_data
-        return None
+
+        all_holdings = []
+        summary = []
+
+        for page in range(10):  # safety limit
+            result, last_err = cls._balance_retry_loop(url, headers, params)
+            if result is None:
+                if page == 0:
+                    logger.error(f"❌ Error fetching balance after retries: {last_err}")
+                    if cls._last_balance_data:
+                        logger.warning("⚠️ Using last successful balance response as fallback.")
+                        return cls._last_balance_data
+                    return None
+                break
+            all_holdings.extend(result.get("holdings", []))
+            if not summary:
+                summary = result.get("summary", [])
+
+            # Check continuation tokens
+            ctx_fk = result.get("ctx_area_fk100", "").strip()
+            ctx_nk = result.get("ctx_area_nk100", "").strip()
+            if not ctx_fk and not ctx_nk:
+                break
+            params["CTX_AREA_FK100"] = ctx_fk
+            params["CTX_AREA_NK100"] = ctx_nk
+            headers["tr_cont"] = "N"  # continuation request
+
+        combined = {"holdings": all_holdings, "summary": summary}
+        cls._last_balance_data = combined
+        return combined
 
     @classmethod
     def _parse_overseas_balance_response(cls, data: dict) -> dict:
@@ -303,14 +327,14 @@ class KisService:
 
     @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
-        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Returns None on failure."""
+        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Fetches ALL pages. Returns None on failure."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
 
         url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-balance"
         tr_ids = ["VTTS3012R", "TTTS3012R", "VTTT3012R", "TTTT3012R"]
-        params = {
+        base_params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": "", "TR_CRCY_CD": "USD",
             "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""
@@ -318,17 +342,47 @@ class KisService:
 
         for tr_id in tr_ids:
             try:
-                headers = cls.get_headers(tr_id)
-                response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
-                if response.status_code >= 500:
-                    continue
-                response.raise_for_status()
-                response_data = response.json()
-                if response_data.get("rt_cd") != "0":
-                    continue
-                return cls._parse_overseas_balance_response(response_data)
-            except Exception:
+                all_holdings = []
+                summary = []
+                params = dict(base_params)
+
+                for page in range(10):  # safety limit
+                    headers = cls.get_headers(tr_id)
+                    if page > 0:
+                        headers["tr_cont"] = "N"
+                    response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
+                    if response.status_code >= 500:
+                        break
+                    response.raise_for_status()
+                    response_data = response.json()
+                    if response_data.get("rt_cd") != "0":
+                        break
+
+                    output1 = response_data.get("output1", []) or []
+                    output2 = response_data.get("output2", []) or []
+                    all_holdings.extend(output1)
+                    if not summary:
+                        summary = output2
+
+                    ctx_fk = response_data.get("ctx_area_fk200", "").strip()
+                    ctx_nk = response_data.get("ctx_area_nk200", "").strip()
+                    if not ctx_fk and not ctx_nk:
+                        break
+                    params["CTX_AREA_FK200"] = ctx_fk
+                    params["CTX_AREA_NK200"] = ctx_nk
+
+                if all_holdings:
+                    result = {"holdings": all_holdings, "summary": summary}
+                    cls._last_overseas_balance_data = result
+                    return result
+            except Exception as e:
+                logger.warning(f"⚠️ Overseas balance tr_id={tr_id} failed: {e}")
                 continue
+
+        if cls._last_overseas_balance_data:
+            logger.warning("⚠️ All overseas balance attempts failed. Using last cached result as fallback.")
+            return cls._last_overseas_balance_data
+        logger.error("❌ All overseas balance attempts failed with no cached fallback.")
         return None
 
     @classmethod
@@ -600,16 +654,31 @@ class KisService:
             "CTX_AREA_NK100": ""
         }
         
+        all_records = []
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            if response.status_code == 200:
+            for page in range(10):
+                if page > 0:
+                    headers = cls.get_headers(tr_id)
+                    headers["tr_cont"] = "N"
+                cls._throttle_request()
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                if response.status_code != 200:
+                    break
                 data = response.json()
-                if data.get("rt_cd") == "0":
-                    return data.get("output1", [])
-            logger.error(f"❌ KIS Domestic History API Error: {response.text}")
+                if data.get("rt_cd") != "0":
+                    break
+                all_records.extend(data.get("output1", []))
+                ctx_fk = data.get("ctx_area_fk100", "").strip()
+                ctx_nk = data.get("ctx_area_nk100", "").strip()
+                if not ctx_fk and not ctx_nk:
+                    break
+                params["CTX_AREA_FK100"] = ctx_fk
+                params["CTX_AREA_NK100"] = ctx_nk
         except Exception as e:
             logger.error(f"❌ Request failed for domestic trade history: {e}")
-        return []
+        if not all_records:
+            logger.warning("⚠️ No domestic trade history records found")
+        return all_records
 
     @classmethod
     def get_overseas_trade_history(cls, start_date: str, end_date: str) -> list:
@@ -636,13 +705,28 @@ class KisService:
             "CTX_AREA_FK200": ""
         }
         
+        all_records = []
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            if response.status_code == 200:
+            for page in range(10):
+                if page > 0:
+                    headers = cls.get_headers(tr_id)
+                    headers["tr_cont"] = "N"
+                cls._throttle_request()
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                if response.status_code != 200:
+                    break
                 data = response.json()
-                if data.get("rt_cd") == "0":
-                    return data.get("output", [])
-            logger.error(f"❌ KIS Overseas History API Error: {response.text}")
+                if data.get("rt_cd") != "0":
+                    break
+                all_records.extend(data.get("output", []))
+                ctx_fk = data.get("ctx_area_fk200", "").strip()
+                ctx_nk = data.get("ctx_area_nk200", "").strip()
+                if not ctx_fk and not ctx_nk:
+                    break
+                params["CTX_AREA_FK200"] = ctx_fk
+                params["CTX_AREA_NK200"] = ctx_nk
         except Exception as e:
             logger.error(f"❌ Request failed for overseas trade history: {e}")
-        return []
+        if not all_records:
+            logger.warning("⚠️ No overseas trade history records found")
+        return all_records

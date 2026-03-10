@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body, Query
 from services.kis.kis_service import KisService
 from services.strategy.trading_strategy_service import TradingStrategyService
+from services.strategy.backtest_service import BacktestService
 from services.trading.order_service import OrderService
 from services.trading.portfolio_service import PortfolioService
 from services.config.settings_service import SettingsService
@@ -179,6 +180,21 @@ async def update_tick_settings(payload: TickTradingSettingsRequest) -> TickSetti
         SettingsService.update_tick_settings(updates)
         return TickSettingsUpdateResponse(status="success", updated=updates)
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/backtest/portfolio", response_model=Dict[str, Any])
+async def run_portfolio_backtest(
+    years: int = Body(2, ge=1, le=3),
+    initial_capital: float = Body(10_000_000),
+) -> Dict[str, Any]:
+    """Run portfolio-level backtest with multi-ticker RSI strategy."""
+    try:
+        return BacktestService.run_portfolio_backtest(
+            years=years, initial_capital=initial_capital
+        )
+    except Exception as e:
+        logger.error(f"Portfolio backtest error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

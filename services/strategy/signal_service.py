@@ -324,7 +324,7 @@ class SignalService:
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
 
         analyze_kr = not is_us_open
-        analyze_us = not is_kr_open
+        analyze_us = not is_kr_open or MarketHourService.is_us_strategy_window(allow_extended=allow_extended, lead_minutes=30)
         logger.info(f"📊 Market status: KR_open={is_kr_open}, US_open={is_us_open} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
 
         all_states = MarketDataService.get_all_states()

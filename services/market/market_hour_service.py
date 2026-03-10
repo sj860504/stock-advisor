@@ -70,6 +70,19 @@ class MarketHourService:
 
         return start_time <= now.time() <= end_time
 
+    @classmethod
+    def is_us_strategy_window(cls, allow_extended: bool = False, lead_minutes: int = 30) -> bool:
+        """Check if US strategy analysis window is open (market open - lead_minutes ~ market close)."""
+        tz = pytz.timezone('America/New_York')
+        now = datetime.now(tz)
+        if now.weekday() >= 5 or cls._is_us_market_holiday(now.date()):
+            return False
+        us_allow_extended = allow_extended and (not Config.KIS_IS_VTS or Config.has_real_credentials())
+        market_start = time(4, 0) if us_allow_extended else time(9, 30)
+        market_end = time(20, 0) if us_allow_extended else time(16, 0)
+        window_start = (datetime.combine(now.date(), market_start) - timedelta(minutes=lead_minutes)).time()
+        return cls._is_time_between(now.time(), window_start, market_end)
+
     @staticmethod
     def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
         """Calculate observed date for fixed holidays (Fri/Mon substitution if on weekend)."""

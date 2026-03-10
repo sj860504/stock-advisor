@@ -539,14 +539,17 @@ class TradingStrategyService:
 
         logger.info(f"manual sell execution: {ticker} {quantity} qty")
 
-        order_result = KisService.send_order(ticker, quantity, 0, "sell")
-        if order_result.get("status") == "success":
+        current_price = holding.get('current_price', 0)
+        ok, err = OrderService.sell_single_holding(ticker, holding.get('name', ticker), quantity, current_price)
+        if ok:
             OrderService.record_trade(
                 ticker=ticker,
                 order_type="sell",
                 quantity=quantity,
-                price=holding.get('current_price', 0),
+                price=current_price,
                 result_msg="Manual Sell Execution",
-                strategy_name="manual"
+                strategy_name="manual",
+                buy_price=holding.get('buy_price', None),
             )
-        return order_result
+            return {"status": "success", "msg": f"{ticker} {quantity} shares sold"}
+        return {"status": "failed", "msg": err}
