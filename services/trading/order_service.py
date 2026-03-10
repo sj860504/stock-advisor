@@ -121,21 +121,82 @@ class OrderService:
         limit: int = DEFAULT_TRADE_HISTORY_LIMIT,
         market: Optional[str] = None,
         date: Optional[str] = None,
+        action: Optional[str] = None,
     ) -> List[TradeRecordDto]:
-        """Retrieve recent trade history. market=kr/us/None(all), date=YYYY-MM-DD."""
+        """Retrieve recent trade history from KIS API. limit/date/action are somewhat loosely applied to the fetched batch."""
+        from services.kis.kis_service import KisService
+        from datetime import datetime, timedelta
+        
         try:
-            if market in ("kr", "us"):
-                trades = TradeHistoryRepo.query(market=market, date=date, limit=limit)
-            else:
-                # All: ensure half records each for KR/US
-                half = limit // 2
-                kr_trades = TradeHistoryRepo.query(market="kr", date=date, limit=half)
-                us_trades = TradeHistoryRepo.query(market="us", date=date, limit=half)
-                trades = sorted(kr_trades + us_trades, key=lambda x: x.timestamp, reverse=True)
-            holdings_map = TradeHistoryRepo.get_holdings_map([t.ticker for t in trades])
-            return [cls._to_dto(r, holdings_map) for r in trades]
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
+            
+            kis_trades = []
+            
+            # Domestic
+            if market in (None, "kr", "KR"):
+                dom_raw = KisService.get_domestic_trade_history(start_date, end_date)
+                for r in dom_raw:
+                    # '01' is typically sell, '02' is buy in KIS
+                    act = "sell" if r.get("sll_buy_dvsn_cd") in ("01", "1") else "buy"
+                    qty = int(r.get("tot_ccld_qty", 0) or 0)
+                    if qty > 0:
+                        prdt_name = r.get("prdt_name") or r.get("pdno")
+                        ts_str = f"{r.get('ord_dt', '')} {r.get('ord_tmd', '')}"
+                        kis_trades.append(TradeRecordDto(
+                            id=f"kr_{r.get('ord_dt')}_{r.get('odno')}",
+                            ticker=r.get("pdno"),
+                            order_type=act,
+                            quantity=qty,
+                            price=float(r.get("avg_prvs", 0) or 0),
+                            result_msg="KIS Sync",
+                            timestamp=ts_str,
+                            strategy_name="KIS_BROKER",
+                            name=prdt_name,
+                            buy_price=None,
+                            profit=None,
+                            profit_pct=None
+                        ))
+                        
+            # Overseas
+            if market in (None, "us", "US"):
+                ovs_raw = KisService.get_overseas_trade_history(start_date, end_date)
+                for r in ovs_raw:
+                    # '01' is sell, '02' is buy typically
+                    act = "sell" if r.get("sll_buy_dvsn_cd") in ("01", "1") else "buy"
+                    qty = int(float(r.get("ft_ccld_qty", 0) or 0))
+                    if qty > 0:
+                        prdt_name = r.get("prdt_name") or r.get("pdno")
+                        ts_str = f"{r.get('ord_dt', '')} {r.get('ord_tmd', '')}"
+                        kis_trades.append(TradeRecordDto(
+                            id=f"us_{r.get('ord_dt')}_{r.get('odno')}",
+                            ticker=r.get("pdno"),
+                            order_type=act,
+                            quantity=qty,
+                            price=float(r.get("ft_ccld_pr3", 0) or 0),
+                            result_msg="KIS Sync",
+                            timestamp=ts_str,
+                            strategy_name="KIS_BROKER",
+                            name=prdt_name,
+                            buy_price=None,
+                            profit=None,
+                            profit_pct=None
+                        ))
+            
+            # Apply filters
+            if action:
+                kis_trades = [t for t in kis_trades if t.order_type == action.lower()]
+            if date:
+                kis_trades = [t for t in kis_trades if t.timestamp and t.timestamp.startswith(date.replace("-", ""))]
+                
+            # Sort descending by timestamp
+            kis_trades = sorted(kis_trades, key=lambda x: x.timestamp or "", reverse=True)
+            
+            # Limit
+            return kis_trades[:limit]
+            
         except Exception as e:
-            logger.error(f"❌ Error fetching trade history: {e}")
+            logger.error(f"❌ Error fetching trade history from KIS: {e}")
             return []
 
     @classmethod

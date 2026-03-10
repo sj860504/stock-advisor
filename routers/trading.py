@@ -56,13 +56,30 @@ async def place_order(order: OrderRequest) -> Dict[str, Any]:
 async def get_balance() -> Dict[str, Any]:
     """Query stock balance."""
     try:
-        balance = KisService.get_balance()
-        if balance:
-            return balance
-        raise HTTPException(status_code=400, detail="Failed to fetch balance")
-    except HTTPException:
-        raise
+        from services.trading.portfolio_service import PortfolioService
+        from services.base.scheduler_service import SchedulerService
+        kis_balance = KisService.get_balance() or {}
+        
+        # user_id is hardcoded to "sean" in several places, use as default to fetch portfolio analysis
+        analysis = PortfolioService.analyze_portfolio("sean", SchedulerService.get_all_cached_prices())
+        
+        total_eval = (
+            analysis.get("summary", {}).get("total_current", 0) + 
+            analysis.get("kr", {}).get("cash", 0) + 
+            analysis.get("us", {}).get("cash_krw", 0)
+        )
+        
+        return {
+            "total_eval": total_eval,
+            "cash_kr": analysis.get("kr", {}).get("cash", 0),
+            "cash_us": analysis.get("us", {}).get("cash_usd", 0),
+            "profit_loss": analysis.get("summary", {}).get("profit", 0),
+            "holdings": analysis.get("holdings", []), # Unified holdings with profit_pct
+            "analysis": analysis,
+            "summary": kis_balance.get("summary", [])
+        }
     except Exception as e:
+        logger.error(f"Error fetching balance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -80,10 +97,11 @@ async def get_trade_history(
     limit: int = Query(default=50, ge=1, le=1000),
     market: Optional[str] = None,
     date: Optional[str] = None,
+    action: Optional[str] = None,
 ) -> List[TradeRecordDto]:
-    """Get trade history. market=kr/us (all if unspecified), date=YYYY-MM-DD (all if unspecified)."""
+    """Get trade history. market=kr/us, action=buy/sell, date=YYYY-MM-DD."""
     try:
-        return OrderService.get_trade_history(limit, market=market, date=date)
+        return OrderService.get_trade_history(limit, market=market, date=date, action=action)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

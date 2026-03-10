@@ -38,6 +38,9 @@ class Config:
     # FRED API (macroeconomics)
     FRED_API_KEY = os.getenv("FRED_API_KEY")
     
+    # Financial Modeling Prep API (for ISM Services PMI calendar)
+    FMP_API_KEY = os.getenv("FMP_API_KEY")
+    
     # Dev mode (true: suppress Slack buy/sell notifications)
     DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 

@@ -390,25 +390,12 @@ class TradeExecutorService:
         is_kr_flag = is_kr(ticker)
         price_str = f"{current_price:,.0f}KRW" if is_kr_flag else f"${current_price:,.2f}"
         if side == "buy":
-            msg = (
-                f"🔵 *[BUY Executed - Tick Trade]*\n"
-                f"• Ticker: {ticker} {name}\n"
-                f"• Buy price: {price_str}\n"
-                f"• Qty: {qty} shares\n"
-                f"• Reason: {reason}"
-            )
+            msg = f"🔵 *[BUY Executed - Tick]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {qty} shares | Reason: {reason}"
         else:
             buy_price = float(holding.get("buy_price", 0)) if holding else 0
             profit_amt = (current_price - buy_price) * qty if buy_price else 0
             profit_amt_str = f"{profit_amt:+,.0f}KRW" if is_kr_flag else f"${profit_amt:+,.2f}"
-            msg = (
-                f"🔴 *[SELL Executed - Tick Trade]*\n"
-                f"• Ticker: {ticker} {name}\n"
-                f"• Sell price: {price_str}\n"
-                f"• Qty: {qty} shares\n"
-                f"• PnL: {pnl_pct:+.2f}%  |  Profit: {profit_amt_str}\n"
-                f"• Reason: {reason}"
-            )
+            msg = f"🔴 *[SELL Executed - Tick]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {qty} shares, • PnL: {pnl_pct:+.2f}%, Profit: {profit_amt_str} | Reason: {reason}"
         AlertService.send_slack_alert(msg)
 
     @classmethod
@@ -423,25 +410,14 @@ class TradeExecutorService:
         price_str = f"{current_price:,.0f}{currency}" if is_kr_flag else f"${current_price:,.2f}"
 
         if side == "buy":
-            msg = (
-                f"🔵 *[BUY Executed]*\n"
-                f"• Ticker: {ticker} {name}\n"
-                f"• Buy price: {price_str}\n"
-                f"• Qty: {trade_qty} shares\n"
-                f"• Change: {change_rate:+.2f}%  |  Score: {score}"
-            )
+            msg = f"🔵 *[BUY Executed]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {trade_qty} shares | Change: {change_rate:+.2f}%, Score: {score}"
         else:
             buy_price = float(holding.get("buy_price", 0)) if holding else 0
             profit_amt = (current_price - buy_price) * trade_qty if buy_price else 0
-            profit_amt_str = (f"{profit_amt:+,.0f}KRW" if is_kr else f"${profit_amt:+,.2f}")
-            msg = (
-                f"🔴 *[SELL Executed]*\n"
-                f"• Ticker: {ticker} {name}\n"
-                f"• Sell price: {price_str}\n"
-                f"• Qty: {trade_qty} shares\n"
-                f"• PnL: {profit_pct:+.2f}%  |  Profit: {profit_amt_str}\n"
-                f"• Change: {change_rate:+.2f}%  |  Score: {score}"
-            )
+            profit_amt_str = (f"{profit_amt:+,.0f}KRW" if is_kr_flag else f"${profit_amt:+,.2f}")
+            msg = f"🔴 *[SELL Executed]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {trade_qty} shares, • PnL: {profit_pct:+.2f}%, Profit: {profit_amt_str} | Change: {change_rate:+.2f}%, Score: {score}"
+        
+        # Add basic asset total to this message, maybe? Just log it for now
         AlertService.send_slack_alert(msg)
 
     # ── Order Execution Helpers ────────────────────────────────────────────────────────

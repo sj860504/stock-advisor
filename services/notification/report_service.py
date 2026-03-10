@@ -85,54 +85,12 @@ class ReportService:
 
     @staticmethod
     def format_hourly_gainers(gainers: list, macro: dict) -> str:
-        """Format hourly top gainers report."""
+        """Format hourly top gainers report (Currently just Market Summary)."""
         msg = f"🌍 **Market Summary**\n"
         if macro:
             regime = macro.get('market_regime')
             regime_score = getattr(regime, 'regime_score', 50)
-            comp = getattr(regime, 'components', None)
-            od = getattr(comp, 'other_detail', None) if comp else None
-            t_s = getattr(comp, 'technical', 10) if comp else 10
-            v_s = getattr(comp, 'vix', 10) if comp else 10
-            f_s = getattr(comp, 'fear_greed', 10) if comp else 10
-            e_s = getattr(comp, 'economic', 10) if comp else 10
-            o_s = getattr(comp, 'other', 10) if comp else 10
-            td = getattr(comp, 'technical_detail', {}) if comp else {}
-            spx_1m = td.get('spx_1m_ret') if isinstance(td, dict) else getattr(td, 'spx_1m_ret', None)
-            spread = getattr(od, 'yield_spread_10y2y', None) if od else None
-            vix_1m = getattr(od, 'vix_1m_chg', None) if od else None
-            btc_ret = getattr(od, 'btc_1m_ret', None) if od else None
-            dxy_ret = getattr(od, 'dxy_1m_ret', None) if od else None
-            gold_ret = getattr(od, 'gold_1m_ret', None) if od else None
-            spx_str = f"SPX1M{spx_1m:+.1f}%" if spx_1m is not None else ""
-            spread_str = f"{spread:+.2f}%" if spread is not None else "-"
-            vix_str = f"(1M{vix_1m:+.0f}%)" if vix_1m is not None else ""
-            oil_ret = getattr(od, 'oil_1m_ret', None) if od else None
-            btc_str = f"BTC{btc_ret:+.1f}%" if btc_ret is not None else "BTC-"
-            dxy_str = f"DXY{dxy_ret:+.1f}%" if dxy_ret is not None else "DXY-"
-            gold_str = f"Gold{gold_ret:+.1f}%" if gold_ret is not None else "Gold-"
-            oil_str = f"Oil{oil_ret:+.1f}%" if oil_ret is not None else "Oil-"
-            phase = getattr(regime, 'economic_phase', '') if regime else ''
-            phase_mod = getattr(regime, 'phase_modifier', 0) if regime else 0
-            phase_str = f" [{phase}{phase_mod:+d}]" if phase and phase != "Neutral" else ""
-            msg += f"🔸 **Status**: {getattr(regime, 'status', '?')} | **{regime_score}/100** (Tech{t_s} VIX{v_s} F&G{f_s} Econ{e_s} Other{o_s}){phase_str}\n"
-            msg += f"🔸 **SPX**: MA200 {getattr(regime, 'diff_pct', 0):+.1f}% {spx_str} | Yield {macro.get('us_10y_yield')}% | Curve {spread_str} | VIX {macro.get('vix')}{vix_str} | {btc_str} | {dxy_str} | {gold_str} | {oil_str}\n"
-
-            crypto = macro.get('crypto', {})
-            btc = crypto.get('BTC') if isinstance(crypto, dict) else None
-            if btc:
-                msg += f"🔸 **BTC**: ${btc.price:,.0f} ({btc.change:+.2f}%)\n"
-
-            commodities = macro.get('commodities', {})
-            gold = commodities.get('Gold') if isinstance(commodities, dict) else None
-            oil = commodities.get('Oil') if isinstance(commodities, dict) else None
-            if gold and oil:
-                msg += f"🔸 **Gold**: ${gold.price:,.1f} ({gold.change:+.2f}%) | **Oil**: ${oil.price:,.2f} ({oil.change:+.2f}%)\n"
-        
-        msg += "\n🚀 **Signal Gainers Report**\n"
-        for gainer in gainers:
-            state_icon = "🌙" if gainer.get("market") == "Pre-market" else "☀️"
-            msg += f"{state_icon} **{gainer.get('name')} ({gainer.get('ticker')})**: +{gainer.get('change', 0):.2f}% (${gainer.get('price', 0):.2f})\n"
+            msg += f"🔸 **Status**: {getattr(regime, 'status', '?')} | **{regime_score}/100**\n"
         return msg
 
     @staticmethod
@@ -316,26 +274,25 @@ class ReportService:
         diff = after_qty - before_qty
         holding = next((h for h in changed_holdings if h["ticker"] == ticker), None)
         if diff > 0:
-            label = "New Buy" if before_qty == 0 else "Add Buy"
             if holding:
                 price = holding.get("current_price", 0)
                 name = holding.get("name") or ticker
-                if is_kr(ticker):
-                    return f"  🟢 {ticker} {name} | {label} {diff}sh | Price {price:,.0f}KRW (Hold {after_qty}sh)", True
-                else:
-                    return f"  🟢 {ticker} {name} | {label} {diff}sh | Price ${price:,.2f} (Hold {after_qty}sh)", True
-            return f"  🟢 {ticker} | {label} {diff}sh (Hold {after_qty}sh)", True
+                currency = "KRW" if is_kr(ticker) else "USD"
+                fmt_price = f"{price:,.0f}KRW" if is_kr(ticker) else f"${price:,.2f}"
+                return f"• Ticker: {ticker} {name}, price: {fmt_price}, Qty: {diff} shares", True
+            return f"• Ticker: {ticker}, Qty: {diff} shares", True
         else:
             sold = abs(diff)
-            label = "Sell All" if after_qty == 0 else "Partial Sell"
             if holding:
                 price = holding.get("current_price", 0)
                 name = holding.get("name") or ticker
                 buy_price = holding.get("buy_price", 0)
                 profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
-                color = "🔴" if profit_pct > 0 else "🔵"
-                return f"  {color} {ticker} {name} | {label} {sold}sh | {profit_pct:+.2f}% (Remain {after_qty}sh)", False
-            return f"  ⚪ {ticker} | {label} {sold}sh", False
+                profit = (price - buy_price) * sold
+                fmt_price = f"{price:,.0f}KRW" if is_kr(ticker) else f"${price:,.2f}"
+                fmt_profit = f"{profit:,.0f}KRW" if is_kr(ticker) else f"${profit:,.2f}"
+                return f"• Ticker: {ticker} {name}, price: {fmt_price}, Qty: {sold} shares, • PnL: {profit_pct:+.2f}%, Profit: +{fmt_profit}", False
+            return f"• Ticker: {ticker}, Qty: {sold} shares", False
 
     @staticmethod
     def format_trade_result_report(
@@ -344,7 +301,7 @@ class ReportService:
         cash: float, states: dict = None, summary: dict = None,
     ) -> str:
         """Trade result report showing only changed holdings after execution."""
-        lines = ["📈 **Trade Execution Report**", ""]
+        lines = []
 
         buy_lines, sell_lines = [], []
         for ticker in sorted(changed_tickers):
@@ -357,21 +314,23 @@ class ReportService:
                 ticker, before_qty, after_qty, changed_holdings,
             )
             if is_buy:
-                buy_lines.append(line)
+                buy_lines.append(f"🔵 [BUY] {line}")
             else:
-                sell_lines.append(line)
+                sell_lines.append(f"🔴 [SELL] {line}")
 
         if buy_lines:
-            lines.append(f"**Buy** ({len(buy_lines)})")
             lines.extend(buy_lines)
-            lines.append("")
         if sell_lines:
-            lines.append(f"**Sell** ({len(sell_lines)})")
             lines.extend(sell_lines)
-            lines.append("")
 
-        cash_krw = max(0.0, float(cash)) if cash is not None else 0.0
-        lines.append(f"💰 Cash: {cash_krw:,.0f}KRW")
+        if summary:
+            # Assuming summary dict has 'total_eval'
+            total_eval = summary.get('total_eval', 0)
+            cash_val = summary.get('cash_krw', 0) + summary.get('usd_cash_krw', 0)
+            lines.append(f"\n💰 Total: {total_eval:,.0f}KRW | Cash: {cash_val:,.0f}KRW")
+        else:
+            cash_krw = max(0.0, float(cash)) if cash is not None else 0.0
+            lines.append(f"\n💰 Cash: {cash_krw:,.0f}KRW")
 
         return "\n".join(lines)
 

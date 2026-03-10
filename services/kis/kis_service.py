@@ -574,3 +574,75 @@ class KisService:
         from services.kis.fetch.kis_fetcher import KisFetcher
         token = cls.get_access_token()
         return KisFetcher.fetch_overseas_ranking(token, excd=excd)
+
+    @classmethod
+    def get_domestic_trade_history(cls, start_date: str, end_date: str) -> list:
+        """Fetch domestic trade history from KIS API (dates in YYYYMMDD format)."""
+        url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        tr_id = "VTTC8001R" if Config.KIS_IS_VTS else "TTTC8001R"
+        headers = cls.get_headers(tr_id)
+        account_prefix, account_suffix = cls._get_account_parts()
+        
+        params = {
+            "CANO": account_prefix,
+            "ACNT_PRDT_CD": account_suffix,
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("rt_cd") == "0":
+                    return data.get("output1", [])
+            logger.error(f"❌ KIS Domestic History API Error: {response.text}")
+        except Exception as e:
+            logger.error(f"❌ Request failed for domestic trade history: {e}")
+        return []
+
+    @classmethod
+    def get_overseas_trade_history(cls, start_date: str, end_date: str) -> list:
+        """Fetch overseas trade history from KIS API (dates in YYYYMMDD format)."""
+        url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        tr_id = "VTTT3001R" if Config.KIS_IS_VTS else "JTTT3001R"
+        headers = cls.get_headers(tr_id)
+        account_prefix, account_suffix = cls._get_account_parts()
+        
+        params = {
+            "CANO": account_prefix,
+            "ACNT_PRDT_CD": account_suffix,
+            "OVRS_EXCG_CD": "NASD", # Mostly NASDAQ
+            "PDNO": "%",
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "ORD_DT": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "SORT_SQN": "",
+            "CTX_AREA_NK200": "",
+            "CTX_AREA_FK200": ""
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("rt_cd") == "0":
+                    return data.get("output", [])
+            logger.error(f"❌ KIS Overseas History API Error: {response.text}")
+        except Exception as e:
+            logger.error(f"❌ Request failed for overseas trade history: {e}")
+        return []
