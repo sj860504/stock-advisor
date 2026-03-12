@@ -153,16 +153,9 @@ class PositionService:
         if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
             logger.info(f"⏭️ {ticker} Add-buy cooldown active (already added today). Re-evaluate tomorrow.")
             return False
-        # Deduct committed cash (pending split orders) to prevent over-allocation
-        is_kr_flag = is_kr(ticker)
-        market = 'KR' if is_kr_flag else 'US'
-        committed = cls._calculate_committed_cash(split_orders, market)
-        effective_cash = max(0, cash_balance - committed) if is_kr_flag else cash_balance
-        if committed > 0:
-            logger.info(f"💰 {ticker} Add-buy: committed={committed:,.0f}KRW, effective_cash={effective_cash:,.0f}KRW")
         executed = TradeExecutorService._execute_trade_v2(
             ticker, "buy", f"add_position({profit_pct:.2f}%)", profit_pct, True, score,
-            current_price_val, market_total, effective_cash, exchange_rate,
+            current_price_val, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
@@ -180,15 +173,11 @@ class PositionService:
             logger.info(f"⏭️ {ticker} ETF/Other sector new buy blocked (sector={sector}). Skip.")
             return False
         is_kr_flag = is_kr(ticker)
-        market = 'KR' if is_kr_flag else 'US'
-        committed = cls._calculate_committed_cash(split_orders, market)
         usd_cash_krw = 0.0
         if not is_kr_flag:
             from services.trading.portfolio_service import PortfolioService as _PS
             usd_cash_krw = (_PS.get_usd_cash_balance() or 0) * exchange_rate
-            usd_cash_krw = max(0, usd_cash_krw - committed)
-        effective_cash = max(0, cash_balance - committed) if is_kr_flag else cash_balance
-        total_qty, _, _ = TradeExecutorService._calculate_buy_quantity(score, effective_cash, current_price, exchange_rate, is_kr_flag, market_total, usd_cash_krw=usd_cash_krw)
+        total_qty, _, _ = TradeExecutorService._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total, usd_cash_krw=usd_cash_krw)
         if total_qty <= 0:
             logger.warning(f"⚠️ {ticker} Insufficient balance or qty 0. Cannot buy.")
             return False
@@ -452,6 +441,17 @@ class PositionService:
         today: str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
         trade_executed = False
         executed_tickers = set()
+
+        # 우선순위: 신규 종목(미보유, split 없음) > 기존 보유 > split tranche 연속
+        def _priority(s):
+            t = s['ticker']
+            if not s.get('holding') and t not in split_orders:
+                return 0
+            if t in split_orders:
+                return 2
+            return 1
+        prepared_signals = sorted(prepared_signals, key=_priority)
+
         for sig in prepared_signals:
             sig_executed, sig_ticker, sig_spent_krw = cls._process_single_signal(
                 sig, buy_max, sell_min, take_profit_pct, stop_loss_pct, add_rsi_limit,

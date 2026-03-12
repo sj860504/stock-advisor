@@ -4,6 +4,15 @@
 
 ---
 
+## ⚠️ Research Order — 반드시 준수
+
+**질문/분석/수정 시 순서:**
+1. `.claude/BUSINESS_LOGIC.md` → `.claude/FUNCTION_REFERENCE.md` → `.claude/ARCHITECTURE_MAP.md` 순으로 확인
+2. 문서에 없거나 불충분할 때만 소스 파일 열람
+3. **절대 금지**: 문서 미확인 상태에서 `services/`, `repositories/` 등 소스 직접 열람
+
+---
+
 ## Top 5 Critical Mistakes
 
 ### 1. DEV_MODE=true로 실제 주문 차단

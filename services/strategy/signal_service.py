@@ -152,8 +152,9 @@ class SignalService:
             delta += WEIGHTS['PROFIT_TAKE_TARGET'] // 2; reasons.append("market_overheated_partial_profit")
         if regime == 'BULL':
             delta += WEIGHTS['BULL_MARKET_SECTOR']; reasons.append("bull_market_advantage")
+            delta += 10; reasons.append("bull_market_profit_take_nudge")
         elif regime == 'BEAR':
-            delta += 10; reasons.append("bear_market_risk")
+            reasons.append("bear_market_hold")  # 약세장 매도 억제: 점수 변화 없음
         return delta, reasons
 
     @classmethod
@@ -337,11 +338,7 @@ class SignalService:
         analyze_us = not is_kr_open or MarketHourService.is_us_strategy_window(allow_extended=allow_extended, lead_minutes=30)
         logger.info(f"📊 Market status: KR_open={is_kr_open}, US_open={is_us_open} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
 
-        # Calculate committed cash from pending split orders
         split_orders = user_state.get('split_orders', {})
-        kr_committed = PositionService._calculate_committed_cash(split_orders, 'KR')
-        us_committed = PositionService._calculate_committed_cash(split_orders, 'US')
-        logger.info(f"📊 Committed cash: KR={kr_committed:,.0f}원, US={us_committed:,.0f}원")
 
         all_states = MarketDataService.get_all_states()
         prepared_signals = []
@@ -366,12 +363,12 @@ class SignalService:
                 mkt_total = kr_total if is_kr_ticker else us_total_krw
                 tgt_ratio = target_cash_kr if is_kr_ticker else target_cash_us
                 if is_kr_ticker:
-                    available = cash_balance - kr_committed
+                    available = cash_balance
                 else:
-                    available = usd_cash * exchange_rate - us_committed
+                    available = usd_cash * exchange_rate
                 cur_ratio = available / mkt_total if mkt_total > 0 else 0
                 if cur_ratio < tgt_ratio:
-                    logger.info(f"⛔ {ticker} Skip signal: avail_cash={cur_ratio:.1%} < target={tgt_ratio:.1%} (cash shortage, committed deducted)")
+                    logger.info(f"⛔ {ticker} Skip signal: avail_cash={cur_ratio:.1%} < target={tgt_ratio:.1%} (cash shortage)")
                     continue
 
             market_cash_ratio = target_cash_kr if is_kr_ticker else target_cash_us

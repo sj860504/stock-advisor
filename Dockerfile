@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # 시스템 의존성 (lxml, bcrypt 빌드용)
 RUN apt-get update && apt-get install -y --no-install-recommends \

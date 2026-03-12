@@ -65,6 +65,16 @@
 
 ---
 
+## Research Order Rule ⚠️ MANDATORY
+
+**질문/분석/수정 요청 시 반드시 아래 순서를 따를 것:**
+
+1. **문서 먼저** — `.claude/BUSINESS_LOGIC.md`, `.claude/FUNCTION_REFERENCE.md`, `.claude/ARCHITECTURE_MAP.md` 에서 관련 내용 확인
+2. **소스는 나중에** — 문서에 없거나 불충분할 때만 소스 파일 직접 열람
+3. **절대 금지**: 문서 확인 없이 바로 소스 파일(services/, repositories/ 등)을 읽는 행위
+
+---
+
 ## Development Rules
 
 - **Trade history 조회는 반드시 DB(`TradeHistoryRepo`)를 사용할 것. KIS API 히스토리 조회 사용 금지.**
