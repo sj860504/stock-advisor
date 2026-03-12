@@ -155,6 +155,24 @@ class FinancialService:
         )
 
     @classmethod
+    def _dcf_from_analyst_target(cls, ticker: str) -> Optional[DcfInputData]:
+        """Analyst consensus target price as DCF fallback (for pre-revenue / negative FCF stocks)."""
+        market_type = "KR" if is_kr(ticker) else "US"
+        yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
+        if not (yf_data and yf_data.target_mean_price and yf_data.target_mean_price > 0):
+            return None
+        logger.info(f"[DCF] {ticker}: using analyst target price {yf_data.target_mean_price}")
+        return DcfInputData(
+            fcf_per_share=None,
+            beta=yf_data.beta,
+            growth_rate=yf_data.growth_rate,
+            discount_rate=None,
+            fallback_fair_value=round(yf_data.target_mean_price, 2),
+            timestamp=time.time(),
+            source="analyst_target",
+        )
+
+    @classmethod
     def _dcf_from_eps_per_fallback(cls, ticker: str) -> Optional[DcfInputData]:
         """3. Latest DB EPS * PER -> fallback_fair_value (None if unavailable)."""
         latest = StockMetaService.get_latest_financials(ticker)
@@ -240,7 +258,7 @@ class FinancialService:
     @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
         """Return DCF calculation input data.
-        Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> EPS*PER -> KIS API."""
+        Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> analyst target -> EPS*PER -> KIS API."""
         override_dcf = cls._get_dcf_from_override(ticker)
         if override_dcf is not None:
             return override_dcf
@@ -253,6 +271,7 @@ class FinancialService:
             for method in (
                 cls._dcf_from_eps_history,
                 cls._dcf_from_yfinance,
+                cls._dcf_from_analyst_target,
                 cls._dcf_from_eps_per_fallback,
                 cls._dcf_from_kis_api,
             ):

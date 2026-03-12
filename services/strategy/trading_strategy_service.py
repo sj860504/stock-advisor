@@ -102,7 +102,7 @@ class TradingStrategyService:
         """Load user_id strategy state from DB."""
         from repositories.strategy_state_repo import StrategyStateRepo
         user_state = StrategyStateRepo.load(user_id)
-        return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}, "split_orders": {}}}
+        return {user_id: user_state} if user_state else {user_id: {"panic_locks": {}, "sell_cooldown": {}, "add_buy_cooldown": {}, "tick_trade": {}, "split_orders": {}, "sell_split_orders": {}}}
 
     @classmethod
     def _save_state(cls, state: dict) -> None:
@@ -313,7 +313,7 @@ class TradingStrategyService:
     # ── Universe Management ─────────────────────────────────────────────────────────
 
     @classmethod
-    def _update_target_universe(cls, user_id: str) -> set:
+    def _update_target_universe(cls, user_id: str, run_kr: bool = True, run_us: bool = True) -> set:
         """Detect Top 100 changes and clean up universe."""
         def _norm_ticker(t: str) -> str:
             t = str(t or "").strip().upper()
@@ -321,8 +321,8 @@ class TradingStrategyService:
             if t.isdigit() and len(t) < 6: t = t.zfill(6)
             return t
 
-        kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
-        us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
+        kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)] if run_kr else []
+        us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)] if run_us else []
         portfolio = PortfolioService.load_portfolio(user_id)
         holdings = [_norm_ticker(h.get('ticker')) for h in portfolio]
 
@@ -340,8 +340,11 @@ class TradingStrategyService:
     # ── Portfolio Report ─────────────────────────────────────────────────────
 
     @classmethod
-    def _send_portfolio_report(cls, user_id: str, before_snapshot: dict) -> None:
-        """Compare pre/post-trade balances and send report for changed positions only."""
+    def _send_portfolio_report(cls, user_id: str, before_snapshot: dict, executed_tickers: set = None) -> None:
+        """Compare pre/post-trade balances and send report for changed positions only.
+        When executed_tickers is provided, only report changes for tickers that were actually executed
+        (prevents phantom reports from unstable KIS API responses).
+        """
         try:
             from services.notification.report_service import ReportService
             PortfolioService.sync_with_kis(user_id)
@@ -362,6 +365,14 @@ class TradingStrategyService:
                 after_qty = after_snapshot.get(ticker, 0)
                 if before_qty != after_qty:
                     changed_tickers.add(ticker)
+
+            # Filter to only actually executed tickers to prevent phantom reports
+            if executed_tickers is not None:
+                changed_tickers &= executed_tickers
+
+            if not changed_tickers:
+                logger.info("No executed ticker changes after filtering. Skipping trade report.")
+                return
 
             changed_holdings = [h for h in latest_holdings if h["ticker"] in changed_tickers]
             states = MarketDataService.get_all_states()
@@ -422,6 +433,7 @@ class TradingStrategyService:
         if 'panic_locks' not in user_state:
             user_state['panic_locks'] = {}
         user_state.setdefault('split_orders', {})
+        user_state.setdefault('sell_split_orders', {})
         return user_state
 
     @classmethod
@@ -429,12 +441,15 @@ class TradingStrategyService:
         cls, user_id: str, holdings: list, macro_data: dict, user_state: dict,
         kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float,
-    ) -> bool:
-        """Perform signal collection + execution + tick trading and return whether trades were executed."""
+        usd_cash: float = 0.0, exchange_rate: float = 1350.0,
+    ) -> tuple:
+        """Perform signal collection + execution + tick trading.
+        Returns (trade_executed: bool, executed_tickers: set)."""
         prepared_signals = SignalService._collect_trading_signals(
-            holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us
+            holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us,
+            usd_cash=usd_cash, exchange_rate=exchange_rate,
         )
-        trade_executed = PositionService._execute_collected_signals(
+        trade_executed, executed_tickers = PositionService._execute_collected_signals(
             user_id, prepared_signals, holdings, kr_total, us_total_krw, cash_balance,
             target_cash_kr, target_cash_us, macro_data, user_state
         )
@@ -443,7 +458,7 @@ class TradingStrategyService:
             trade_executed = trade_executed or bool(tick_executed)
         except Exception as e:
             logger.warning(f"⚠️ Tick trading process error: {e}")
-        return trade_executed
+        return trade_executed, executed_tickers
 
     @classmethod
     def run_strategy(cls, user_id: str = "sean") -> None:
@@ -452,8 +467,20 @@ class TradingStrategyService:
             logger.debug(f"⏳ Trading Strategy is currently DISABLED. Skipping analysis.")
             return
 
-        logger.info(f"🚀 Running Trading Strategy for {user_id}...")
-        cls._update_target_universe(user_id)
+        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
+        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
+        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+
+        if not is_kr_open and not is_us_open:
+            logger.debug("⏸️ Both markets closed. Skipping strategy run.")
+            return
+
+        markets = []
+        if is_kr_open: markets.append("KR")
+        if is_us_open: markets.append("US")
+        logger.info(f"🚀 Running Trading Strategy for {user_id} (markets: {', '.join(markets)})...")
+
+        cls._update_target_universe(user_id, run_kr=is_kr_open, run_us=is_us_open)
 
         holdings = PortfolioService.sync_with_kis(user_id)
         before_snapshot = {h["ticker"]: h.get("quantity", 0) for h in holdings}
@@ -468,11 +495,11 @@ class TradingStrategyService:
         usd_cash = PortfolioService.get_usd_cash_balance()
         cls._log_intramarket_cash_ratio(holdings, cash_balance, usd_cash, exchange_rate, target_cash_kr, target_cash_us)
 
-        trade_executed = cls._run_signals_and_tick(user_id, holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us)
+        trade_executed, executed_tickers = cls._run_signals_and_tick(user_id, holdings, macro_data, user_state, kr_total, us_total_krw, cash_balance, target_cash_kr, target_cash_us, usd_cash=usd_cash, exchange_rate=exchange_rate)
         cls._save_state(state)
         logger.info("Strategy execution and trade decisions complete.")
-        if trade_executed:
-            cls._send_portfolio_report(user_id, before_snapshot)
+        if trade_executed and executed_tickers:
+            cls._send_portfolio_report(user_id, before_snapshot, executed_tickers)
 
     # ── Waiting List / Opportunities ────────────────────────────────────────────────
 
@@ -511,7 +538,7 @@ class TradingStrategyService:
         for ticker, ticker_state in all_state_items:
             holding = holdings_map.get(ticker)
             market_total = kr_total if is_kr(ticker) else us_total_krw
-            score, reasons = SignalService.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_total_krw=market_total)
+            score, reasons, _breakdown = SignalService.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_total_krw=market_total)
             if score <= buy_threshold_max or score >= sell_threshold_min:
                 waiting_list.append(cls._build_waiting_list_entry(ticker, ticker_state, score, reasons))
 

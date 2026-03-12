@@ -78,7 +78,9 @@ class SignalService:
     def _score_dcf(cls, dcf_value: float, curr_price: float) -> tuple:
         """Calculate undervalue/overvalue score vs DCF. Returns (delta, reasons)."""
         if not (dcf_value and dcf_value > 0):
-            return 0, []
+            WEIGHTS = TradeExecutorService.WEIGHTS
+            w = WEIGHTS.get('DCF_UNAVAILABLE', 10)
+            return w, [f"no_dcf_data(+{w})"]
         delta = 0
         reasons = []
         undervalue_pct = (dcf_value - curr_price) / curr_price * 100
@@ -162,7 +164,7 @@ class SignalService:
         target_buy = getattr(state, 'target_buy_price', 0)
         target_sell = getattr(state, 'target_sell_price', 0)
         if target_buy > 0 and curr_price <= target_buy:
-            delta -= 30; reasons.append(f"target_entry_price_hit(${target_buy})")
+            delta -= 15; reasons.append(f"target_entry_price_hit(${target_buy})")
         if target_sell > 0 and curr_price >= target_sell:
             delta += 30; reasons.append(f"target_sell_price_hit(${target_sell})")
         return delta, reasons
@@ -213,20 +215,25 @@ class SignalService:
 
     @classmethod
     def _apply_score_components(cls, ticker: str, state, holding, macro: dict, user_state: dict, profit_pct: float, curr_price: float, regime: str, thresholds: dict) -> tuple:
-        """Accumulate [A]~[G] score components and return (score, reasons, forced_sell)."""
+        """Accumulate [A]~[G] score components and return (score, reasons, forced_sell, breakdown)."""
         t = thresholds
         score = t["base_score"]
         reasons: list = []
+        breakdown = {"base": t["base_score"]}
+
         d, r = cls._score_technical(state, curr_price, t["oversold_rsi"], t["overbought_rsi"], t["dip_buy_pct"])
-        score += d; reasons.extend(r)
+        score += d; reasons.extend(r); breakdown["technical"] = d
+
         d, r, forced_sell = cls._score_portfolio(holding, profit_pct, t["take_profit_pct"], t["stop_loss_pct"])
         if forced_sell:
-            return 100, r, True
-        score += d; reasons.extend(r)
-        d, r = cls._score_market_context(macro, regime); score += d; reasons.extend(r)
-        d, r = cls._score_target_prices(state, curr_price); score += d; reasons.extend(r)
-        d, r = cls._score_bonuses(ticker, holding, macro, user_state); score += d; reasons.extend(r)
-        return score, reasons, False
+            return 100, r, True, {"base": t["base_score"], "forced_sell": True}
+        score += d; reasons.extend(r); breakdown["portfolio"] = d
+
+        d, r = cls._score_market_context(macro, regime); score += d; reasons.extend(r); breakdown["market_context"] = d
+        d, r = cls._score_target_prices(state, curr_price); score += d; reasons.extend(r); breakdown["target_prices"] = d
+        d, r = cls._score_bonuses(ticker, holding, macro, user_state); score += d; reasons.extend(r); breakdown["bonuses"] = d
+
+        return score, reasons, False, breakdown
 
     @classmethod
     def _compute_holding_profit_pct(cls, holding, state) -> float:
@@ -254,20 +261,21 @@ class SignalService:
         target_cash_ratio = market_cash_ratio
         thresholds = cls._load_score_thresholds()
         if ticker in panic_locks:
-            return (20, ["3day_recovery_wait"]) if state.rsi < thresholds["oversold_rsi"] else (50, ["panic_lock_zone"])
-        score, reasons, forced_sell = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
+            return (20, ["3day_recovery_wait"], {"panic_lock": True}) if state.rsi < thresholds["oversold_rsi"] else (50, ["panic_lock_zone"], {"panic_lock": True})
+        score, reasons, forced_sell, breakdown = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
         if forced_sell:
-            return 100, reasons
+            return 100, reasons, breakdown
         if cash_ratio < target_cash_ratio and score > 50:
             score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("cash_shortage")
-        return max(0, min(100, score)), reasons
+            breakdown["cash_penalty"] = TradeExecutorService.WEIGHTS['CASH_PENALTY']
+        return max(0, min(100, score)), reasons, breakdown
 
     # ── Analysis Interface ───────────────────────────────────────────────────────
 
     @classmethod
     def analyze_ticker(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, cash_balance: float, exchange_rate: float, market_total_krw: float = 0.0) -> dict:
         """Public interface for external individual stock analysis."""
-        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total_krw)
+        score, reasons, breakdown = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total_krw)
 
         buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
         sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
@@ -283,6 +291,7 @@ class SignalService:
             "score": score,
             "recommendation": recommendation,
             "reasons": reasons,
+            "score_breakdown": breakdown,
             "current_price": state.current_price,
             "rsi": state.rsi,
             "dcf_value": getattr(state, 'dcf_value', None),
@@ -301,7 +310,7 @@ class SignalService:
     @classmethod
     def _analyze_stock_v3(cls, ticker: str, state, holding: Optional[dict], macro: dict, user_state: dict, market_total: float, cash_balance: float, exchange_rate: float, user_id: str = "sean") -> None:
         """Legacy internal analysis loop (uses refactored calculate_score)."""
-        score, reasons = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total)
+        score, reasons, _breakdown = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total)
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         reason_str = ", ".join(reasons)
 
@@ -317,8 +326,9 @@ class SignalService:
     # ── Signal Collection ─────────────────────────────────────────────────────────────
 
     @classmethod
-    def _collect_trading_signals(cls, holdings: list, macro_data: dict, user_state: dict, kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float) -> list:
+    def _collect_trading_signals(cls, holdings: list, macro_data: dict, user_state: dict, kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float, usd_cash: float = 0.0, exchange_rate: float = 1350.0) -> list:
         """Check market status and collect valid trading signals."""
+        from services.strategy.position_service import PositionService
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
         is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
@@ -326,6 +336,12 @@ class SignalService:
         analyze_kr = not is_us_open
         analyze_us = not is_kr_open or MarketHourService.is_us_strategy_window(allow_extended=allow_extended, lead_minutes=30)
         logger.info(f"📊 Market status: KR_open={is_kr_open}, US_open={is_us_open} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
+
+        # Calculate committed cash from pending split orders
+        split_orders = user_state.get('split_orders', {})
+        kr_committed = PositionService._calculate_committed_cash(split_orders, 'KR')
+        us_committed = PositionService._calculate_committed_cash(split_orders, 'US')
+        logger.info(f"📊 Committed cash: KR={kr_committed:,.0f}원, US={us_committed:,.0f}원")
 
         all_states = MarketDataService.get_all_states()
         prepared_signals = []
@@ -339,9 +355,28 @@ class SignalService:
                 continue
 
             holding = holdings_map.get(ticker)
+
+            # Hard gate: skip new-buy candidates (non-holdings) when RSI overbought or cash insufficient
+            if not holding:
+                rsi_val = getattr(ticker_state, 'rsi', 50)
+                rsi_buy_block = SettingsService.get_float("STRATEGY_RSI_BUY_BLOCK", 75.0)
+                if rsi_val >= rsi_buy_block:
+                    logger.info(f"⛔ {ticker} Skip signal: RSI={rsi_val:.1f} >= {rsi_buy_block} (overbought buy block)")
+                    continue
+                mkt_total = kr_total if is_kr_ticker else us_total_krw
+                tgt_ratio = target_cash_kr if is_kr_ticker else target_cash_us
+                if is_kr_ticker:
+                    available = cash_balance - kr_committed
+                else:
+                    available = usd_cash * exchange_rate - us_committed
+                cur_ratio = available / mkt_total if mkt_total > 0 else 0
+                if cur_ratio < tgt_ratio:
+                    logger.info(f"⛔ {ticker} Skip signal: avail_cash={cur_ratio:.1%} < target={tgt_ratio:.1%} (cash shortage, committed deducted)")
+                    continue
+
             market_cash_ratio = target_cash_kr if is_kr_ticker else target_cash_us
             market_total = kr_total if is_kr_ticker else us_total_krw
-            score, reasons = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_cash_ratio=market_cash_ratio, market_total_krw=market_total)
+            score, reasons, _breakdown = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_cash_ratio=market_cash_ratio, market_total_krw=market_total)
 
             prepared_signals.append({"ticker": ticker, "state": ticker_state, "holding": holding, "score": score, "reasons": reasons})
 

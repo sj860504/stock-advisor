@@ -14,6 +14,7 @@ class StrategyState(Base):
     panic_locks     = Column(Text, nullable=False, default="{}")
     tick_trade      = Column(Text, nullable=False, default="{}")
     split_orders    = Column(Text, nullable=False, default="{}")
+    sell_split_orders = Column(Text, nullable=False, default="{}")
     updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     def __repr__(self) -> str:

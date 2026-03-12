@@ -1061,6 +1061,19 @@
                 </div>
             </div>
 
+            <!-- Ticker Score Calculator -->
+            <div class="card">
+                <div class="card-title">📊 종목 점수 계산</div>
+                <div style="display:flex;gap:8px;align-items:end">
+                    <div style="flex:1">
+                        <label>티커 / 종목명</label>
+                        <input type="text" id="score-ticker" placeholder="예: AAPL, 005930, 삼성전자" onkeydown="if(event.key==='Enter')calcTickerScore()">
+                    </div>
+                    <button class="btn btn-primary" onclick="calcTickerScore()">조회</button>
+                </div>
+                <div id="score-result" style="margin-top:12px"></div>
+            </div>
+
             <!-- Manual Order -->
             <div class="card">
                 <div class="card-title">📝 수동 주문</div>
@@ -2428,6 +2441,30 @@
                 });
                 showToast('✅ 매도 완료');
             } catch (e) { showToast('❌ ' + e.message, false); }
+        }
+
+        async function calcTickerScore() {
+            const ticker = document.getElementById('score-ticker').value.trim();
+            const el = document.getElementById('score-result');
+            if (!ticker) { el.innerHTML = '<span style="color:#999">티커를 입력하세요</span>'; return; }
+            el.innerHTML = '<span style="color:#999">조회 중...</span>';
+            try {
+                const d = await apiFetch('/analysis/score/' + encodeURIComponent(ticker));
+                const recColor = d.recommendation === 'BUY' ? '#22c55e' : d.recommendation === 'SELL' ? '#ef4444' : '#999';
+                const fmtPrice = d.current_price != null ? (d.current_price > 999 ? d.current_price.toLocaleString() : d.current_price.toFixed(2)) : '-';
+                const fmtDcf = d.dcf_value != null ? (d.dcf_value > 999 ? Math.round(d.dcf_value).toLocaleString() : d.dcf_value.toFixed(2)) : '-';
+                const fmtRsi = d.rsi != null ? d.rsi.toFixed(1) : '-';
+                const reasons = (d.reasons || []).map(r => '<li style="margin:2px 0">' + r + '</li>').join('');
+                el.innerHTML = `
+                    <div style="font-weight:600;margin-bottom:8px">${d.name || d.ticker} <span style="color:${recColor};font-size:1.1em">${d.recommendation}</span></div>
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center;margin-bottom:8px">
+                        <div><div style="color:#999;font-size:0.85em">점수</div><div style="font-size:1.2em;font-weight:600">${d.score}</div></div>
+                        <div><div style="color:#999;font-size:0.85em">현재가</div><div>${fmtPrice}</div></div>
+                        <div><div style="color:#999;font-size:0.85em">RSI</div><div>${fmtRsi}</div></div>
+                        <div><div style="color:#999;font-size:0.85em">DCF</div><div>${fmtDcf}</div></div>
+                    </div>
+                    ${reasons ? '<ul style="margin:0;padding-left:18px;font-size:0.9em;color:#ccc">' + reasons + '</ul>' : ''}`;
+            } catch (e) { el.innerHTML = '<span style="color:#ef4444">❌ ' + e.message + '</span>'; }
         }
 
         async function placeOrder() {

@@ -51,7 +51,8 @@ class SchedulerService:
         cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0)
         cls._scheduler.add_job(lambda: cls.manage_subscriptions(force_refresh=True), 'cron', hour=8, minute=30)
         cls._scheduler.add_job(cls.run_trading_strategy, 'interval', minutes=1)
-        cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', hours=1)
+        cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=15, minute=35, id='kr_close_report')
+        cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=6, minute=5, id='us_close_report')
         cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
         cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
         cls._scheduler.add_job(cls.run_sector_rebalance, 'cron', day_of_week='mon', hour=9, minute=20,
@@ -293,6 +294,24 @@ class SchedulerService:
             logger.info("📤 Hourly portfolio report sent to Slack.")
         except Exception as e:
             logger.error(f"❌ Error in check_portfolio_hourly: {e}")
+
+    @classmethod
+    def send_market_close_report(cls) -> None:
+        """Market close portfolio report (KR 15:35 KST, US 06:05 KST)."""
+        logger.info("📊 Generating market close portfolio report...")
+        try:
+            PortfolioService.sync_with_kis('sean')
+            all_states = MarketDataService.get_all_states()
+            portfolio = PortfolioService.load_portfolio('sean')
+
+            from services.notification.report_service import ReportService
+            summary = PortfolioService.get_last_balance_summary()
+            cash = PortfolioService.load_cash('sean')
+            portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
+            AlertService.send_slack_alert(portfolio_msg)
+            logger.info("📤 Market close portfolio report sent to Slack.")
+        except Exception as e:
+            logger.error(f"❌ Error in send_market_close_report: {e}")
 
     @classmethod
     def report_daily_trade_history(cls) -> None:

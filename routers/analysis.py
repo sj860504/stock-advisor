@@ -3,6 +3,11 @@ from typing import Optional, Dict, Any
 from services.analysis.analysis_service import AnalysisService
 from services.strategy.trading_strategy_service import TradingStrategyService
 from services.analysis.financial_service import FinancialService
+from services.market.market_data_service import MarketDataService
+from services.trading.portfolio_service import PortfolioService
+from services.market.macro_service import MacroService
+from services.strategy.execution_service_v2 import TradeExecutorService
+from utils.market import is_kr
 from services.analysis.dcf_service import DcfService
 from services.market.ticker_service import TickerService
 from models.schemas import (
@@ -149,3 +154,42 @@ def update_strategy_weights(payload: StrategyWeightOverrideRequest) -> StrategyW
 def get_sector_weights(user_id: str = "sean") -> Dict[str, Any]:
     """Sector group (tech/value/financial) current allocation and rebalancing status vs targets."""
     return TradingStrategyService.get_sector_rebalance_status(user_id=user_id)
+
+
+@router.get("/score/{ticker_input}")
+def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]:
+    """Calculate and return strategy score, recommendation, and reasons for a ticker."""
+    real_ticker = resolve_ticker_or_404(ticker_input)
+
+    # Ensure ticker is registered and has market data
+    state = MarketDataService.get_state(real_ticker)
+    if not state:
+        # register_batch has market-hours filter that blocks off-hours tickers.
+        # For explicit user queries, bypass it: create state directly + force warm-up.
+        from models.ticker_state import TickerState
+        state = TickerState(ticker=real_ticker)
+        MarketDataService._states[real_ticker] = state
+        MarketDataService._warm_up_data(real_ticker, _force=True)
+        state = MarketDataService.get_state(real_ticker)
+    if not state or getattr(state, 'current_price', 0) <= 0:
+        raise HTTPException(status_code=404, detail=f"No market data available for {real_ticker}")
+
+    # Assemble data (same pattern as get_waiting_list)
+    holdings = PortfolioService.load_portfolio(user_id)
+    macro_data = MacroService.get_macro_data()
+    user_state_map = TradingStrategyService._load_state(user_id)
+    user_state = user_state_map.get(user_id, {})
+    cash_balance = PortfolioService.load_cash(user_id)
+    kr_total, us_total_krw, _, _ = TradeExecutorService._calculate_total_assets(holdings, cash_balance, macro_data)
+    exchange_rate = MacroService.get_exchange_rate()
+
+    market_total = kr_total if is_kr(real_ticker) else us_total_krw
+    holdings_map = {h['ticker']: h for h in holdings}
+    holding = holdings_map.get(real_ticker)
+
+    result = TradingStrategyService.analyze_ticker(
+        real_ticker, state, holding, macro_data, user_state,
+        cash_balance, exchange_rate, market_total_krw=market_total,
+    )
+    result["name"] = getattr(state, 'name', None) or real_ticker
+    return result

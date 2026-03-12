@@ -192,8 +192,13 @@ class PortfolioService:
 
         holdings, us_by_ticker = cls._parse_balance_holdings(balance_data, existing_sector_map)
         overseas_balance = KisService.get_overseas_balance()
-        cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
-        holdings.extend(us_by_ticker.values() if us_by_ticker else existing_us_map.values())
+        is_overseas_stale = overseas_balance.get("_stale", False) if overseas_balance else False
+        if is_overseas_stale:
+            logger.warning("⚠️ Overseas balance is stale (cached fallback). Keeping existing DB US holdings instead.")
+            holdings.extend(existing_us_map.values())
+        else:
+            cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
+            holdings.extend(us_by_ticker.values() if us_by_ticker else existing_us_map.values())
 
         summary, cash = cls._extract_kr_cash_from_summary(balance_data)
 

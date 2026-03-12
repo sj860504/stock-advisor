@@ -108,7 +108,7 @@ class KisService:
             response.raise_for_status()
             token_data = response.json()
             cls._access_token = token_data["access_token"]
-            cls._token_expiry = datetime.now() + timedelta(hours=2)
+            cls._token_expiry = datetime.now() + timedelta(hours=23)
             os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
             with open(token_cache_path, 'w') as f:
                 json.dump({"token": cls._access_token, "expiry": cls._token_expiry.isoformat()}, f)
@@ -169,7 +169,7 @@ class KisService:
             response.raise_for_status()
             token_data = response.json()
             cls._real_access_token = token_data["access_token"]
-            cls._real_token_expiry = datetime.now() + timedelta(hours=2)
+            cls._real_token_expiry = datetime.now() + timedelta(hours=23)
             os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
             with open(token_cache_path, 'w') as f:
                 json.dump({"token": cls._real_access_token, "expiry": cls._real_token_expiry.isoformat()}, f)
@@ -380,8 +380,10 @@ class KisService:
                 continue
 
         if cls._last_overseas_balance_data:
-            logger.warning("⚠️ All overseas balance attempts failed. Using last cached result as fallback.")
-            return cls._last_overseas_balance_data
+            logger.warning("⚠️ All overseas balance attempts failed. Using last cached result as fallback (stale).")
+            stale_copy = dict(cls._last_overseas_balance_data)
+            stale_copy["_stale"] = True
+            return stale_copy
         logger.error("❌ All overseas balance attempts failed with no cached fallback.")
         return None
 

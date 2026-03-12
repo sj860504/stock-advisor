@@ -387,26 +387,27 @@ class KisFetcher:
 
     @classmethod
     def _try_exchange_fallback(cls, ticker: str, url: str, headers: dict, params: dict) -> dict | None:
-        """Try alternate exchange code (NAS<->NYS) when initial query returns empty. Returns data or None."""
+        """Try alternate exchange codes (NAS/NYS/AMS) when initial query returns empty. Returns data or None."""
         if "EXCD" not in params:
             return None
-        alt_excd = "NYS" if params["EXCD"] == "NAS" else ("NAS" if params["EXCD"] == "NYS" else None)
-        if not alt_excd:
-            return None
-        logger.info(f"🔄 {ticker} {params['EXCD']}→{alt_excd} fallback query (empty response)")
-        alt_params = {**params, "EXCD": alt_excd}
-        alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
-        if alt_response and alt_response.status_code == 200:
-            alt_data = alt_response.json()
-            if alt_data.get("output2"):
-                alt_data["output"] = alt_data["output2"]
-                try:
-                    from services.market.stock_meta_service import StockMetaService
-                    StockMetaService.update_market_code(ticker, alt_excd)
-                    logger.info(f"✅ {ticker} api_market_code auto-corrected: {params['EXCD']} → {alt_excd}")
-                except Exception:
-                    pass
-                return alt_data
+        current = params["EXCD"]
+        all_exchanges = ["NAS", "NYS", "AMS"]
+        alternatives = [ex for ex in all_exchanges if ex != current]
+        for alt_excd in alternatives:
+            logger.info(f"🔄 {ticker} {current}→{alt_excd} fallback query (empty response)")
+            alt_params = {**params, "EXCD": alt_excd}
+            alt_response = cls._get_with_retry(url, headers=headers, params=alt_params, timeout=REQUEST_TIMEOUT_DEFAULT, retries=2)
+            if alt_response and alt_response.status_code == 200:
+                alt_data = alt_response.json()
+                if alt_data.get("output2"):
+                    alt_data["output"] = alt_data["output2"]
+                    try:
+                        from services.market.stock_meta_service import StockMetaService
+                        StockMetaService.update_market_code(ticker, alt_excd)
+                        logger.info(f"✅ {ticker} api_market_code auto-corrected: {current} → {alt_excd}")
+                    except Exception:
+                        pass
+                    return alt_data
         return None
 
     @classmethod

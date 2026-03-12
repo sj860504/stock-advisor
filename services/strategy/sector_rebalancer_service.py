@@ -130,7 +130,7 @@ class SectorRebalancerService:
                 continue
             holding = holdings_map.get(ticker)
             market_total = kr_total if is_kr(ticker) else us_total_krw
-            score, reasons = SignalService.calculate_score(
+            score, reasons, _breakdown = SignalService.calculate_score(
                 ticker, state, holding, macro, user_state, cash_balance,
                 market_cash_ratio=target_cash_kr if is_kr(ticker) else target_cash_us,
                 market_total_krw=market_total,

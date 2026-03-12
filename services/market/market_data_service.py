@@ -258,13 +258,13 @@ class MarketDataService:
             cls._warm_up_data(ticker)
 
     @classmethod
-    def _warm_up_data(cls, ticker: str):
+    def _warm_up_data(cls, ticker: str, _force: bool = False):
         """Single ticker warm-up orchestrator."""
         try:
             state = cls._states.get(ticker)
             if not state:
                 return
-            if cls._should_skip_by_market_hours(ticker):
+            if not _force and cls._should_skip_by_market_hours(ticker):
                 return
 
             from services.market.stock_meta_service import StockMetaService

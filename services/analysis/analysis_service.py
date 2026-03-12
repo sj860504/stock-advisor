@@ -123,7 +123,7 @@ class AnalysisService:
                 macro_snapshot, {}, cash,
             )
         except Exception:
-            return None, []
+            return None, [], {}
 
     @staticmethod
     def _build_report_object(
@@ -197,7 +197,7 @@ class AnalysisService:
             news_items   = NewsService.get_latest_news(ticker, limit=REPORT_NEWS_LIMIT)
             news_summary = NewsService.summarize_news(ticker, news_items)
 
-            score, score_reasons = cls._calculate_trade_score(
+            score, score_reasons, _breakdown = cls._calculate_trade_score(
                 ticker, current_price, change_rate_pct,
                 rsi, emas, bollinger, dcf_fair, user_id, macro_snapshot,
             )

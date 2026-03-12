@@ -22,6 +22,7 @@ class YFinanceFundamentals:
     growth_rate: float = 0.05       # earnings/revenue growth (decimal, e.g. 0.15)
     currency: str = "USD"
     source_ticker: str = ""         # Actual ticker sent to yfinance (e.g. "005930.KS")
+    target_mean_price: Optional[float] = None  # Analyst consensus target price
 
 
 class YFinanceService:
@@ -84,10 +85,14 @@ class YFinanceService:
                 growth_rate = max(-0.15, min(0.25, growth_rate))
 
                 currency = info.get("currency", "USD")
+                target_mean_price = info.get("targetMeanPrice")
+                if target_mean_price is not None:
+                    target_mean_price = float(target_mean_price)
 
                 logger.info(
                     f"[yfinance] {yf_ticker}: FCF/share={fcf_per_share}, "
-                    f"beta={beta:.2f}, growth={growth_rate:.3f}"
+                    f"beta={beta:.2f}, growth={growth_rate:.3f}, "
+                    f"targetMeanPrice={target_mean_price}"
                 )
                 return YFinanceFundamentals(
                     fcf_per_share=fcf_per_share,
@@ -95,6 +100,7 @@ class YFinanceService:
                     growth_rate=growth_rate,
                     currency=currency,
                     source_ticker=yf_ticker,
+                    target_mean_price=target_mean_price,
                 )
 
             except Exception as e:

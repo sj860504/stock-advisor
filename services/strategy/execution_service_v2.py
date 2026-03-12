@@ -29,6 +29,10 @@ TOP10_CACHE_TTL_SEC = 6 * 60 * 60
 class TradeExecutorService:
     """Order execution + weight/cash condition checks + alerts."""
 
+    # Tracks KRW spent by the last successful buy (reset before each signal processing).
+    # Used by PositionService to update cash_balance within the execution loop.
+    _last_buy_spent_krw: float = 0.0
+
     WEIGHTS = {
         'RSI_OVERSOLD': -20, 'RSI_OVERBOUGHT': +15,
         'DIP_BUY_5PCT': -15, 'SURGE_SELL_5PCT': +15,
@@ -42,6 +46,7 @@ class TradeExecutorService:
         'DCF_FAIR_VALUE': -5,
         'DCF_OVERVALUE_LOW': +10,
         'DCF_OVERVALUE_HIGH': +20,
+        'DCF_UNAVAILABLE': +10,
     }
 
     SECTOR_GROUP_MAP: dict = {
@@ -507,7 +512,11 @@ class TradeExecutorService:
         excg_cd = StockMetaService.get_exchange_code(ticker) if not is_kr_flag else None
         order_result = KisService.send_order(ticker, quantity, 0, "buy") if is_kr_flag else KisService.send_overseas_order(ticker, quantity, round(float(current_price), 2), "buy", market=excg_cd)
         if order_result.get("status") == "success":
-            OrderService.record_trade(ticker, "buy", quantity, final_price, "strategy_execution", "v3_strategy")
+            record_price = current_price if not is_kr_flag else final_price
+            OrderService.record_trade(ticker, "buy", quantity, record_price, "strategy_execution", "v3_strategy")
+            spent_krw = quantity * final_price
+            cls._last_buy_spent_krw = spent_krw
+            logger.info(f"💰 {ticker} Buy spent ≈ {spent_krw:,.0f}KRW (qty={quantity}, price_krw={final_price:,.0f})")
             return True, quantity
         logger.error(f"Order failed: {order_result}")
         return False, 0
@@ -515,6 +524,7 @@ class TradeExecutorService:
     @classmethod
     def _execute_sell_order(
         cls, ticker: str, score: int, current_price: float, holdings: list, user_id: str,
+        forced_qty: int = None,
     ) -> tuple:
         """Execute sell order. Returns (executed, trade_qty)."""
         portfolio = holdings or PortfolioService.load_portfolio(user_id)
@@ -522,8 +532,13 @@ class TradeExecutorService:
         if not current_holding:
             return False, 0
         holding_qty = current_holding.get("quantity", 0)
-        split_count = SettingsService.get_int("STRATEGY_SPLIT_COUNT", 3)
-        sell_qty, msg = max(1, int(holding_qty / split_count)), "partial_sell(take_profit)"
+        if forced_qty is not None and forced_qty > 0:
+            sell_qty = min(forced_qty, holding_qty)
+            msg = "partial_sell(split)"
+        else:
+            split_count = SettingsService.get_int("STRATEGY_SELL_SPLIT_COUNT", 5)
+            sell_qty = max(1, int(holding_qty / split_count))
+            msg = "partial_sell(take_profit)"
         buy_price_val = float(current_holding.get("buy_price") or 0) or None
         if not is_kr(ticker):
             current_price = cls._fetch_fresh_us_price(ticker, current_price)
@@ -562,7 +577,7 @@ class TradeExecutorService:
                 target_cash_ratio_kr, target_cash_ratio_us, forced_qty=forced_qty,
             )
         elif side == "sell":
-            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id)
+            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty)
         else:
             return False
 

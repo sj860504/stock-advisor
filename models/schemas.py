@@ -490,6 +490,15 @@ class BuyCooldownEntry(BaseModel):
     price: float = 0.0
 
 
+class SplitSellOrderState(BaseModel):
+    """State tracking for split sell orders."""
+    total_qty: int = 0
+    remaining_qty: int = 0
+    splits_done: int = 0
+    split_count: int = 5
+    start_date: str = ""
+
+
 # ----- Sector Rebalance Schemas -----
 
 
