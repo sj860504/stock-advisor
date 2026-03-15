@@ -23,14 +23,19 @@ def market_type(ticker: str) -> str:
     return "KR" if is_kr(ticker) else "US"
 
 
-def filter_kr(holdings: List[dict]) -> List[dict]:
+def _ticker_of(h) -> str:
+    """Extract ticker from holding (dict or object)."""
+    return str(getattr(h, "ticker", None) or (h.get("ticker", "") if isinstance(h, dict) else ""))
+
+
+def filter_kr(holdings) -> list:
     """Filter Korean stocks only from holdings list."""
-    return [h for h in holdings if is_kr(str(h.get("ticker", "")))]
+    return [h for h in holdings if is_kr(_ticker_of(h))]
 
 
-def filter_us(holdings: List[dict]) -> List[dict]:
+def filter_us(holdings) -> list:
     """Filter US stocks only from holdings list."""
-    return [h for h in holdings if is_us(str(h.get("ticker", "")))]
+    return [h for h in holdings if is_us(_ticker_of(h))]
 
 
 def profit_pct(current: float, invested: float, decimals: int = 2) -> float:

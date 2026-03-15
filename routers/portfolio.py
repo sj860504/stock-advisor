@@ -78,8 +78,9 @@ def update_sector(user_id: str, ticker: str, sector: str) -> HoldingActionRespon
 @router.delete("/{user_id}/{ticker}", response_model=HoldingActionResponse)
 def remove_holding(user_id: str, ticker: str) -> HoldingActionResponse:
     """Remove a holding."""
-    holdings = PortfolioService.load_portfolio(user_id)
-    new_holdings = [h for h in holdings if h.get("ticker") != ticker]
+    from repositories.portfolio_repo import PortfolioRepo
+    holdings_raw = PortfolioRepo.load_holdings(user_id)
+    new_holdings = [h for h in holdings_raw if h.get("ticker") != ticker]
     PortfolioService.save_portfolio(user_id, new_holdings)
     return HoldingActionResponse(message=f"{ticker} removed", holdings=new_holdings)
 
@@ -90,7 +91,8 @@ def trade_holding(
 ) -> HoldingActionResponse:
     """Unified buy/sell processing. action: 'buy' or 'sell'."""
     resolved_ticker = TickerService.resolve_ticker(ticker)
-    holdings = PortfolioService.load_portfolio(user_id)
+    from repositories.portfolio_repo import PortfolioRepo
+    holdings = PortfolioRepo.load_holdings(user_id)
     try:
         holdings = PortfolioService.apply_trade_action(holdings, resolved_ticker, action, quantity, price)
         PortfolioService.save_portfolio(user_id, holdings)

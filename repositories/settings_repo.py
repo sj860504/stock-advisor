@@ -2,7 +2,7 @@
 from typing import Optional
 
 from models.settings import Settings
-from repositories.database import get_session, session_scope
+from repositories.database import session_ro, session_scope
 from utils.logger import get_logger
 
 logger = get_logger("settings_repo")
@@ -14,12 +14,9 @@ class SettingsRepo:
     @classmethod
     def get(cls, key: str) -> Optional[str]:
         """Fetch setting value. Returns None if not found."""
-        session = get_session()
-        try:
+        with session_ro() as session:
             row = session.query(Settings).filter_by(key=key).first()
             return row.value if row else None
-        finally:
-            session.close()
 
     @classmethod
     def set(cls, key: str, value: str, description: str = "") -> Optional[Settings]:
@@ -42,12 +39,9 @@ class SettingsRepo:
     @classmethod
     def get_all(cls) -> dict:
         """Fetch all settings as {key: {value, description}}."""
-        session = get_session()
-        try:
+        with session_ro() as session:
             rows = session.query(Settings).all()
             return {r.key: {"value": r.value, "description": r.description} for r in rows}
-        finally:
-            session.close()
 
     @classmethod
     def upsert_many(cls, items: dict[str, tuple[str, str]]) -> None:

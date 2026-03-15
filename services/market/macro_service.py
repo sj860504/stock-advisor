@@ -12,6 +12,7 @@ from models.schemas import (
     MarketRegimeSchema, MarketRegimeComponents, OtherDetailScores,
     EconomicPhaseDetail, EconomicIndicatorEntry, EconomicIndicatorsSummary,
     EconomicIndicatorsSnapshot, IndexQuote, CryptoQuote, CommodityQuote,
+    RegimeComponents,
 )
 
 logger = get_logger("macro_service")
@@ -64,6 +65,18 @@ class MacroService:
     }
 
     @classmethod
+    def _fetch_raw_indicators(cls) -> tuple:
+        """모든 외부 API 데이터 조회. Returns (vix, fear_greed, economic_indicators, us_10y_yield, crypto, commodities)."""
+        return (
+            cls._get_vix(),
+            cls._get_fear_greed_index(),
+            cls._get_economic_indicators(),
+            cls._get_us_10y_yield(),
+            cls._get_crypto_data(),
+            cls._get_commodity_data(),
+        )
+
+    @classmethod
     def get_macro_data(cls) -> dict:
         now = time.time()
         if 'macro' in cls._cache:
@@ -71,18 +84,16 @@ class MacroService:
             if now - timestamp < cls._cache_expiry:
                 return data
 
-        print("🌐 Fetching Comprehensive Macro Data via KIS/FRED...")
-        vix = cls._get_vix()
-        fear_greed = cls._get_fear_greed_index()
-        economic_indicators = cls._get_economic_indicators()
-        us_10y_yield = cls._get_us_10y_yield()
-        crypto = cls._get_crypto_data()
-        commodities = cls._get_commodity_data()
+        logger.info("🌐 Fetching Comprehensive Macro Data via KIS/FRED...")
+        vix, fear_greed, economic_indicators, us_10y_yield, crypto, commodities = cls._fetch_raw_indicators()
+        from repositories.stock_meta_repo import StockMetaRepo
+        historical_avg_score = StockMetaRepo.get_30d_avg_regime_score()
         market_regime = cls._get_market_regime(
             vix=vix,
             fear_greed=fear_greed,
             economic_indicators=economic_indicators,
             us_10y_yield=us_10y_yield,
+            historical_avg_score=historical_avg_score,
         )
 
         data = {
@@ -101,6 +112,15 @@ class MacroService:
         cls._cache['macro'] = (data, now)
         cls._save_regime_snapshot(market_regime, vix, fear_greed)
         return data
+
+    @classmethod
+    def get_macro_data_snapshot(cls) -> "MacroDataSnapshot":
+        """get_macro_data() dict → MacroDataSnapshot 변환 래퍼."""
+        from models.schemas import MacroDataSnapshot
+        data = cls.get_macro_data()
+        snapshot = MacroDataSnapshot(**{k: v for k, v in data.items() if k != "timestamp"})
+        snapshot.exchange_rate = cls.get_exchange_rate()
+        return snapshot
 
     @staticmethod
     def _save_regime_snapshot(market_regime, vix, fear_greed):
@@ -146,8 +166,18 @@ class MacroService:
 
     @classmethod
     def get_exchange_rate(cls) -> float:
-        """Exchange rate via KIS (fixed value for now, extensible via API)."""
-        # KIS provides exchange rate data, but simplified to 1400 for now
+        """USD/KRW exchange rate via yfinance, fallback to 1400."""
+        try:
+            import yfinance as yf
+            data = yf.Ticker("USDKRW=X").history(period="5d")
+            if data is not None and not data.empty and "Close" in data.columns:
+                rate = float(data["Close"].dropna().iloc[-1])
+                if rate > 0:
+                    logger.info(f"💱 Exchange rate (yfinance): {rate:.2f}")
+                    return rate
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch exchange rate from yfinance: {e}")
+        logger.warning("⚠️ Using fallback exchange rate: 1400.0")
         return 1400.0
 
     # yfinance fallback symbols (used when KIS IDX returns 0)
@@ -324,7 +354,7 @@ class MacroService:
     @classmethod
     def _calc_technical_20(cls, close: pd.Series, ndx_1m_hist=None) -> tuple:
         """EMA alignment + SPX/NDX/2W momentum + ATH drawdown -> (technical_20: 0~20, detail, ema_map)."""
-        current_price = float(close.iloc[-1])
+        current_price = float(close.tail(20).mean()) if len(close) >= 20 else float(close.iloc[-1])
         ema_map = {p: float(close.ewm(span=p, adjust=False).mean().iloc[-1]) for p in [5, 20, 60, 120, 200]}
         ema_raw = cls._calc_ema_raw(close, current_price, ema_map)
         momentum_raw, tech_detail = cls._calc_momentum_raw(close, ndx_1m_hist)
@@ -353,8 +383,8 @@ class MacroService:
         return cls._to_20(max(-12, min(12, vix_score + vix_speed)), 12)
 
     @staticmethod
-    def _calc_fng_20(fear_greed: int) -> int:
-        """Fear&Greed 6-tier -> 0~20."""
+    def _calc_fng_20(fear_greed: int) -> tuple[int, bool]:
+        """Fear&Greed 6-tier -> (score: 0~20, extreme_fear: bool)."""
         fng_score = 0
         if fear_greed <= 15:    fng_score = -10
         elif fear_greed <= 25:  fng_score = -6
@@ -362,7 +392,8 @@ class MacroService:
         elif fear_greed >= 85:  fng_score = +10
         elif fear_greed >= 70:  fng_score = +6
         elif fear_greed >= 55:  fng_score = +3
-        return MacroService._to_20(fng_score, 10)
+        extreme_fear = fear_greed <= 20
+        return MacroService._to_20(fng_score, 10), extreme_fear
 
     @staticmethod
     def _calc_econ_20(economic_indicators) -> int:
@@ -451,11 +482,19 @@ class MacroService:
         return max(-10, min(10, signal)), detail
 
     ECONOMIC_PHASES = {
-        "Stagflation":  {"modifier":  -8, "label": "Stagflation"},
-        "Deflation":    {"modifier":  -5, "label": "Deflation"},
-        "Inflation":    {"modifier":  -3, "label": "Inflation"},
-        "Reflation":    {"modifier":  +2, "label": "Reflation"},
-        "Goldilocks":   {"modifier":  +5, "label": "Goldilocks"},
+        "Stagflation":  {"modifier": -12, "label": "Stagflation"},
+        "Deflation":    {"modifier":  -8, "label": "Deflation"},
+        "Inflation":    {"modifier":  -5, "label": "Inflation"},
+        "Reflation":    {"modifier":  +3, "label": "Reflation"},
+        "Goldilocks":   {"modifier":  +8, "label": "Goldilocks"},
+    }
+
+    COMPONENT_WEIGHTS = {
+        "technical": 20,
+        "vix":       25,
+        "fng":       20,
+        "econ":      20,
+        "other":     15,
     }
 
     @classmethod
@@ -637,33 +676,46 @@ class MacroService:
         return None
 
     @staticmethod
-    def _assemble_regime_result(
+    def _compute_weighted_score(
+        technical_20: int, vix_20: int, fng_20: int,
+        econ_20: int, other_20: int, phase_modifier: int,
+    ) -> int:
+        """5개 컴포넌트 합산 후 phase_modifier 적용, 0~100 클리핑."""
+        base_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
+        return max(0, min(100, base_score + phase_modifier))
+
+    @staticmethod
+    def _blend_regime_score(regime_score: int, historical_avg_score: float | None) -> int:
+        """현재 점수 60% + 30일 평균 40% blending. historical_avg_score 없으면 현재 점수 그대로."""
+        if historical_avg_score is not None:
+            return round(regime_score * 0.6 + historical_avg_score * 0.4)
+        return regime_score
+
+    @staticmethod
+    def _build_regime_schema(
+        blended_score: int, regime_score: int, bear_threshold: int, extreme_fear: bool,
         close: pd.Series, ema_map: dict,
         technical_20: int, tech_detail: dict,
         vix_20: int, fng_20: int, econ_20: int,
         other_20: int, other_scores: dict,
         vix: float, vix_1m_chg, us_10y_yield: float,
-        yield_spread, btc_ret, dxy_ret, gold_ret,
-        bear_threshold: int = 40,
-        economic_phase: str = "Neutral",
-        phase_modifier: int = 0,
-        inflation_pressure: int = 0,
-        growth_signal: int = 0,
-        inflation_detail: dict | None = None,
-        oil_ret: float | None = None,
+        yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+        economic_phase: str, phase_modifier: int,
+        inflation_pressure: int, growth_signal: int,
+        inflation_detail: dict | None,
     ) -> MarketRegimeSchema:
-        """Aggregate component scores and return market regime result."""
-        base_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
-        regime_score = max(0, min(100, base_score + phase_modifier))
-        if regime_score >= 65:
+        """blended_score 기준 레짐 판정 후 MarketRegimeSchema 구성."""
+        if extreme_fear:
+            status = "Bear"
+        elif blended_score >= 65:
             status = "Bull"
-        elif regime_score <= bear_threshold:
+        elif blended_score <= bear_threshold:
             status = "Bear"
         else:
             status = "Neutral"
         current_price = float(close.iloc[-1])
         ema200 = ema_map[200]
-        ma200  = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
+        ma200 = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else ema200
         diff_pct = round((current_price - ma200) / ma200 * 100, 2) if ma200 else 0
         return MarketRegimeSchema(
             status=status,
@@ -696,6 +748,75 @@ class MacroService:
             ),
         )
 
+    @staticmethod
+    def _assemble_regime_result(
+        close: pd.Series, ema_map: dict,
+        technical_20: int, tech_detail: dict,
+        vix_20: int, fng_20: int, econ_20: int,
+        other_20: int, other_scores: dict,
+        vix: float, vix_1m_chg, us_10y_yield: float,
+        yield_spread, btc_ret, dxy_ret, gold_ret,
+        bear_threshold: int = 40,
+        economic_phase: str = "Neutral",
+        phase_modifier: int = 0,
+        inflation_pressure: int = 0,
+        growth_signal: int = 0,
+        inflation_detail: dict | None = None,
+        oil_ret: float | None = None,
+        extreme_fear: bool = False,
+        historical_avg_score: float | None = None,
+    ) -> MarketRegimeSchema:
+        """Aggregate component scores and return market regime result."""
+        regime_score = MacroService._compute_weighted_score(
+            technical_20, vix_20, fng_20, econ_20, other_20, phase_modifier
+        )
+        blended_score = MacroService._blend_regime_score(regime_score, historical_avg_score)
+        return MacroService._build_regime_schema(
+            blended_score, regime_score, bear_threshold, extreme_fear,
+            close, ema_map,
+            technical_20, tech_detail,
+            vix_20, fng_20, econ_20, other_20, other_scores,
+            vix, vix_1m_chg, us_10y_yield,
+            yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+            economic_phase, phase_modifier,
+            inflation_pressure, growth_signal, inflation_detail,
+        )
+
+    @classmethod
+    def _calculate_all_regime_components(
+        cls,
+        close,
+        vix: float,
+        vix_1m_chg: float | None,
+        fear_greed: int,
+        economic_indicators,
+        us_10y_yield: float,
+        yield_spread: float | None,
+        btc_ret: float | None,
+        dxy_ret: float | None,
+        gold_ret: float | None,
+        oil_ret: float | None,
+        ndx_1m_hist=None,
+    ) -> RegimeComponents:
+        """5개 점수 컴포넌트 + 경제 국면 계산. 순수 계산 함수, I/O 없음."""
+        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
+        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
+        fng_20, extreme_fear = cls._calc_fng_20(fear_greed)
+        econ_20 = cls._calc_econ_20(economic_indicators)
+        other_20, other_scores = cls._calc_composite_20(
+            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+        )
+        inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
+        growth_signal, _ = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
+        economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
+        return RegimeComponents(
+            technical_20=technical_20, vix_20=vix_20, fng_20=fng_20,
+            econ_20=econ_20, other_20=other_20, extreme_fear=extreme_fear,
+            ema_map=ema_map, tech_detail=tech_detail, other_scores=other_scores,
+            inflation_pressure=inflation_pressure, inflation_detail=inflation_detail,
+            growth_signal=growth_signal, economic_phase=economic_phase, phase_modifier=phase_modifier,
+        )
+
     @classmethod
     def _get_market_regime(
         cls,
@@ -703,47 +824,38 @@ class MacroService:
         fear_greed: int | None = None,
         economic_indicators: dict | None = None,
         us_10y_yield: float | None = None,
+        historical_avg_score: float | None = None,
     ) -> MarketRegimeSchema:
         """Market regime classification (Bull/Bear/Neutral) with 100-point scoring (5-phase economic regime)."""
         close, ndx_1m_hist = cls._fetch_spx_and_ndx_history()
         if close is None or close.empty:
             return MarketRegimeSchema(status="Unknown", regime_score=-1, _fetch_failed=True)
 
-        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
-
         if vix is None:
             vix = cls._get_vix()
         vix_1m_chg = cls._fetch_vix_1m_change(vix)
-        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
-
         if fear_greed is None:
             fear_greed = cls._get_fear_greed_index()
-        fng_20 = cls._calc_fng_20(fear_greed)
-
         if economic_indicators is None:
             economic_indicators = cls._get_economic_indicators()
-        econ_20 = cls._calc_econ_20(economic_indicators)
-
         if us_10y_yield is None:
             us_10y_yield = cls._get_us_10y_yield()
         yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret = cls._fetch_composite_assets(us_10y_yield)
-        other_20, other_scores = cls._calc_composite_20(
-            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+
+        c = cls._calculate_all_regime_components(
+            close, vix, vix_1m_chg, fear_greed, economic_indicators,
+            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret, ndx_1m_hist,
         )
-
-        # 5-Phase economic regime classification
-        inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
-        growth_signal, _growth_detail = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
-        economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
-
         bear_threshold = cls._get_bear_threshold()
         return cls._assemble_regime_result(
-            close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
-            other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
+            close, c.ema_map, c.technical_20, c.tech_detail, c.vix_20, c.fng_20, c.econ_20,
+            c.other_20, c.other_scores, vix, vix_1m_chg, us_10y_yield,
             yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold,
-            economic_phase=economic_phase, phase_modifier=phase_modifier,
-            inflation_pressure=inflation_pressure, growth_signal=growth_signal,
-            inflation_detail=inflation_detail, oil_ret=oil_ret,
+            economic_phase=c.economic_phase, phase_modifier=c.phase_modifier,
+            inflation_pressure=c.inflation_pressure, growth_signal=c.growth_signal,
+            inflation_detail=c.inflation_detail, oil_ret=oil_ret,
+            extreme_fear=c.extreme_fear,
+            historical_avg_score=historical_avg_score,
         )
 
     _CNN_HEADERS = {
@@ -918,15 +1030,9 @@ class MacroService:
         if close is None or close.empty:
             return {"error": f"No SPX data for {date_str}"}
 
-        technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
-
         vix, vix_1m_chg = cls._fetch_historical_vix(start_1m, end_date)
-        vix_20 = cls._calc_vix_20(vix, vix_1m_chg)
-
         days_diff  = (today_dt - target_dt).days
         fear_greed = cls._get_fear_greed_index() if days_diff <= 7 else 50
-        fng_20     = cls._calc_fng_20(fear_greed)
-
         us_10y_yield = cls._get_us_10y_yield()
         yield_spread = None
         try:
@@ -935,26 +1041,20 @@ class MacroService:
                 yield_spread = round(us_10y_yield - y2_val, 3)
         except Exception:
             pass
-
         economic_indicators = cls._get_economic_indicators()
-        econ_20 = cls._calc_econ_20(economic_indicators)
-
         btc_ret, dxy_ret, gold_ret, oil_ret = cls._fetch_historical_composite_returns(start_1m, end_date)
-        other_20, other_scores = cls._calc_composite_20(
-            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+
+        c = cls._calculate_all_regime_components(
+            close, vix, vix_1m_chg, fear_greed, economic_indicators,
+            us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret, ndx_1m_hist,
         )
-
-        inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
-        growth_signal, _growth_detail = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
-        economic_phase, phase_modifier = cls._determine_economic_phase(inflation_pressure, growth_signal)
-
         regime_data = cls._assemble_regime_result(
-            close, ema_map, technical_20, tech_detail, vix_20, fng_20, econ_20,
-            other_20, other_scores, vix, vix_1m_chg, us_10y_yield,
+            close, c.ema_map, c.technical_20, c.tech_detail, c.vix_20, c.fng_20, c.econ_20,
+            c.other_20, c.other_scores, vix, vix_1m_chg, us_10y_yield,
             yield_spread, btc_ret, dxy_ret, gold_ret, bear_threshold=40,
-            economic_phase=economic_phase, phase_modifier=phase_modifier,
-            inflation_pressure=inflation_pressure, growth_signal=growth_signal,
-            inflation_detail=inflation_detail, oil_ret=oil_ret,
+            economic_phase=c.economic_phase, phase_modifier=c.phase_modifier,
+            inflation_pressure=c.inflation_pressure, growth_signal=c.growth_signal,
+            inflation_detail=c.inflation_detail, oil_ret=oil_ret,
         )
 
         try:

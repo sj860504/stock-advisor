@@ -10,10 +10,11 @@ from typing import Optional
 
 import pytz
 
+from services.market.market_data_service import MarketDataService
 from services.market.macro_service import MacroService
 from services.config.settings_service import SettingsService
 from services.strategy.execution_service_v2 import TradeExecutorService
-from models.schemas import SplitOrderState, BuyCooldownEntry
+from models.schemas import SplitOrderState, BuyCooldownEntry, SplitSellOrderState, TradeResult, MacroDataSnapshot, ExecutionConfig, UnpackedSignal, SignalSchema, UserState, HoldingSchema
 from utils.logger import get_logger
 from utils.market import is_kr
 
@@ -27,26 +28,88 @@ class PositionService:
 
     @classmethod
     def _handle_profit_take_signal(
-        cls, ticker: str, holding: dict, profit_pct: float, take_profit_pct: float,
+        cls, ticker: str, holding: HoldingSchema, profit_pct: float, take_profit_pct: float,
         sell_cooldown: dict, today: str, state, score: int,
         market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, macro_data: dict,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
+        sell_split_orders: dict = None,
     ) -> bool:
-        """Handle profit-taking condition. Applies cooldown. Returns execution status."""
+        """Handle profit-taking condition with split sell tracking. Applies cooldown. Returns execution status."""
+        if sell_split_orders is None:
+            sell_split_orders = {}
         if not (holding and profit_pct >= take_profit_pct):
             return False
         if sell_cooldown.get(ticker) == today:
             logger.info(f"⏭️ {ticker} Partial sell cooldown active (already took profit today). Re-evaluate tomorrow.")
             return False
-        executed = TradeExecutorService._execute_trade_v2(
+        holding_qty = int(holding.quantity)
+        if holding_qty <= 0:
+            return False
+        sell_qty = cls._get_sell_split_qty(ticker, holding_qty, sell_split_orders, today)
+        if sell_qty <= 0:
+            sell_split_orders.pop(ticker, None)
+            return False
+        result = TradeExecutorService._execute_trade_v2(
             ticker, "sell", f"take_profit_zone({profit_pct:.2f}%)", profit_pct, True, score,
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=sell_qty,
         )
+        if result.executed:
+            cls._update_sell_split_state(ticker, sell_qty, sell_split_orders)
         sell_cooldown[ticker] = today  # Prevent same-day retry regardless of success/failure
-        return bool(executed)
+        return result.executed
+
+    # ── Sell Split Helpers ──────────────────────────────────────────────────────
+
+    @classmethod
+    def _get_sell_split_qty(cls, ticker: str, holding_qty: int, sell_split_orders: dict, today: str) -> int:
+        """Calculate sell quantity for one tranche. Initializes SplitSellOrderState if needed."""
+        sso = sell_split_orders.get(ticker)
+        if not sso:
+            split_count = SettingsService.get_int("STRATEGY_SELL_SPLIT_COUNT", 5)
+            tranche_qty = -(-holding_qty // split_count)  # ceil division
+            sso = SplitSellOrderState(
+                total_qty=holding_qty,
+                remaining_qty=holding_qty,
+                split_count=split_count,
+                start_date=today,
+                tranche_qty=tranche_qty,
+            )
+            sell_split_orders[ticker] = sso
+        if sso.splits_done >= sso.split_count or sso.remaining_qty <= 0:
+            return 0
+        # 마지막 트랜치는 remaining_qty 전량, 이전 트랜치는 초기 고정값 사용
+        if sso.splits_done == sso.split_count - 1:
+            return sso.remaining_qty
+        return sso.tranche_qty if sso.tranche_qty > 0 else -(-sso.remaining_qty // (sso.split_count - sso.splits_done))
+
+    @classmethod
+    def _update_sell_split_state(cls, ticker: str, sold_qty: int, sell_split_orders: dict) -> None:
+        """Update split sell state after successful execution."""
+        sso = sell_split_orders.get(ticker)
+        if not sso:
+            return
+        sso.splits_done += 1
+        sso.remaining_qty -= sold_qty
+        if sso.remaining_qty <= 0:
+            sell_split_orders.pop(ticker, None)
+
+    # ── Committed Cash ────────────────────────────────────────────────────────
+
+    @classmethod
+    def _calculate_committed_cash(cls, split_orders: dict, market: str = None) -> float:
+        """Sum remaining_qty * entry_price for pending split orders, filtered by market (KR/US/None=all)."""
+        total = 0.0
+        for ticker, so in (split_orders or {}).items():
+            if market == 'KR' and not is_kr(ticker):
+                continue
+            if market == 'US' and is_kr(ticker):
+                continue
+            total += so.remaining_qty * so.entry_price
+        return total
 
     # ── Cooldown ───────────────────────────────────────────────────────────────
 
@@ -71,35 +134,36 @@ class PositionService:
 
     @classmethod
     def _handle_add_buy_signal(
-        cls, ticker: str, holding: dict, profit_pct: float, stop_loss_pct: float,
+        cls, ticker: str, holding: HoldingSchema, profit_pct: float, stop_loss_pct: float,
         current_rsi: float, add_rsi_limit: float, add_score_limit: int, score: int,
         add_buy_cooldown: dict, today: str, state,
         market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, macro_data: dict,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
-    ) -> bool:
-        """Handle add-buy condition. Applies cooldown/RSI/score filters. Returns execution status."""
+        split_orders: dict = None,
+    ) -> TradeResult:
+        """Handle add-buy condition. Applies cooldown/RSI/score filters."""
         if not (holding and profit_pct <= -5.0 and profit_pct > stop_loss_pct):
-            return False
+            return TradeResult.no_op()
         if current_rsi >= add_rsi_limit:
             logger.info(f"⏭️ {ticker} Add-buy RSI overbought ({current_rsi:.1f} >= {add_rsi_limit}). Skip.")
-            return False
+            return TradeResult.no_op()
         if score > add_score_limit:
             logger.info(f"⏭️ {ticker} Add-buy score not met ({score} > {add_score_limit}). Skip.")
-            return False
+            return TradeResult.no_op()
         current_price_val = getattr(state, 'current_price', 0)
         if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
             logger.info(f"⏭️ {ticker} Add-buy cooldown active (already added today). Re-evaluate tomorrow.")
-            return False
-        executed = TradeExecutorService._execute_trade_v2(
+            return TradeResult.no_op()
+        result = TradeExecutorService._execute_trade_v2(
             ticker, "buy", f"add_position({profit_pct:.2f}%)", profit_pct, True, score,
             current_price_val, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
-        if executed:
+        if result.executed:
             add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price_val)
-        return bool(executed)
+        return result
 
     # ── Split Buy ─────────────────────────────────────────────────────────────
 
@@ -130,10 +194,10 @@ class PositionService:
         return True
 
     @classmethod
-    def _execute_split_tranche(cls, ticker, holding, score, reason_str, profit_pct, split_orders,
-                               current_price_val, market_total, cash_balance, exchange_rate,
-                               holdings, user_id, macro_data, target_cash_kr, target_cash_us,
-                               add_buy_cooldown, today) -> bool:
+    def _execute_split_tranche(cls, ticker: str, holding: Optional[HoldingSchema], score: int, reason_str: str, profit_pct: float, split_orders: dict,
+                               current_price_val: float, market_total: float, cash_balance: float, exchange_rate: float,
+                               holdings: list[HoldingSchema], user_id: str, macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
+                               add_buy_cooldown: dict, today: str) -> TradeResult:
         """Execute one tranche of a split order."""
         so = split_orders[ticker]
         remaining = so.remaining_qty
@@ -142,8 +206,8 @@ class PositionService:
         this_run_qty = -(-remaining // splits_left) if splits_left > 0 and remaining > 0 else remaining
         if this_run_qty <= 0:
             split_orders.pop(ticker, None)
-            return False
-        executed = TradeExecutorService._execute_trade_v2(
+            return TradeResult.no_op()
+        result = TradeExecutorService._execute_trade_v2(
             ticker, "buy",
             f"score {score} [{reason_str}] ({so.splits_done+1}/{so.split_count} split)",
             profit_pct, bool(holding), score, current_price_val, market_total, cash_balance,
@@ -151,31 +215,31 @@ class PositionService:
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
             forced_qty=this_run_qty,
         )
-        if executed:
+        if result.executed:
             so.splits_done += 1
             so.remaining_qty -= this_run_qty
             if so.remaining_qty <= 0:
                 split_orders.pop(ticker, None)
             add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price_val)
-        return bool(executed)
+        return result
 
     @classmethod
     def _handle_buy_split(
-        cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float,
+        cls, ticker: str, holding: Optional[HoldingSchema], score: int, reason_str: str, profit_pct: float,
         buy_max: int, add_buy_cooldown: dict, today: str, state,
         market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, macro_data: dict,
+        holdings: list[HoldingSchema], user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float, split_orders: dict,
-    ) -> bool:
+    ) -> TradeResult:
         """New/split buy logic. Caller must ensure score/holding condition gates."""
         has_pending_splits = ticker in split_orders
         current_price_val = getattr(state, 'current_price', 0)
-        if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
-            logger.info(f"⏭️ {ticker} New buy cooldown active (already bought today). Re-evaluate tomorrow.")
-            return False
         if not has_pending_splits:
+            if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
+                logger.info(f"⏭️ {ticker} New buy cooldown active (already bought today). Re-evaluate tomorrow.")
+                return TradeResult.no_op()
             if not cls._init_split_order(ticker, state, score, cash_balance, current_price_val, exchange_rate, market_total, today, split_orders):
-                return False
+                return TradeResult.no_op()
         return cls._execute_split_tranche(
             ticker, holding, score, reason_str, profit_pct, split_orders,
             current_price_val, market_total, cash_balance, exchange_rate,
@@ -187,41 +251,59 @@ class PositionService:
 
     @classmethod
     def _handle_sell_signal(
-        cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float,
+        cls, ticker: str, holding: Optional[HoldingSchema], score: int, reason_str: str, profit_pct: float,
         sell_min: int, sell_cooldown: dict, today: str, state,
         market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, macro_data: dict,
+        holdings: list[HoldingSchema], user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float, split_orders: dict,
+        sell_split_orders: dict = None,
     ) -> bool:
-        """Score-based sell logic. Caller must ensure score/holding condition gates."""
+        """Score-based sell logic with split sell tracking. Caller must ensure score/holding condition gates."""
+        if sell_split_orders is None:
+            sell_split_orders = {}
         if sell_cooldown.get(ticker) == today:
             logger.info(f"⏭️ {ticker} Partial sell cooldown active (already score-sold today). Re-evaluate tomorrow.")
             return False
-        split_orders.pop(ticker, None)  # Cancel remaining split orders
-        executed = TradeExecutorService._execute_trade_v2(
+        split_orders.pop(ticker, None)  # Cancel remaining buy split orders
+        holding_qty = int(holding.quantity) if holding else 0
+        if holding_qty <= 0:
+            return False
+        sell_qty = cls._get_sell_split_qty(ticker, holding_qty, sell_split_orders, today)
+        if sell_qty <= 0:
+            sell_split_orders.pop(ticker, None)
+            return False
+        result = TradeExecutorService._execute_trade_v2(
             ticker, "sell", f"score {score} [{reason_str}]", profit_pct, True, score,
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=sell_qty,
         )
+        if result.executed:
+            cls._update_sell_split_state(ticker, sell_qty, sell_split_orders)
         sell_cooldown[ticker] = today  # Prevent same-day retry regardless of success/failure
-        return bool(executed)
+        return result.executed
 
     # ── Score-Based Buy/Sell Combined ──────────────────────────────────────────────
 
     @classmethod
     def _handle_score_trade(
-        cls, ticker: str, holding, score: int, reason_str: str, profit_pct: float,
+        cls, ticker: str, holding: Optional[HoldingSchema], score: int, reason_str: str, profit_pct: float,
         buy_max: int, sell_min: int, sell_cooldown: dict, add_buy_cooldown: dict,
         today: str, state, market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, macro_data: dict,
+        holdings: list[HoldingSchema], user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float, split_orders: dict = None,
-    ) -> bool:
+        sell_split_orders: dict = None,
+    ) -> TradeResult:
         """Score-based buy/sell handling - delegates to sub-handlers."""
         if split_orders is None:
             split_orders = {}
+        if sell_split_orders is None:
+            sell_split_orders = {}
         has_pending_splits = ticker in split_orders
-        if 0 < score <= buy_max and (not holding or has_pending_splits):  # score=0 excluded from buy
+        if score <= buy_max and (not holding or has_pending_splits):
+            # Score improved → cancel pending sell splits
+            sell_split_orders.pop(ticker, None)
             return cls._handle_buy_split(
                 ticker, holding, score, reason_str, profit_pct,
                 buy_max, add_buy_cooldown, today, state,
@@ -229,131 +311,387 @@ class PositionService:
                 holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders,
             )
         if score >= sell_min and holding:
-            return cls._handle_sell_signal(
+            executed = cls._handle_sell_signal(
                 ticker, holding, score, reason_str, profit_pct,
                 sell_min, sell_cooldown, today, state,
                 market_total, cash_balance, exchange_rate,
                 holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders,
+                sell_split_orders=sell_split_orders,
             )
-        return False
+            return TradeResult(executed=bool(executed))
+        return TradeResult.no_op()
 
     # ── Single Signal Processing ────────────────────────────────────────────────────────
 
     @classmethod
-    def _process_single_signal(
-        cls, sig: dict, buy_max: int, sell_min: int, take_profit_pct: float,
-        stop_loss_pct: float, add_rsi_limit: float, add_score_limit: int,
-        sell_cooldown: dict, add_buy_cooldown: dict, today: str,
-        holdings: list, user_id: str, kr_total: float, us_total_krw: float, cash_balance: float,
-        exchange_rate: float, macro_data: dict, target_cash_kr: float, target_cash_us: float,
-        split_orders: dict = None,
-    ) -> bool:
-        """Process a single signal and return whether a trade was executed."""
-        ticker, state, holding = sig['ticker'], sig['state'], sig['holding']
-        score, reasons = sig['score'], sig['reasons']
-        reason_str = ", ".join(reasons)
-        stock_name = getattr(state, "name", "") or (holding.get("name") if holding else "")
-        dcf_val = getattr(state, 'dcf_value', None)
-        dcf_str = f", DCF={dcf_val:,.0f}" if dcf_val and dcf_val > 0 else ""
-        logger.info(f"🔍 Evaluated {ticker} ({stock_name}): Score={score}, RSI={getattr(state, 'rsi', 0):.1f}{dcf_str}, Reasons=[{reason_str}]")
+    def _unpack_signal(cls, sig: SignalSchema, kr_total: float, us_total_krw: float) -> UnpackedSignal:
+        """SignalSchema → UnpackedSignal. 순수 함수, I/O 없음."""
+        ticker = sig.ticker
+        holding = sig.holding
+        reasons = sig.reasons
         profit_pct = 0.0
         if holding:
-            buy_price = holding.get('buy_price', 0)
-            ref_price = float(holding.get("current_price") or getattr(state, 'current_price', 0))
-            if buy_price > 0: profit_pct = (ref_price - buy_price) / buy_price * 100
-        market_total = kr_total if is_kr(ticker) else us_total_krw
+            buy_price = holding.buy_price
+            ref_price = float((holding.current_price) or getattr(sig.state, 'current_price', 0))
+            if buy_price > 0:
+                profit_pct = (ref_price - buy_price) / buy_price * 100
+        return UnpackedSignal(
+            ticker=ticker,
+            state=sig.state,
+            holding=holding,
+            score=sig.score,
+            reason_str=", ".join(reasons),
+            profit_pct=profit_pct,
+            market_total=kr_total if is_kr(ticker) else us_total_krw,
+            forced_sell="stop_loss_hit" in reasons,
+        )
+
+    @classmethod
+    def _process_single_signal(
+        cls, sig: SignalSchema, cfg: ExecutionConfig,
+        sell_cooldown: dict, add_buy_cooldown: dict,
+        holdings: list, user_id: str, kr_total: float, us_total_krw: float, cash_balance: float,
+        macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
+        split_orders: dict = None, sell_split_orders: dict = None, trailing_high: dict = None,
+    ) -> tuple:
+        """Process a single signal. Returns (executed: bool, ticker_or_None: Optional[str], spent_krw: float, spent_usd: float)."""
+        u = cls._unpack_signal(sig, kr_total, us_total_krw)
+        cls._log_signal_evaluation(u)
+        return cls._route_signal(
+            u, cfg, sell_cooldown, add_buy_cooldown, holdings, user_id,
+            cash_balance, macro_data, target_cash_kr, target_cash_us,
+            split_orders, sell_split_orders, trailing_high,
+        )
+
+    @classmethod
+    def _log_signal_evaluation(cls, u: "UnpackedSignal") -> None:
+        """신호 평가 결과 로그 출력."""
+        stock_name = getattr(u.state, "name", "") or (u.holding.name if u.holding else "")
+        dcf_val = getattr(u.state, 'dcf_value', None)
+        dcf_str = f", DCF={dcf_val:,.0f}" if dcf_val and dcf_val > 0 else ""
+        logger.info(f"🔍 Evaluated {u.ticker} ({stock_name}): Score={u.score}, RSI={getattr(u.state, 'rsi', 0):.1f}{dcf_str}, Reasons=[{u.reason_str}]")
+
+    @classmethod
+    def _route_signal(
+        cls, u: "UnpackedSignal", cfg: ExecutionConfig,
+        sell_cooldown: dict, add_buy_cooldown: dict,
+        holdings: list, user_id: str, cash_balance: float,
+        macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
+        split_orders: dict = None, sell_split_orders: dict = None, trailing_high: dict = None,
+    ) -> tuple:
+        """강제매도/트레일링/익절/추매/점수매매 분기 라우터. (executed, ticker_or_None, spent_krw, spent_usd) 반환."""
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
-        if cls._handle_profit_take_signal(ticker, holding, profit_pct, take_profit_pct, sell_cooldown, today, state, score, market_total, cash_balance, exchange_rate, **common_kwargs):
-            return True
-        current_rsi = getattr(state, 'rsi', 50.0)
-        if cls._handle_add_buy_signal(ticker, holding, profit_pct, stop_loss_pct, current_rsi, add_rsi_limit, add_score_limit, score, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, **common_kwargs):
-            return True
-        return cls._handle_score_trade(ticker, holding, score, reason_str, profit_pct, buy_max, sell_min, sell_cooldown, add_buy_cooldown, today, state, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders)
+        if u.forced_sell and u.holding:
+            (split_orders or {}).pop(u.ticker, None)
+            (sell_split_orders or {}).pop(u.ticker, None)
+            result = cls._handle_forced_sell(
+                u.ticker, u.holding, u.profit_pct,
+                getattr(u.state, 'current_price', 0), u.market_total,
+                cash_balance, cfg.exchange_rate, **common_kwargs,
+            )
+            return result.executed, u.ticker if result.executed else None, 0.0, 0.0
+        current_price = getattr(u.state, 'current_price', 0)
+        th = trailing_high if trailing_high is not None else {}
+        cls._update_trailing_high(u.ticker, current_price, th)
+        trail_result = cls._handle_trailing_stop(
+            u.ticker, u.holding, current_price, th, macro_data,
+            u.market_total, cash_balance, cfg.exchange_rate, **common_kwargs,
+        )
+        if trail_result and trail_result.executed:
+            return True, u.ticker, 0.0, 0.0
+        if cls._handle_profit_take_signal(u.ticker, u.holding, u.profit_pct, cfg.take_profit_pct, sell_cooldown, cfg.today, u.state, u.score, u.market_total, cash_balance, cfg.exchange_rate, sell_split_orders=sell_split_orders, **common_kwargs):
+            return True, u.ticker, 0.0, 0.0
+        current_rsi = getattr(u.state, 'rsi', 50.0)
+        add_result = cls._handle_add_buy_signal(u.ticker, u.holding, u.profit_pct, cfg.stop_loss_pct, current_rsi, cfg.add_rsi_limit, cfg.add_score_limit, u.score, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, split_orders=split_orders, **common_kwargs)
+        if add_result.executed:
+            return True, u.ticker, add_result.spent_krw, add_result.spent_usd
+        result = cls._handle_score_trade(u.ticker, u.holding, u.score, u.reason_str, u.profit_pct, cfg.buy_max, cfg.sell_min, sell_cooldown, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders, sell_split_orders=sell_split_orders)
+        return result.executed, u.ticker if result.executed else None, result.spent_krw, result.spent_usd
+
+    # ── Trailing Stop ──────────────────────────────────────────────────────────
+
+    @classmethod
+    def _get_trailing_stop_pct(cls, macro_data: MacroDataSnapshot) -> float:
+        """레짐별 트레일링 스탑 임계값 반환. BULL: -7%, NEUTRAL/BEAR: -5%."""
+        status = macro_data.market_regime.status if macro_data.market_regime else "Neutral"
+        return -7.0 if status == "Bull" else -5.0
+
+    @classmethod
+    def _update_trailing_high(cls, ticker: str, current_price: float, trailing_high: dict) -> None:
+        """고점 갱신. current_price > 기존 고점이면 업데이트. 순수 상태 변경, I/O 없음."""
+        if current_price > 0:
+            trailing_high[ticker] = max(trailing_high.get(ticker, 0.0), current_price)
+
+    @classmethod
+    def _handle_trailing_stop(
+        cls, ticker: str, holding: HoldingSchema, current_price: float,
+        trailing_high: dict, macro_data: MacroDataSnapshot,
+        market_total: float, cash_balance: float, exchange_rate: float,
+        holdings: list, user_id: str, target_cash_kr: float, target_cash_us: float,
+    ) -> Optional[TradeResult]:
+        """고점 대비 drawdown이 레짐별 임계값 초과 시 전량 즉시 매도.
+        Returns TradeResult if triggered, None if not applicable."""
+        if not holding or current_price <= 0:
+            return None
+        high = trailing_high.get(ticker, 0.0)
+        if high <= 0:
+            return None
+        drawdown = (current_price - high) / high * 100
+        threshold = cls._get_trailing_stop_pct(macro_data)
+        if drawdown > threshold:
+            return None
+        buy_price = float(holding.buy_price or 0)
+        profit_pct = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+        logger.info(f"🔻 {ticker} Trailing stop: high={high:,.2f} current={current_price:,.2f} drawdown={drawdown:.1f}% (threshold={threshold:.1f}%)")
+        return cls._handle_forced_sell(
+            ticker, holding, profit_pct, current_price, market_total,
+            cash_balance, exchange_rate,
+            holdings=holdings, user_id=user_id, macro_data=macro_data,
+            target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
+        )
+
+    # ── Forced Sell (Stop-Loss) ────────────────────────────────────────────────
+
+    @classmethod
+    def _handle_forced_sell(
+        cls, ticker: str, holding: HoldingSchema, profit_pct: float,
+        current_price: float, market_total: float, cash_balance: float,
+        exchange_rate: float, holdings: list, user_id: str,
+        macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
+    ) -> TradeResult:
+        """Execute forced stop-loss sell at full quantity. No cooldown — stop-loss must always fire."""
+        return TradeExecutorService._execute_trade_v2(
+            ticker, "sell", f"stop_loss({profit_pct:.2f}%)", profit_pct, True, 0,
+            current_price, market_total, cash_balance, exchange_rate,
+            holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
+            target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=holding.quantity,
+        )
 
     # ── Unmonitored Holdings Check ─────────────────────────────────────────────
 
     @classmethod
     def _check_unmonitored_holdings(
-        cls, prepared_signals: list, holdings: list, user_id: str,
-        kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
-        macro_data: dict, target_cash_kr: float, target_cash_us: float,
-        take_profit_pct: float, stop_loss_pct: float,
-        sell_cooldown: dict, today: str,
-    ) -> bool:
-        """Stop-loss/profit-taking check for holdings outside monitoring universe (ETFs, etc.)."""
-        monitored_tickers = {sig['ticker'] for sig in prepared_signals}
+        cls, prepared_signals: list[SignalSchema], holdings: list[HoldingSchema], user_id: str,
+        kr_total: float, us_total_krw: float, cash_balance: float,
+        cfg: ExecutionConfig, macro_data: MacroDataSnapshot,
+        target_cash_kr: float, target_cash_us: float,
+        sell_cooldown: dict, sell_split_orders: dict,
+    ) -> tuple:
+        """Stop-loss/profit-taking check for holdings outside monitoring universe (ETFs, etc.).
+        Returns (trade_executed: bool, executed_tickers: set)."""
+        monitored_tickers = {sig.ticker for sig in prepared_signals}
         trade_executed = False
+        executed_tickers = set()
         for h in holdings:
-            ticker = h.get('ticker')
-            if not ticker or ticker in monitored_tickers:
+            if not h.ticker or h.ticker in monitored_tickers:
                 continue
-            qty = h.get('quantity', 0)
-            if not qty or qty <= 0:
+            if not h.quantity or h.quantity <= 0:
                 continue
-            buy_price = float(h.get('buy_price') or 0)
-            current_price = float(h.get('current_price') or 0)
-            if buy_price <= 0 or current_price <= 0:
-                continue
-            profit_pct = (current_price - buy_price) / buy_price * 100
-            logger.info(f"🔍 [Unmonitored holding] {ticker} ({h.get('name', '')}): PnL={profit_pct:.1f}%")
-            market_total = kr_total if is_kr(ticker) else us_total_krw
-            if profit_pct <= stop_loss_pct:
-                executed = TradeExecutorService._execute_trade_v2(
-                    ticker, "sell", f"stop_loss({profit_pct:.2f}%)", profit_pct, True, 0,
-                    current_price, market_total, cash_balance, exchange_rate,
-                    holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
-                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-                )
-                trade_executed = bool(executed) or trade_executed
-            elif profit_pct >= take_profit_pct:
-                if sell_cooldown.get(ticker) == today:
-                    logger.info(f"⏭️ {ticker} Partial sell cooldown active (already took profit today). Re-evaluate tomorrow.")
-                    continue
-                executed = TradeExecutorService._execute_trade_v2(
-                    ticker, "sell", f"take_profit_zone({profit_pct:.2f}%)", profit_pct, True, 0,
-                    current_price, market_total, cash_balance, exchange_rate,
-                    holdings=holdings, user_id=user_id, holding=h, macro=macro_data,
-                    target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-                )
-                if executed:
-                    sell_cooldown[ticker] = today
-                trade_executed = bool(executed) or trade_executed
-        return trade_executed
+            executed, ticker = cls._process_unmonitored_holding(
+                h, kr_total, us_total_krw, cash_balance, cfg, macro_data,
+                target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders,
+                holdings, user_id,
+            )
+            if executed and ticker:
+                executed_tickers.add(ticker)
+                trade_executed = True
+        return trade_executed, executed_tickers
+
+    @classmethod
+    def _process_unmonitored_holding(
+        cls, h: HoldingSchema, kr_total: float, us_total_krw: float,
+        cash_balance: float, cfg: "ExecutionConfig", macro_data: "MacroDataSnapshot",
+        target_cash_kr: float, target_cash_us: float,
+        sell_cooldown: dict, sell_split_orders: dict,
+        holdings: list[HoldingSchema], user_id: str,
+    ) -> tuple[bool, Optional[str]]:
+        """단일 미감시 종목의 가격 조회 및 손절/익절 실행. (executed, ticker_or_None) 반환."""
+        ticker = h.ticker
+        buy_price = float(h.buy_price or 0)
+        cached_state = MarketDataService.get_state(ticker)
+        cached_price = getattr(cached_state, 'current_price', 0) if cached_state else 0
+        current_price = cached_price if cached_price > 0 else float(h.current_price or 0)
+        if buy_price <= 0 or current_price <= 0:
+            return False, None
+        profit_pct = (current_price - buy_price) / buy_price * 100
+        logger.info(f"🔍 [Unmonitored holding] {ticker} ({h.name or ''}): PnL={profit_pct:.1f}%")
+        market_total = kr_total if is_kr(ticker) else us_total_krw
+        common_kwargs = dict(
+            holdings=holdings, user_id=user_id, macro_data=macro_data,
+            target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
+        )
+        if profit_pct <= cfg.stop_loss_pct:
+            result = cls._handle_forced_sell(
+                ticker, h, profit_pct, current_price, market_total,
+                cash_balance, cfg.exchange_rate, **common_kwargs,
+            )
+            return result.executed, ticker if result.executed else None
+        elif profit_pct >= cfg.take_profit_pct:
+            executed = cls._handle_profit_take_signal(
+                ticker, h, profit_pct, cfg.take_profit_pct,
+                sell_cooldown, cfg.today, cached_state, 0,
+                market_total, cash_balance, cfg.exchange_rate,
+                sell_split_orders=sell_split_orders, **common_kwargs,
+            )
+            return executed, ticker if executed else None
+        return False, None
 
     # ── Batch Signal Execution ────────────────────────────────────────────────────────
 
     @classmethod
-    def _execute_collected_signals(
-        cls, user_id: str, prepared_signals: list, holdings: list,
-        kr_total: float, us_total_krw: float, cash_balance: float,
-        target_cash_kr: float, target_cash_us: float, macro_data: dict,
-        user_state: dict = None,
-    ) -> bool:
-        """Execute actual orders based on collected signals."""
-        buy_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
-        sell_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
-        take_profit_pct = SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT", 3.0)
-        exchange_rate = MacroService.get_exchange_rate()
-        sell_cooldown: dict = (user_state or {}).setdefault('sell_cooldown', {})
-        add_buy_cooldown: dict = (user_state or {}).setdefault('add_buy_cooldown', {})
-        split_orders: dict = (user_state or {}).setdefault('split_orders', {})
-        stop_loss_pct = SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0)
-        add_rsi_limit = SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0)
-        add_score_limit = SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55)
-        today: str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
-        trade_executed = False
-        for sig in prepared_signals:
-            trade_executed = cls._process_single_signal(
-                sig, buy_max, sell_min, take_profit_pct, stop_loss_pct, add_rsi_limit,
-                add_score_limit, sell_cooldown, add_buy_cooldown, today,
-                holdings, user_id, kr_total, us_total_krw, cash_balance, exchange_rate,
-                macro_data, target_cash_kr, target_cash_us, split_orders=split_orders,
-            ) or trade_executed
+    def _expire_split_orders(cls, split_orders: dict) -> None:
+        """TTL 초과 split_orders 제거. start_date 기준 N일 경과 항목 삭제."""
+        expire_days = SettingsService.get_int("STRATEGY_SPLIT_EXPIRE_DAYS", 5)
+        today = datetime.now(pytz.timezone('Asia/Seoul')).date()
+        expired = [
+            t for t, so in split_orders.items()
+            if (today - datetime.strptime(so.start_date, "%Y-%m-%d").date()).days >= expire_days
+        ]
+        for t in expired:
+            split_orders.pop(t, None)
+            logger.info(f"⏰ {t} split_order TTL {expire_days}일 만료 → 제거")
 
-        # Stop-loss/profit-taking check for holdings outside monitoring universe (ETFs, etc.)
-        trade_executed = cls._check_unmonitored_holdings(
+    @classmethod
+    def _load_execution_config(cls) -> ExecutionConfig:
+        """SettingsService에서 실행 설정값 일괄 조회 후 ExecutionConfig 반환."""
+        return ExecutionConfig(
+            buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30),
+            sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70),
+            take_profit_pct=SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT", 3.0),
+            stop_loss_pct=SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0),
+            add_rsi_limit=SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0),
+            add_score_limit=SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55),
+            exchange_rate=MacroService.get_exchange_rate(),
+            today=datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d'),
+        )
+
+    @classmethod
+    def _sort_signals_by_priority(cls, signals: list[SignalSchema], split_orders: dict) -> list[SignalSchema]:
+        """신호 우선순위 정렬. 신규 미보유(0) > 기존 보유(1) > split tranche 연속(2). 순수 함수."""
+        def _priority(s: SignalSchema):
+            t = s.ticker
+            if not s.holding and t not in split_orders:
+                return 0
+            if t in split_orders:
+                return 2
+            return 1
+        return sorted(signals, key=_priority)
+
+    @classmethod
+    def _deduct_loop_cash(
+        cls, ticker: str, spent_krw: float, spent_usd: float,
+        cash_balance: float, usd_cash: float,
+    ) -> tuple[float, float]:
+        """루프 내 체결 후 현금 차감. Returns (updated_cash_balance, updated_usd_cash)."""
+        if spent_krw > 0 and is_kr(ticker):
+            cash_balance = max(0.0, cash_balance - spent_krw)
+            logger.info(f"💰 Loop KRW cash updated: -{spent_krw:,.0f}KRW → remaining {cash_balance:,.0f}KRW")
+        elif spent_usd > 0 and not is_kr(ticker):
+            usd_cash = max(0.0, usd_cash - spent_usd)
+            logger.info(f"💵 Loop USD cash updated: -${spent_usd:,.2f} → remaining ${usd_cash:,.2f}")
+        return cash_balance, usd_cash
+
+    @classmethod
+    def _execute_collected_signals(
+        cls, user_id: str, prepared_signals: list[SignalSchema], holdings: list[HoldingSchema],
+        kr_total: float, us_total_krw: float, cash_balance: float,
+        target_cash_kr: float, target_cash_us: float, macro_data: MacroDataSnapshot,
+        user_state: UserState = None, usd_cash: float = 0.0,
+    ) -> tuple:
+        """Execute actual orders based on collected signals.
+        Returns (trade_executed: bool, executed_tickers: set)."""
+        cfg = cls._load_execution_config()
+        if user_state is None:
+            user_state = UserState()
+        sell_cooldown: dict = user_state.sell_cooldown
+        add_buy_cooldown: dict = user_state.add_buy_cooldown
+        split_orders: dict = user_state.split_orders
+        sell_split_orders: dict = user_state.sell_split_orders
+        trailing_high: dict = user_state.trailing_high
+        trade_executed = False
+        executed_tickers = set()
+
+        cls._expire_split_orders(split_orders)
+        prepared_signals = cls._sort_signals_by_priority(prepared_signals, split_orders)
+
+        for sig in prepared_signals:
+            sig_executed, sig_ticker, sig_spent_krw, sig_spent_usd = cls._process_single_signal(
+                sig, cfg, sell_cooldown, add_buy_cooldown,
+                holdings, user_id, kr_total, us_total_krw, cash_balance,
+                macro_data, target_cash_kr, target_cash_us,
+                split_orders=split_orders, sell_split_orders=sell_split_orders,
+                trailing_high=trailing_high,
+            )
+            if sig_executed and sig_ticker:
+                executed_tickers.add(sig_ticker)
+            trade_executed = sig_executed or trade_executed
+            cash_balance, usd_cash = cls._deduct_loop_cash(sig.ticker, sig_spent_krw, sig_spent_usd, cash_balance, usd_cash)
+
+        unmon_executed, unmon_tickers = cls._check_unmonitored_holdings(
             prepared_signals, holdings, user_id, kr_total, us_total_krw, cash_balance,
-            exchange_rate, macro_data, target_cash_kr, target_cash_us,
-            take_profit_pct, stop_loss_pct, sell_cooldown, today,
-        ) or trade_executed
-        return trade_executed
+            cfg, macro_data, target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders,
+        )
+        trade_executed = unmon_executed or trade_executed
+        executed_tickers |= unmon_tickers
+        return trade_executed, executed_tickers
+
+    # ── Asset Management Execution ─────────────────────────────────────────────
+
+    @classmethod
+    def execute_buy_budget(
+        cls, user_id: str, budget_krw: float, budget_usd: float, signals: list[SignalSchema]
+    ) -> None:
+        """Buy top-scored tickers within given budget (called by AssetManagementService).
+        Iterates signals in score ascending order until budget is exhausted."""
+        from services.market.macro_service import MacroService
+        exchange_rate = MacroService.get_exchange_rate()
+        sorted_signals = sorted(signals, key=lambda s: s.score)
+        for sig in sorted_signals:
+            if budget_krw <= 0 and budget_usd <= 0:
+                break
+            ticker = sig.ticker
+            current_price = getattr(sig.state, 'current_price', 0)
+            if current_price <= 0:
+                continue
+            is_kr_ticker = is_kr(ticker)
+            market_total = budget_krw if is_kr_ticker else budget_usd * exchange_rate
+            cash_balance = budget_krw if is_kr_ticker else 0.0
+            result = TradeExecutorService._execute_trade_v2(
+                ticker=ticker, side="buy",
+                reason=f"budget_buy [{', '.join(sig.reasons)}]",
+                profit_pct=0.0, is_holding=bool(sig.holding), score=sig.score,
+                current_price=current_price, market_total=market_total,
+                cash_balance=cash_balance, exchange_rate=exchange_rate,
+                user_id=user_id, holding=sig.holding,
+            )
+            if result.executed:
+                budget_krw = max(0.0, budget_krw - result.spent_krw)
+                budget_usd = max(0.0, budget_usd - result.spent_usd)
+                logger.info(f"[BuyBudget] {ticker} executed. KR budget left={budget_krw:,.0f} US budget left=${budget_usd:,.2f}")
+
+    @classmethod
+    def execute_sell_for_cash(
+        cls, user_id: str, need_krw: float, need_usd: float, candidates: list[HoldingSchema]
+    ) -> None:
+        """Sell profitable holdings to meet cash target (called by AssetManagementService).
+        Iterates candidates in profit-rate descending order until need is met."""
+        for holding in candidates:
+            if need_krw <= 0 and need_usd <= 0:
+                break
+            ticker = holding.ticker
+            current_price = holding.current_price or 0
+            if current_price <= 0:
+                continue
+            result = TradeExecutorService._execute_trade_v2(
+                ticker=ticker, side="sell",
+                reason="asset_management_cash_rebalance",
+                profit_pct=0.0, is_holding=True, score=70,
+                current_price=current_price, market_total=0.0,
+                cash_balance=0.0, exchange_rate=MacroService.get_exchange_rate(),
+                user_id=user_id, holding=holding,
+            )
+            if result.executed:
+                need_krw = max(0.0, need_krw - result.spent_krw)
+                need_usd = max(0.0, need_usd - result.spent_usd)
+                logger.info(f"[SellForCash] {ticker} executed. KR need left={need_krw:,.0f} US need left=${need_usd:,.2f}")

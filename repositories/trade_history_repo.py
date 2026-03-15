@@ -51,13 +51,14 @@ class TradeHistoryRepo:
         cls,
         market: Optional[str] = None,
         date: Optional[str] = None,
+        action: Optional[str] = None,
         limit: int = 50,
     ) -> List[TradeHistory]:
         """Query trade history. market=kr/us/None(all), date=YYYY-MM-DD."""
         session = get_session()
         try:
             q = session.query(TradeHistory)
-            q = cls._apply_filters(q, market, date)
+            q = cls._apply_filters(q, market, date, action)
             return q.order_by(TradeHistory.timestamp.desc()).limit(limit).all()
         finally:
             session.close()
@@ -95,12 +96,14 @@ class TradeHistoryRepo:
             session.close()
 
     @staticmethod
-    def _apply_filters(query, market: Optional[str], date: Optional[str]):
-        """Apply market/date filters and return query."""
+    def _apply_filters(query, market: Optional[str], date: Optional[str], action: Optional[str] = None):
+        """Apply market/date/action filters and return query."""
         if market == "kr":
             query = query.filter(TradeHistory.ticker.op("GLOB")("[0-9]*"))
         elif market == "us":
             query = query.filter(~TradeHistory.ticker.op("GLOB")("[0-9]*"))
+        if action:
+            query = query.filter(TradeHistory.order_type.ilike(f"%{action}%"))
         if date:
             start_dt = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
             end_dt = start_dt.replace(hour=23, minute=59, second=59)

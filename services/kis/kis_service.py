@@ -1,7 +1,6 @@
 import requests
 import json
 import time
-import os
 import threading
 from datetime import datetime
 from typing import Optional
@@ -25,6 +24,7 @@ class KisService:
     _access_token = None
     _token_expiry = None
     _last_balance_data = None
+    _last_overseas_balance_data = None
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
     _min_req_interval = 0.55  # ~2 TPS rate limit for VTS
@@ -73,28 +73,26 @@ class KisService:
     
     @classmethod
     def _load_cached_token(cls) -> Optional[str]:
-        """Load valid token from file cache. Returns None if missing or expired."""
-        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_token.json')
-        if not os.path.exists(token_cache_path):
-            return None
+        """Load valid token from DB cache. Returns None if missing or expired."""
         try:
-            with open(token_cache_path, "r") as f:
-                token_cache = json.load(f)
-            expiry = datetime.fromisoformat(token_cache["expiry"])
-            if datetime.now() < expiry:
-                cls._access_token = token_cache["token"]
-                cls._token_expiry = expiry
-                logger.info("📄 KIS Access Token loaded from session file.")
-                return cls._access_token
+            from repositories.settings_repo import SettingsRepo
+            token = SettingsRepo.get("KIS_ACCESS_TOKEN")
+            expiry_str = SettingsRepo.get("KIS_TOKEN_EXPIRY")
+            if token and expiry_str:
+                expiry = datetime.fromisoformat(expiry_str)
+                if datetime.now() < expiry:
+                    cls._access_token = token
+                    cls._token_expiry = expiry
+                    logger.info("📄 KIS Access Token loaded from DB.")
+                    return cls._access_token
         except Exception:
             pass
         return None
 
     @classmethod
     def _request_new_token(cls) -> str:
-        """Request new token from KIS API, save to file, and return."""
+        """Request new token from KIS API, save to DB, and return."""
         from datetime import timedelta
-        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_token.json')
         url = f"{Config.KIS_BASE_URL}/oauth2/tokenP"
         headers = {"content-type": "application/json; charset=utf-8"}
         body = {
@@ -107,11 +105,11 @@ class KisService:
             response.raise_for_status()
             token_data = response.json()
             cls._access_token = token_data["access_token"]
-            cls._token_expiry = datetime.now() + timedelta(hours=2)
-            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
-            with open(token_cache_path, 'w') as f:
-                json.dump({"token": cls._access_token, "expiry": cls._token_expiry.isoformat()}, f)
-            logger.info("🔑 KIS Access Token issued and saved to file.")
+            cls._token_expiry = datetime.now() + timedelta(hours=23)
+            from repositories.settings_repo import SettingsRepo
+            SettingsRepo.set("KIS_ACCESS_TOKEN", cls._access_token, "KIS API access token")
+            SettingsRepo.set("KIS_TOKEN_EXPIRY", cls._token_expiry.isoformat(), "KIS API token expiry")
+            logger.info("🔑 KIS Access Token issued and saved to DB.")
             return cls._access_token
         except Exception as e:
             logger.error(f"❌ Failed to get access token: {e}")
@@ -119,11 +117,11 @@ class KisService:
 
     @classmethod
     def get_access_token(cls) -> str:
-        """Get access token with file-based cache."""
+        """Get access token with DB-based cache."""
         # 1. Check in-memory cache
         if cls._access_token and cls._token_expiry and datetime.now() < cls._token_expiry:
             return cls._access_token
-        # 2. Check file cache
+        # 2. Check DB cache
         cached = cls._load_cached_token()
         if cached:
             return cached
@@ -134,28 +132,26 @@ class KisService:
 
     @classmethod
     def _load_cached_real_token(cls) -> Optional[str]:
-        """Load valid live token from file cache. Returns None if missing or expired."""
-        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
-        if not os.path.exists(token_cache_path):
-            return None
+        """Load valid live token from DB cache. Returns None if missing or expired."""
         try:
-            with open(token_cache_path, "r") as f:
-                token_cache = json.load(f)
-            expiry = datetime.fromisoformat(token_cache["expiry"])
-            if datetime.now() < expiry:
-                cls._real_access_token = token_cache["token"]
-                cls._real_token_expiry = expiry
-                logger.info("📄 KIS Real Access Token loaded from session file.")
-                return cls._real_access_token
+            from repositories.settings_repo import SettingsRepo
+            token = SettingsRepo.get("KIS_REAL_ACCESS_TOKEN")
+            expiry_str = SettingsRepo.get("KIS_REAL_TOKEN_EXPIRY")
+            if token and expiry_str:
+                expiry = datetime.fromisoformat(expiry_str)
+                if datetime.now() < expiry:
+                    cls._real_access_token = token
+                    cls._real_token_expiry = expiry
+                    logger.info("📄 KIS Real Access Token loaded from DB.")
+                    return cls._real_access_token
         except Exception:
             pass
         return None
 
     @classmethod
     def _request_new_real_token(cls) -> str:
-        """Request new live account token, save to file, and return."""
+        """Request new live account token, save to DB, and return."""
         from datetime import timedelta
-        token_cache_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kis_real_token.json')
         url = f"{Config.KIS_REAL_BASE_URL}/oauth2/tokenP"
         headers = {"content-type": "application/json; charset=utf-8"}
         body = {
@@ -168,11 +164,11 @@ class KisService:
             response.raise_for_status()
             token_data = response.json()
             cls._real_access_token = token_data["access_token"]
-            cls._real_token_expiry = datetime.now() + timedelta(hours=2)
-            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
-            with open(token_cache_path, 'w') as f:
-                json.dump({"token": cls._real_access_token, "expiry": cls._real_token_expiry.isoformat()}, f)
-            logger.info("🔑 KIS Real Access Token issued and saved to file.")
+            cls._real_token_expiry = datetime.now() + timedelta(hours=23)
+            from repositories.settings_repo import SettingsRepo
+            SettingsRepo.set("KIS_REAL_ACCESS_TOKEN", cls._real_access_token, "KIS real account access token")
+            SettingsRepo.set("KIS_REAL_TOKEN_EXPIRY", cls._real_token_expiry.isoformat(), "KIS real account token expiry")
+            logger.info("🔑 KIS Real Access Token issued and saved to DB.")
             return cls._real_access_token
         except Exception as e:
             logger.error(f"❌ Failed to get real access token: {e}")
@@ -220,10 +216,12 @@ class KisService:
 
     @classmethod
     def _parse_balance_response(cls, data: dict) -> dict:
-        """Convert output1/output2 to holdings/summary dict."""
+        """Convert output1/output2 to holdings/summary dict, preserving ctx tokens."""
         return {
             "holdings": data.get("output1", []),
-            "summary": data.get("output2", [])
+            "summary": data.get("output2", []),
+            "ctx_area_fk100": data.get("ctx_area_fk100", ""),
+            "ctx_area_nk100": data.get("ctx_area_nk100", ""),
         }
 
     @classmethod
@@ -268,7 +266,7 @@ class KisService:
 
     @classmethod
     def get_balance(cls) -> Optional[dict]:
-        """Get stock balance (domestic paper trading)."""
+        """Get stock balance (domestic) — fetches ALL pages."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -284,15 +282,36 @@ class KisService:
             "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
             "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""
         }
-        result, last_err = cls._balance_retry_loop(url, headers, params)
-        if result is not None:
-            cls._last_balance_data = result
-            return result
-        logger.error(f"❌ Error fetching balance after retries: {last_err}")
-        if cls._last_balance_data:
-            logger.warning("⚠️ Using last successful balance response as fallback.")
-            return cls._last_balance_data
-        return None
+
+        all_holdings = []
+        summary = []
+
+        for page in range(10):  # safety limit
+            result, last_err = cls._balance_retry_loop(url, headers, params)
+            if result is None:
+                if page == 0:
+                    logger.error(f"❌ Error fetching balance after retries: {last_err}")
+                    if cls._last_balance_data:
+                        logger.warning("⚠️ Using last successful balance response as fallback.")
+                        return cls._last_balance_data
+                    return None
+                break
+            all_holdings.extend(result.get("holdings", []))
+            if not summary:
+                summary = result.get("summary", [])
+
+            # Check continuation tokens
+            ctx_fk = result.get("ctx_area_fk100", "").strip()
+            ctx_nk = result.get("ctx_area_nk100", "").strip()
+            if not ctx_fk and not ctx_nk:
+                break
+            params["CTX_AREA_FK100"] = ctx_fk
+            params["CTX_AREA_NK100"] = ctx_nk
+            headers["tr_cont"] = "N"  # continuation request
+
+        combined = {"holdings": all_holdings, "summary": summary}
+        cls._last_balance_data = combined
+        return combined
 
     @classmethod
     def _parse_overseas_balance_response(cls, data: dict) -> dict:
@@ -302,33 +321,80 @@ class KisService:
         return {"holdings": output1, "summary": output2}
 
     @classmethod
+    def _fetch_one_overseas_page(cls, tr_id: str, url: str, params: dict, page_num: int) -> Optional[dict]:
+        """Single HTTP GET for one page of overseas balance. Returns parsed page dict or None on error/business-fail."""
+        headers = cls.get_headers(tr_id)
+        if page_num > 0:
+            headers["tr_cont"] = "N"
+        response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
+        if response.status_code >= 500:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        if data.get("rt_cd") != "0":
+            return None
+        return {
+            "holdings": data.get("output1", []) or [],
+            "summary": data.get("output2", []) or [],
+            "ctx_fk": data.get("ctx_area_fk200", "").strip(),
+            "ctx_nk": data.get("ctx_area_nk200", "").strip(),
+        }
+
+    @classmethod
+    def _fetch_all_pages_for_tr_id(cls, tr_id: str, url: str, base_params: dict) -> Optional[dict]:
+        """Fetch all pages of overseas balance for one TR ID. Returns {"holdings": [...], "summary": [...]} or None."""
+        all_holdings = []
+        summary = []
+        params = dict(base_params)
+        for page in range(10):  # safety limit
+            page_data = cls._fetch_one_overseas_page(tr_id, url, params, page)
+            if page_data is None:
+                break
+            all_holdings.extend(page_data["holdings"])
+            if not summary:
+                summary = page_data["summary"]
+            if not page_data["ctx_fk"] and not page_data["ctx_nk"]:
+                break
+            params["CTX_AREA_FK200"] = page_data["ctx_fk"]
+            params["CTX_AREA_NK200"] = page_data["ctx_nk"]
+        return {"holdings": all_holdings, "summary": summary} if all_holdings else None
+
+    @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
-        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Returns None on failure."""
+        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Fetches ALL pages. Returns None on failure."""
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
 
-        url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-balance"
-        tr_ids = ["VTTS3012R", "TTTS3012R", "VTTT3012R", "TTTT3012R"]
-        params = {
+        from services.market.stock_meta_service import StockMetaService
+        tr_id1, url_path = StockMetaService.get_api_info("해외주식_잔고조회")
+        tr_id2, _ = StockMetaService.get_api_info("해외주식_잔고조회_종합")
+        tr_ids = [t for t in [tr_id1, tr_id2] if t]
+        if not tr_ids:
+            logger.error("❌ 해외 잔고조회 TR ID를 DB에서 가져올 수 없습니다.")
+            return None
+        url = f"{Config.KIS_BASE_URL}{url_path}"
+        base_params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": "", "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""
+            "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
         }
 
         for tr_id in tr_ids:
             try:
-                headers = cls.get_headers(tr_id)
-                response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
-                if response.status_code >= 500:
-                    continue
-                response.raise_for_status()
-                response_data = response.json()
-                if response_data.get("rt_cd") != "0":
-                    continue
-                return cls._parse_overseas_balance_response(response_data)
-            except Exception:
-                continue
+                result = cls._fetch_all_pages_for_tr_id(tr_id, url, base_params)
+                if result:
+                    cls._last_overseas_balance_data = result
+                    return result
+            except Exception as e:
+                logger.warning(f"⚠️ Overseas balance tr_id={tr_id} failed: {e}")
+
+        if cls._last_overseas_balance_data:
+            logger.warning("⚠️ All overseas balance attempts failed. Using last cached result as fallback (stale).")
+            stale_copy = dict(cls._last_overseas_balance_data)
+            stale_copy["_stale"] = True
+            return stale_copy
+        logger.error("❌ All overseas balance attempts failed with no cached fallback.")
         return None
 
     @classmethod
@@ -361,17 +427,23 @@ class KisService:
         if not cano:
             return None
 
-        tr_id = "VTTS3007R" if Config.KIS_IS_VTS else "TTTS3007R"
+        from services.market.stock_meta_service import StockMetaService
+        tr_id, _ = StockMetaService.get_api_info("해외주식_가용현금조회")
+        if not tr_id:
+            logger.error("❌ 해외주식_가용현금조회 TR ID를 DB에서 가져올 수 없습니다.")
+            return None
 
-        # Extract item_cd/exchange code from holdings (API requires a ticker for cash query)
-        # Default to AAPL/NASD if no holdings (cash balance is ticker-independent)
+        # API requires a ticker/exchange; use first overseas holding (ticker-independent result)
         overseas_balance = cls.get_overseas_balance()
-        item_cd = "AAPL"
-        excg_cd = "NASD"
-        if overseas_balance and overseas_balance.get("holdings"):
-            first = overseas_balance["holdings"][0]
-            item_cd = first.get("ovrs_pdno") or item_cd
-            excg_cd = first.get("ovrs_excg_cd") or excg_cd
+        if not overseas_balance or not overseas_balance.get("holdings"):
+            logger.warning("⚠️ No overseas holdings — skipping USD available cash query.")
+            return None
+        first = overseas_balance["holdings"][0]
+        item_cd = first.get("ovrs_pdno") or ""
+        excg_cd = first.get("ovrs_excg_cd") or ""
+        if not item_cd or not excg_cd:
+            logger.warning("⚠️ First overseas holding has no ticker/exchange — skipping USD available cash query.")
+            return None
 
         try:
             output = cls._fetch_overseas_available_cash_raw(tr_id, cano, acnt_prdt_cd, item_cd, excg_cd)
@@ -574,3 +646,87 @@ class KisService:
         from services.kis.fetch.kis_fetcher import KisFetcher
         token = cls.get_access_token()
         return KisFetcher.fetch_overseas_ranking(token, excd=excd)
+
+    @classmethod
+    def _paginate_trade_history(cls, url: str, tr_id: str, params: dict, output_key: str, ctx_suffix: str, description: str) -> list:
+        """공통 페이지루프 헬퍼 — tr_cont 기반 다음 페이지 처리."""
+        fk_resp_key = f"ctx_area_fk{ctx_suffix}"
+        nk_resp_key = f"ctx_area_nk{ctx_suffix}"
+        fk_param_key = f"CTX_AREA_FK{ctx_suffix}"
+        nk_param_key = f"CTX_AREA_NK{ctx_suffix}"
+
+        all_records = []
+        try:
+            for page in range(10):
+                headers = cls.get_headers(tr_id)
+                if page > 0:
+                    headers["tr_cont"] = "N"
+                cls._throttle_request()
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                if response.status_code != 200:
+                    break
+                data = response.json()
+                if data.get("rt_cd") != "0":
+                    break
+                all_records.extend(data.get(output_key, []))
+                ctx_fk = data.get(fk_resp_key, "").strip()
+                ctx_nk = data.get(nk_resp_key, "").strip()
+                if not ctx_fk and not ctx_nk:
+                    break
+                params[fk_param_key] = ctx_fk
+                params[nk_param_key] = ctx_nk
+        except Exception as e:
+            logger.error(f"❌ Request failed for {description} trade history: {e}")
+        if not all_records:
+            logger.warning(f"⚠️ No {description} trade history records found")
+        return all_records
+
+    @classmethod
+    def get_domestic_trade_history(cls, start_date: str, end_date: str) -> list:
+        """Fetch domestic trade history from KIS API (dates in YYYYMMDD format)."""
+        from services.market.stock_meta_service import StockMetaService
+        tr_id, path = StockMetaService.get_api_info("국내주식_체결조회")
+        url = f"{Config.KIS_BASE_URL}{path}"
+        account_prefix, account_suffix = cls._get_account_parts()
+        params = {
+            "CANO": account_prefix,
+            "ACNT_PRDT_CD": account_suffix,
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
+        }
+        return cls._paginate_trade_history(url, tr_id, params, output_key="output1", ctx_suffix="100", description="domestic")
+
+    @classmethod
+    def get_overseas_trade_history(cls, start_date: str, end_date: str) -> list:
+        """Fetch overseas trade history from KIS API (dates in YYYYMMDD format)."""
+        from services.market.stock_meta_service import StockMetaService
+        tr_id, path = StockMetaService.get_api_info("해외주식_체결조회")
+        url = f"{Config.KIS_BASE_URL}{path}"
+        account_prefix, account_suffix = cls._get_account_parts()
+        params = {
+            "CANO": account_prefix,
+            "ACNT_PRDT_CD": account_suffix,
+            "OVRS_EXCG_CD": "NASD",  # Mostly NASDAQ
+            "PDNO": "%",
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "ORD_DT": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "SORT_SQN": "",
+            "CTX_AREA_NK200": "",
+            "CTX_AREA_FK200": ""
+        }
+        return cls._paginate_trade_history(url, tr_id, params, output_key="output", ctx_suffix="200", description="overseas")

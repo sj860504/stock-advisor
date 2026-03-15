@@ -63,9 +63,35 @@ class KisWsService:
             logger.error(f"❌ Error getting approval key: {e}")
             return False
 
+    async def _resubscribe_all_tickers(self) -> None:
+        """재연결 시 이전 구독 종목 복원. TPS 준수를 위해 1초 간격."""
+        if not self.subscribed_tickers:
+            return
+        logger.info(f"🔄 Re-subscribing to {len(self.subscribed_tickers)} tickers...")
+        saved_items = [(t, self.subscribed_markets.get(t)) for t in self.subscribed_tickers]
+        self.subscribed_tickers.clear()
+        for ticker, market in saved_items:
+            if not market:
+                market = "KRX" if is_kr(ticker) else "NAS"
+            await self.subscribe(ticker, market=market)
+            await asyncio.sleep(1.0)
+
+    async def _run_message_loop(self, websocket) -> None:
+        """메시지 수신 루프. ConnectionClosed 또는 예외 시 break."""
+        while True:
+            try:
+                msg = await websocket.recv()
+                await self.handle_message(msg)
+            except websockets.ConnectionClosed:
+                logger.warning("📡 WebSocket Connection Closed by Server.")
+                break
+            except Exception as e:
+                logger.error(f"Error receiving message: {e}")
+                break
+
     async def connect(self):
         """WebSocket connection with auto-reconnect loop."""
-        retry_delay = 5
+        retry_delay = WS_RETRY_DELAY_INITIAL
         while True:
             try:
                 if not self.approval_key:
@@ -73,56 +99,34 @@ class KisWsService:
                         await asyncio.sleep(retry_delay)
                         continue
 
-                # Switch to port 31000 in VTS environment only (live account keeps 21000)
                 ws_url = self.ws_url
+                # Switch to port 31000 in VTS environment only (live account keeps 21000)
                 if not Config.has_real_credentials() and "vts" in Config.KIS_BASE_URL.lower() and ":21000" in ws_url:
                     ws_url = ws_url.replace(":21000", ":31000")
                     logger.info(f"🔌 VTS Environment detected. Using port 31000: {ws_url}")
 
                 logger.info(f"🌐 Connecting to WebSocket: {ws_url} (Timeout: 60s)")
-                
                 async with websockets.connect(
-                    ws_url, 
-                    ping_interval=30, 
+                    ws_url,
+                    ping_interval=30,
                     ping_timeout=20,
                     close_timeout=20,
-                    open_timeout=60  # Extended handshake timeout to 60s
+                    open_timeout=60,
                 ) as websocket:
                     self.connected = True
                     self.websocket = websocket
-                    retry_delay = 5  # Reset delay on successful connection
+                    retry_delay = WS_RETRY_DELAY_INITIAL
                     logger.info("✅ WebSocket Connected!")
-                    
-                    # Re-subscribe to previously subscribed tickers
-                    if self.subscribed_tickers:
-                        logger.info(f"🔄 Re-subscribing to {len(self.subscribed_tickers)} tickers...")
-                        saved_items = [(t, self.subscribed_markets.get(t)) for t in self.subscribed_tickers]
-                        self.subscribed_tickers.clear()
-                        for ticker, market in saved_items:
-                            if not market:
-                                market = "KRX" if is_kr(ticker) else "NAS"
-                            await self.subscribe(ticker, market=market)
-                            await asyncio.sleep(1.0)  # Throttle re-subscription (TPS compliance)
-
-                    while True:
-                        try:
-                            msg = await websocket.recv()
-                            await self.handle_message(msg)
-                        except websockets.ConnectionClosed:
-                            logger.warning("📡 WebSocket Connection Closed by Server.")
-                            break
-                        except Exception as e:
-                            logger.error(f"Error receiving message: {e}")
-                            break
+                    await self._resubscribe_all_tickers()
+                    await self._run_message_loop(websocket)
             except Exception as e:
                 logger.error(f"❌ WebSocket Connection Error: {e}")
-                
+
             self.connected = False
             self.websocket = None
             logger.info(f"🔄 Retrying in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            # Exponential backoff (max 60s)
-            retry_delay = min(retry_delay * 2, 60)
+            retry_delay = min(retry_delay * 2, WS_RETRY_DELAY_MAX)
 
     async def subscribe(self, ticker: str, market: str = "KRX"):
         """Subscribe to real-time execution price for a ticker."""
@@ -159,10 +163,15 @@ class KisWsService:
                 }
             }
         }
-        await self.websocket.send(json.dumps(body))
-        self.subscribed_tickers.add(ticker)
-        self.subscribed_markets[ticker] = market
-        logger.info(f"➕ Subscribed to {ticker} ({market})")
+        try:
+            await self.websocket.send(json.dumps(body))
+            self.subscribed_tickers.add(ticker)
+            self.subscribed_markets[ticker] = market
+            logger.info(f"➕ Subscribed to {ticker} ({market})")
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} subscription send failed (WS closed): {e}")
+            self.connected = False
+            self.websocket = None
 
     async def handle_message(self, msg):
         """Handle and parse incoming messages."""

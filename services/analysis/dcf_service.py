@@ -14,33 +14,39 @@ class DcfService:
     
     @classmethod
     def calculate_dcf(cls, ticker: str) -> float:
-        """Automatic DCF calculation by ticker (KIS data-based)."""
+        """Automatic DCF calculation by ticker (KIS data-based).
+        analyst_count >= 5이면 DCF 70% + analyst_target 30% weighted blend."""
         try:
-            # Fetch processed financial data via FinancialService
             dcf_input = FinancialService.get_dcf_data(ticker)
             if not dcf_input:
                 return 0.0
 
-            # Fallback when data is insufficient: EPS(1Y) * PER
+            # Fallback when data is insufficient: EPS(1Y) * PER or analyst target
             if dcf_input.fallback_fair_value is not None:
                 return float(dcf_input.fallback_fair_value) or 0.0
 
             if dcf_input.fcf_per_share is None:
                 return 0.0
 
-            growth = dcf_input.growth_rate
-            beta = dcf_input.beta
-            discount_rate = dcf_input.discount_rate
-            
-            # Call helper method
             result = DcfAnalyzer.calculate_fair_value(
                 fcf_per_share=dcf_input.fcf_per_share,
-                growth_rate=growth,
-                beta=beta,
-                manual_discount=discount_rate
+                growth_rate=dcf_input.growth_rate,
+                beta=dcf_input.beta,
+                manual_discount=dcf_input.discount_rate,
             )
-            return float(result.get(DCF_RESULT_KEY_VALUE, 0.0) or 0.0)
-            
+            dcf_value = float(result.get(DCF_RESULT_KEY_VALUE, 0.0) or 0.0)
+
+            # analyst_count >= 5이면 analyst_target과 blending
+            if dcf_input.analyst_count >= 5:
+                from services.analysis.yfinance_service import YFinanceService
+                market_type = "KR" if ticker.isdigit() else "US"
+                yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
+                if yf_data and yf_data.target_mean_price and yf_data.target_mean_price > 0:
+                    blended = round(dcf_value * 0.7 + yf_data.target_mean_price * 0.3, 2)
+                    return blended
+
+            return dcf_value
+
         except Exception:
             return 0.0
 

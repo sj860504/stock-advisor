@@ -51,14 +51,12 @@ class SchedulerService:
         cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0)
         cls._scheduler.add_job(lambda: cls.manage_subscriptions(force_refresh=True), 'cron', hour=8, minute=30)
         cls._scheduler.add_job(cls.run_trading_strategy, 'interval', minutes=1)
-        cls._scheduler.add_job(cls.check_portfolio_hourly, 'interval', hours=1)
+        cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=15, minute=35, id='kr_close_report')
+        cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=6, minute=5, id='us_close_report')
         cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
         cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
-        cls._scheduler.add_job(cls.run_sector_rebalance, 'cron', day_of_week='mon', hour=9, minute=20,
-                               id='weekly_sector_rebalance')
         cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
         cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
-        cls._scheduler.add_job(cls.report_tick_trade_status, 'interval', minutes=10)
         cls._register_econ_vix_jobs(_ET)
 
     @classmethod
@@ -152,10 +150,7 @@ class SchedulerService:
         kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
         us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
         portfolio = PortfolioService.load_portfolio('sean')
-        holdings_raw = [
-            _norm_ticker(h.get('ticker') if isinstance(h, dict) else getattr(h, "ticker", ""))
-            for h in portfolio
-        ]
+        holdings_raw = [_norm_ticker(h.ticker) for h in portfolio]
         kr_holdings = {t for t in holdings_raw if t and is_kr(t) and len(t) == 6}
         us_holdings = {t for t in holdings_raw if t and t.isalpha()}
         all_kr = list(dict.fromkeys(
@@ -257,12 +252,12 @@ class SchedulerService:
         """Build list of gainers from portfolio holdings."""
         gainers = []
         for holding in portfolio:
-            ticker = holding["ticker"] if isinstance(holding, dict) else getattr(holding, "ticker", "")
+            ticker = holding.ticker
             state = all_states.get(ticker)
             if state and state.change_rate > 0:
                 gainers.append({
                     "ticker": ticker,
-                    "name": holding.get("name", ticker) if isinstance(holding, dict) else getattr(holding, "name", ticker),
+                    "name": holding.name or ticker,
                     "price": state.current_price,
                     "change": state.change_rate,
                     "market": "Real-time"
@@ -295,6 +290,24 @@ class SchedulerService:
             logger.error(f"❌ Error in check_portfolio_hourly: {e}")
 
     @classmethod
+    def send_market_close_report(cls) -> None:
+        """Market close portfolio report (KR 15:35 KST, US 06:05 KST)."""
+        logger.info("📊 Generating market close portfolio report...")
+        try:
+            PortfolioService.sync_with_kis('sean')
+            all_states = MarketDataService.get_all_states()
+            portfolio = PortfolioService.load_portfolio('sean')
+
+            from services.notification.report_service import ReportService
+            summary = PortfolioService.get_last_balance_summary()
+            cash = PortfolioService.load_cash('sean')
+            portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
+            AlertService.send_slack_alert(portfolio_msg)
+            logger.info("📤 Market close portfolio report sent to Slack.")
+        except Exception as e:
+            logger.error(f"❌ Error in send_market_close_report: {e}")
+
+    @classmethod
     def report_daily_trade_history(cls) -> None:
         """Daily 9AM: report last 24 hours trade history to Slack."""
         from services.trading.order_service import OrderService
@@ -319,22 +332,6 @@ class SchedulerService:
             PortfolioService.rebalance_portfolio("sean")
         except Exception as e:
             logger.error(f"❌ Error during rebalancing: {e}")
-
-    @classmethod
-    def run_sector_rebalance(cls) -> None:
-        """Weekly sector weight rebalancing (every Monday 9:20 KST).
-
-        Against target weights (Tech 50% / Value 30% / Financial 20%):
-        - Deviation < 5%  -> skip
-        - Deviation 5~10% -> half rebalance
-        - Deviation > 10% -> full rebalance
-        """
-        logger.info("🔄 Weekly sector rebalancing started (every Monday)...")
-        try:
-            result = TradingStrategyService.run_sector_rebalance(user_id="sean")
-            logger.info(f"✅ Sector rebalancing complete: {len(result.get('sold',[]))} sells, {len(result.get('bought',[]))} buys")
-        except Exception as e:
-            logger.error(f"❌ Sector rebalancing error: {e}")
 
     @classmethod
     def _filter_active_low_tickers(cls, low_tickers: list, is_kr_open: bool, is_us_open: bool) -> list:
@@ -419,61 +416,6 @@ class SchedulerService:
             PortfolioService.sync_with_kis("sean")
         except Exception as e:
             logger.error(f"❌ Error during portfolio sync: {e}")
-
-    @classmethod
-    def _extract_holding_financial_data(cls, holding: object, ticker: str) -> tuple:
-        """Extract qty, buy_price, current_price from holding object. Corrected with real-time cache."""
-        is_dict = isinstance(holding, dict)
-        qty = float(holding.get("quantity", 0) or 0) if is_dict else float(getattr(holding, "quantity", 0) or 0)
-        buy_price = float(holding.get("buy_price", 0) or 0) if is_dict else float(getattr(holding, "buy_price", 0) or 0)
-        current_price = float(holding.get("current_price", 0) or 0) if is_dict else float(getattr(holding, "current_price", 0) or 0)
-        if current_price <= 0:
-            ticker_state = MarketDataService.get_state(ticker)
-            if ticker_state and getattr(ticker_state, "current_price", 0) > 0:
-                current_price = float(ticker_state.current_price)
-        return qty, buy_price, current_price
-
-    @classmethod
-    def _get_tick_ticker(cls) -> str:
-        """Validate tick trading settings and return ticker. Returns empty string if disabled/unset."""
-        if SettingsService.get_int("STRATEGY_TICK_ENABLED", 0) != 1:
-            logger.info("⏭️ Tick trade report skipped: STRATEGY_TICK_ENABLED=0")
-            return ""
-        ticker = (SettingsService.get_setting("STRATEGY_TICK_TICKER", "005930") or "").strip().upper()
-        if not ticker:
-            logger.info("⏭️ Tick trade report skipped: empty tick ticker")
-        return ticker
-
-    @classmethod
-    def report_tick_trade_status(cls) -> None:
-        """10-minute tick trade P&L status report."""
-        try:
-            logger.info("⏱️ Running 10-minute tick trade report...")
-            ticker = cls._get_tick_ticker()
-            if not ticker:
-                return
-            PortfolioService.sync_with_kis("sean")
-            holdings = PortfolioService.load_portfolio("sean")
-            holding = next(
-                (h for h in holdings if (h.get("ticker") if isinstance(h, dict) else getattr(h, "ticker")) == ticker),
-                None,
-            )
-            if not holding:
-                logger.info(f"ℹ️ Tick trade report: no holding for {ticker}")
-                AlertService.send_slack_alert(f"⏱️ [Tick Trade 10min Report] {ticker} no holdings")
-                return
-            qty, buy_price, current_price = cls._extract_holding_financial_data(holding, ticker)
-            if qty <= 0 or buy_price <= 0 or current_price <= 0:
-                logger.info(f"⏭️ Tick trade report skipped: invalid values (qty={qty}, buy={buy_price}, current={current_price})")
-                return
-            profit_amt = (current_price - buy_price) * qty
-            profit_pct = ((current_price - buy_price) / buy_price) * 100
-            AlertService.send_slack_alert(
-                f"⏱️ [Tick Trade 10min Report] {ticker} return {profit_pct:+.2f}%, profit {profit_amt:,.0f} KRW"
-            )
-            logger.info(f"✅ Tick trade report sent: {ticker} profit={profit_pct:+.2f}% amount={profit_amt:,.0f}")
-        except Exception as e:
-            logger.error(f"❌ Error during tick trade report: {e}")
 
     # ── Economic release detection ────────────────────────────────────────────────
 
@@ -613,7 +555,38 @@ class SchedulerService:
         all_states = MarketDataService.get_all_states()
         tiers = MarketDataService._tiers  # Avoid repeated calls inside loop
         result = {}
+        # Initialize variables needed for score calculation
+        from services.strategy.signal_service import SignalService
+        from models.schemas import UserState
+        
+        user_state = UserState(user_id="sean")
+        portfolio = PortfolioService.load_portfolio("sean")
+        holdings_map = {h.ticker: h for h in portfolio}
+        macro_data = MacroService.get_macro_data_snapshot()
+        
+        # Determine total market value for cash ratio (Krw vs Usd)
+        all_holdings = portfolio
+        exchange_rate_g = macro_data.exchange_rate if macro_data else 1350.0
+        kr_total = sum((h.current_price or h.buy_price) * h.quantity for h in all_holdings if is_kr(h.ticker))
+        us_total_krw = sum((h.current_price or h.buy_price) * h.quantity * exchange_rate_g for h in all_holdings if not is_kr(h.ticker))
+        cash_balance = PortfolioService.load_cash("sean")
+        usd_cash = 0.0 # simplified for cache response
+        
         for ticker, ticker_state in list(all_states.items())[:limit]:
+            # Calculate Score
+            is_kr_t = is_kr(ticker)
+            market_total = kr_total if is_kr_t else us_total_krw
+            holding = holdings_map.get(ticker)
+            score, reasons, breakdown = SignalService.calculate_score(
+                ticker=ticker, 
+                state=ticker_state, 
+                holding=holding, 
+                macro=macro_data, 
+                user_state=user_state, 
+                cash_balance=cash_balance if is_kr_t else usd_cash * exchange_rate_g,
+                market_total_krw=market_total
+            )
+
             result[ticker] = {
                 "ticker": ticker,
                 "name": ticker_state.name,
@@ -621,6 +594,7 @@ class SchedulerService:
                 "rsi": ticker_state.rsi,
                 "change": ticker_state.current_price - ticker_state.prev_close if ticker_state.prev_close > 0 else 0,
                 "change_pct": ticker_state.change_rate,
+                "score": score,  # <-- Added score
                 "fair_value_dcf": ticker_state.dcf_value,
                 "target_buy_price": ticker_state.target_buy_price,
                 "target_sell_price": ticker_state.target_sell_price,

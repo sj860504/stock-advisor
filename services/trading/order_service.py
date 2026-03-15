@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from models.schemas import TradeRecordDto
+from repositories.stock_meta_repo import StockMetaRepo
 from repositories.trade_history_repo import TradeHistoryRepo
 from utils.logger import get_logger
 from utils.market import is_kr
@@ -51,14 +52,15 @@ class OrderService:
         """Execute mass sell of all holdings and return (success_count, fail_count, failed_tickers)."""
         success_count, fail_count, failed_tickers = 0, 0, []
         for holding in holdings:
-            ticker = holding["ticker"]
-            name = holding.get("name", ticker)
-            quantity = holding["quantity"]
+            ticker = holding.ticker
+            name = (holding.name or ticker)
+            quantity = holding.quantity
             if quantity <= 0:
                 continue
             logger.info(f"📤 {ticker} ({name}) attempting to sell {quantity} shares...")
             try:
-                ok, err = cls.sell_single_holding(ticker, name, quantity, holding.get("current_price", 0))
+                current_price = holding.current_price or 0
+                ok, err = cls.sell_single_holding(ticker, name, quantity, current_price)
                 if ok:
                     logger.info(f"✅ {ticker} ({name}) sold {quantity} shares successfully")
                     success_count += 1
@@ -121,22 +123,43 @@ class OrderService:
         limit: int = DEFAULT_TRADE_HISTORY_LIMIT,
         market: Optional[str] = None,
         date: Optional[str] = None,
+        action: Optional[str] = None,
     ) -> List[TradeRecordDto]:
-        """Retrieve recent trade history. market=kr/us/None(all), date=YYYY-MM-DD."""
+        """Retrieve recent trade history from DB."""
         try:
-            if market in ("kr", "us"):
-                trades = TradeHistoryRepo.query(market=market, date=date, limit=limit)
-            else:
-                # All: ensure half records each for KR/US
-                half = limit // 2
-                kr_trades = TradeHistoryRepo.query(market="kr", date=date, limit=half)
-                us_trades = TradeHistoryRepo.query(market="us", date=date, limit=half)
-                trades = sorted(kr_trades + us_trades, key=lambda x: x.timestamp, reverse=True)
-            holdings_map = TradeHistoryRepo.get_holdings_map([t.ticker for t in trades])
-            return [cls._to_dto(r, holdings_map) for r in trades]
+            # Normalize market filter
+            mkt = market.lower() if market else None
+            trades = TradeHistoryRepo.query(market=mkt, date=date, action=action, limit=limit)
+            tickers = list(set(t.ticker for t in trades))
+            name_map = StockMetaRepo.get_name_map(tickers)
+            return [cls._to_trade_record_dto(t, name_map) for t in trades]
         except Exception as e:
-            logger.error(f"❌ Error fetching trade history: {e}")
+            logger.error(f"❌ Error fetching trade history from DB: {e}")
             return []
+
+    @staticmethod
+    def _to_trade_record_dto(t, name_map: dict = None) -> TradeRecordDto:
+        """Convert TradeHistory DB model to TradeRecordDto."""
+        profit = None
+        profit_pct = None
+        if t.order_type == "sell" and t.buy_price_at_trade and t.buy_price_at_trade > 0:
+            profit = round((t.price - t.buy_price_at_trade) * t.quantity, 2)
+            profit_pct = round((t.price - t.buy_price_at_trade) / t.buy_price_at_trade * 100, 2)
+        name = name_map.get(t.ticker) if name_map else None
+        return TradeRecordDto(
+            id=str(t.id),
+            ticker=t.ticker,
+            order_type=t.order_type,
+            quantity=t.quantity,
+            price=t.price,
+            result_msg=t.result_msg,
+            timestamp=t.timestamp.strftime("%Y-%m-%d %H:%M:%S") if t.timestamp else None,
+            strategy_name=t.strategy_name or "",
+            name=name,
+            buy_price=t.buy_price_at_trade,
+            profit=profit,
+            profit_pct=profit_pct,
+        )
 
     @classmethod
     def get_trade_history_by_date_range(

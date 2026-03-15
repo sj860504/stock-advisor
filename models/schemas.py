@@ -1,5 +1,93 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Dict, List, Optional, Any
+
+class RegimeComponents(BaseModel):
+    """_calculate_all_regime_components() 결과 — 순수 계산값, I/O 없음."""
+    technical_20: int
+    vix_20: int
+    fng_20: int
+    econ_20: int
+    other_20: int
+    extreme_fear: bool = False
+    ema_map: Dict[int, Any] = Field(default_factory=dict)
+    tech_detail: Dict[str, Any] = Field(default_factory=dict)
+    other_scores: Dict[str, Any] = Field(default_factory=dict)
+    inflation_pressure: int = 0
+    inflation_detail: Any = None
+    growth_signal: int = 0
+    economic_phase: str = "unknown"
+    phase_modifier: int = 0
+
+
+class PortfolioContext(BaseModel):
+    """_load_portfolio_context()가 반환하는 설정/환율/KIS 요약값 스냅샷."""
+    initial_principal: float
+    usd_cash: float
+    exchange_rate: float
+    kis_scts_evlu: float = 0.0
+    kis_pchs_amt: float = 0.0
+    kis_evlu_amt: float = 0.0
+    kis_evlu_pfls: float = 0.0
+    kis_tot_evlu: float = 0.0
+    kis_nass: float = 0.0
+
+
+class KrPortfolio(BaseModel):
+    """_calc_kr_portfolio() 결과."""
+    stock_val: float
+    invested: float
+    profit: float
+    profit_pct: float
+    cash_krw: float
+    total: float
+
+
+class UsPortfolio(BaseModel):
+    """_calc_us_portfolio() 결과."""
+    stock_usd: float
+    invested_usd: float
+    profit_usd: float
+    profit_pct: float
+    total_usd: float
+    total_krw: float
+    cash_krw: float
+
+
+class UnpackedSignal(BaseModel):
+    """_unpack_signal()이 sig dict에서 추출한 정형화된 신호 데이터."""
+    ticker: str
+    score: int
+    reason_str: str
+    profit_pct: float = 0.0
+    market_total: float = 0.0
+    forced_sell: bool = False
+
+    model_config = {"arbitrary_types_allowed": True}
+    state: Any = None      # TickerState (순환 import 방지로 Any)
+    holding: Optional[Any] = None  # HoldingSchema or dict
+
+
+class ExecutionConfig(BaseModel):
+    """Signal execution loop 설정값 스냅샷. _load_execution_config()가 생성."""
+    buy_max: int
+    sell_min: int
+    take_profit_pct: float
+    stop_loss_pct: float
+    add_rsi_limit: float
+    add_score_limit: int
+    exchange_rate: float
+    today: str
+
+
+class TradeResult(BaseModel):
+    executed: bool
+    spent_krw: float = 0.0
+    spent_usd: float = 0.0
+
+    @classmethod
+    def no_op(cls) -> "TradeResult":
+        return cls(executed=False)
+
 
 class StockRequest(BaseModel):
     ticker: str
@@ -47,6 +135,7 @@ class DcfInputData(BaseModel):
     source: str = ""
     years_used: Optional[List[int]] = None
     fallback_fair_value: Optional[float] = None
+    analyst_count: int = 0
 
 
 class TechnicalIndicatorsSnapshot(BaseModel):
@@ -261,6 +350,7 @@ class MacroDataSnapshot(BaseModel):
     fear_greed: Optional[float] = None
     indices: Dict[str, "IndexQuote"] = Field(default_factory=dict)
     economic_indicators: "EconomicIndicatorsSnapshot" = Field(default_factory=lambda: EconomicIndicatorsSnapshot())
+    exchange_rate: float = 1350.0
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -268,7 +358,15 @@ class MacroDataSnapshot(BaseModel):
 
 class TradeRecordDto(BaseModel):
     """Single trade record (API response DTO)."""
-    id: Optional[int] = None
+    id: Optional[str] = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v):
+        if v is None:
+            return None
+        return str(v)
+
     ticker: str = ""
     order_type: str = ""
     quantity: int = 0
@@ -480,6 +578,40 @@ class BuyCooldownEntry(BaseModel):
     """Buy cooldown tracking entry."""
     date: str = ""
     price: float = 0.0
+
+
+class SplitSellOrderState(BaseModel):
+    """State tracking for split sell orders."""
+    total_qty: int = 0
+    remaining_qty: int = 0
+    splits_done: int = 0
+    split_count: int = 5
+    start_date: str = ""
+    tranche_qty: int = 0  # 트리거 시점 고정 수량 (ceil(total_qty/split_count)), 0=미초기화
+
+
+class UserState(BaseModel):
+    """Per-user strategy state (panic_locks, cooldowns, split orders, trailing high)."""
+    user_id: str = "sean"
+    panic_locks: Dict[str, Any] = Field(default_factory=dict)
+    sell_cooldown: Dict[str, Any] = Field(default_factory=dict)
+    add_buy_cooldown: Dict[str, Any] = Field(default_factory=dict)
+    split_orders: Dict[str, Any] = Field(default_factory=dict)
+    sell_split_orders: Dict[str, Any] = Field(default_factory=dict)
+    trailing_high: Dict[str, float] = Field(default_factory=dict)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class SignalSchema(BaseModel):
+    """Trading signal for a single ticker (output of _collect_trading_signals)."""
+    ticker: str
+    state: Any  # TickerState object
+    holding: Optional[Any] = None  # HoldingSchema or None
+    score: int = 50
+    reasons: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 # ----- Sector Rebalance Schemas -----

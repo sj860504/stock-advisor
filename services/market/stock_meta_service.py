@@ -148,8 +148,15 @@ class StockMetaService:
             {"category": "해외주식", "api_name": "해외주식_시가총액순위", "tr_id_real": "HHDFS76350100", "tr_id_vts": "HHDFS76350100", "api_path": "/uapi/overseas-stock/v1/ranking/market-cap"},
             {"category": "해외주식", "api_name": "해외주식_기간별시세", "tr_id_real": "HHDFS76240000", "tr_id_vts": "HHDFS76240000", "api_path": "/uapi/overseas-price/v1/quotations/dailyprice", "api_path_vts": "/uapi/overseas-price/v1/quotations/dailyprice"},
             {"category": "해외주식", "api_name": "해외주식_종목지수환율기간별", "tr_id_real": "FHKST03030100", "tr_id_vts": "FHKST03030100", "api_path": "/uapi/overseas-stock/v1/quotations/inquire-daily-chartprice"},
+            {"category": "해외주식", "api_name": "해외주식_잔고조회", "tr_id_real": "TTTS3012R", "tr_id_vts": "VTTS3012R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-balance"},
+            {"category": "해외주식", "api_name": "해외주식_잔고조회_종합", "tr_id_real": "TTTT3012R", "tr_id_vts": "VTTT3012R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-balance"},
+            {"category": "해외주식", "api_name": "해외주식_가용현금조회", "tr_id_real": "TTTS3007R", "tr_id_vts": "VTTS3007R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-present-balance"},
 
-            # 3. Common/auth
+            # 3. Trade history
+            {"category": "국내주식", "api_name": "국내주식_체결조회", "tr_id_real": "TTTC8001R", "tr_id_vts": "VTTC8001R", "api_path": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"},
+            {"category": "해외주식", "api_name": "해외주식_체결조회", "tr_id_real": "JTTT3001R", "tr_id_vts": "VTTT3001R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-ccnl"},
+
+            # 4. Common/auth
             {"category": "공통", "api_name": "접근토큰발급", "tr_id_real": "tokenP", "tr_id_vts": "tokenP", "api_path": "/oauth2/tokenP"},
             {"category": "공통", "api_name": "접근토큰폐기", "tr_id_real": "revokeP", "tr_id_vts": "revokeP", "api_path": "/oauth2/revokeP"},
             {"category": "공통", "api_name": "Hashkey", "tr_id_real": "hashkey", "tr_id_vts": "hashkey", "api_path": "/uapi/hashkey"},

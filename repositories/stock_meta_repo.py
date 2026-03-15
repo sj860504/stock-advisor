@@ -64,6 +64,15 @@ class StockMetaRepo:
             return results
 
     @classmethod
+    def get_name_map(cls, tickers: list) -> dict:
+        """Bulk fetch ticker→name mapping. Returns {ticker: name_ko or name_en or ticker}."""
+        if not tickers:
+            return {}
+        with session_ro() as session:
+            metas = session.query(StockMeta).filter(StockMeta.ticker.in_(tickers)).all()
+            return {m.ticker: (m.name_ko or m.name_en or m.ticker) for m in metas}
+
+    @classmethod
     def find_ticker_by_name(cls, name: str) -> Optional[str]:
         """Find ticker by stock name (case-insensitive search on name_ko or name_en)."""
         if not name:
@@ -502,6 +511,17 @@ class StockMetaRepo:
         except Exception as e:
             logger.error(f"get_market_regime_history error: {e}")
             return []
+
+    @classmethod
+    def get_30d_avg_regime_score(cls) -> Optional[float]:
+        """Return average regime_score for the last 30 days. None if no data."""
+        try:
+            rows = cls.get_market_regime_history(30)
+            scores = [r["regime_score"] for r in rows if r.get("regime_score") is not None]
+            return round(sum(scores) / len(scores), 1) if scores else None
+        except Exception as e:
+            logger.error(f"get_30d_avg_regime_score error: {e}")
+            return None
 
     @classmethod
     def get_regime_for_date(cls, date_str: str) -> Optional[dict]:
