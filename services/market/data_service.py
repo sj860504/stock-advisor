@@ -381,12 +381,30 @@ class DataService:
         return True
 
     @classmethod
+    def _get_holding_tickers(cls) -> list[tuple[str, str]]:
+        """보유종목 ticker 목록을 (ticker, market) tuple 리스트로 반환."""
+        try:
+            from repositories.portfolio_repo import PortfolioRepo
+            holdings = PortfolioRepo.load_holdings("sean")
+            return [
+                (h["ticker"], "KR" if is_kr(h["ticker"]) else "US")
+                for h in holdings if h.get("ticker")
+            ]
+        except Exception as e:
+            logger.warning(f"보유종목 조회 실패: {e}")
+            return []
+
+    @classmethod
     def sync_daily_market_data(cls, limit: int = 100) -> None:
-        """Daily sync: collect top tickers -> calculate indicators -> save to DB."""
-        logger.info(f"Starting daily market data sync (Top {limit})...")
+        """Daily sync: collect top tickers + 보유종목 -> calculate indicators -> save to DB."""
+        logger.info(f"Starting daily market data sync (Top {limit} + holdings)...")
         kr_tickers = cls.get_top_krx_tickers(limit=limit)
         us_tickers = cls.get_top_us_tickers(limit=limit)
-        all_tickers = [(t, "KR") for t in kr_tickers] + [(t, "US") for t in us_tickers]
+        base_tickers = [(t, "KR") for t in kr_tickers] + [(t, "US") for t in us_tickers]
+        base_set = {t for t, _ in base_tickers}
+        holding_pairs = [(t, m) for t, m in cls._get_holding_tickers() if t not in base_set]
+        all_tickers = base_tickers + holding_pairs
+        logger.info(f"  Top {limit} KR/US + {len(holding_pairs)} holding tickers = {len(all_tickers)} total")
         token = KisService.get_access_token()  # Fetch once outside the loop
         markets = {market for _, market in all_tickers}
         open_markets = {m for m in markets if MarketHourService.should_fetch(m)}

@@ -52,14 +52,15 @@ class OrderService:
         """Execute mass sell of all holdings and return (success_count, fail_count, failed_tickers)."""
         success_count, fail_count, failed_tickers = 0, 0, []
         for holding in holdings:
-            ticker = holding["ticker"]
-            name = holding.get("name", ticker)
-            quantity = holding["quantity"]
+            ticker = holding.ticker
+            name = (holding.name or ticker)
+            quantity = holding.quantity
             if quantity <= 0:
                 continue
             logger.info(f"📤 {ticker} ({name}) attempting to sell {quantity} shares...")
             try:
-                ok, err = cls.sell_single_holding(ticker, name, quantity, holding.get("current_price", 0))
+                current_price = holding.current_price or 0
+                ok, err = cls.sell_single_holding(ticker, name, quantity, current_price)
                 if ok:
                     logger.info(f"✅ {ticker} ({name}) sold {quantity} shares successfully")
                     success_count += 1

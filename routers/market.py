@@ -65,7 +65,7 @@ def get_macro_data() -> Dict[str, Any]:
 def get_weekly_economic_calendar(days: int = 7) -> List[Dict[str, Any]]:
     """Weekly economic indicator release schedule (includes ET/KST times, sorted by date)."""
     from services.market.economic_calendar_service import EconomicCalendarService
-    return EconomicCalendarService.get_weekly_calendar(days=days)
+    return [e.model_dump(mode="json") for e in EconomicCalendarService.get_weekly_calendar(days=days)]
 
 
 @router.get("/regime/history", response_model=List[Dict[str, Any]])

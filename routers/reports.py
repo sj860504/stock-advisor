@@ -18,4 +18,4 @@ def get_daily_summary() -> Dict[str, Any]:
     if not data:
         return {"message": "Data collection is starting... please wait a moment."}
 
-    return AlertService.generate_daily_summary(data)
+    return data

@@ -134,21 +134,151 @@ class BacktestService:
         if tickers is None:
             tickers = list(KR_FALLBACK_TICKERS)
 
-        # Load data and compute RSI
         price_data = cls._load_backtest_data(tickers, years)
         if not price_data:
             return {"error": "No price data available for given tickers"}
 
+        rsi_data, all_dates = cls._compute_rsi_and_dates(price_data)
+        portfolio = BtPortfolio(cash=initial_capital)
+        equity_curve, cash_ratio_curve, trades, wins, losses = cls._run_simulation_loop(
+            price_data, rsi_data, all_dates, portfolio, tickers,
+            position_pct, target_cash_ratio, take_profit_pct, stop_loss_pct,
+            rsi_oversold, rsi_overbought,
+        )
+        config = {
+            "tickers": tickers, "years": years, "initial_capital": initial_capital,
+            "position_pct": position_pct, "target_cash_ratio": target_cash_ratio,
+            "take_profit_pct": take_profit_pct, "stop_loss_pct": stop_loss_pct,
+            "rsi_oversold": rsi_oversold, "rsi_overbought": rsi_overbought,
+        }
+        return cls._build_backtest_result(
+            equity_curve, cash_ratio_curve, trades, wins, losses,
+            initial_capital, portfolio, config,
+        )
+
+    @staticmethod
+    def _compute_rsi_and_dates(price_data: Dict[str, pd.DataFrame]) -> tuple:
+        """RSI 시리즈 계산 + 공통 날짜 인덱스 구성."""
         rsi_data: Dict[str, pd.Series] = {}
         for t, df in price_data.items():
             rsi_data[t] = IndicatorService.compute_rsi_series(df["Close"])
-
-        # Build common date index
         all_dates = sorted(
             set().union(*(df.index.tolist() for df in price_data.values()))
         )
+        return rsi_data, all_dates
 
-        portfolio = BtPortfolio(cash=initial_capital)
+    @staticmethod
+    def _build_daily_snapshot(
+        price_data: Dict[str, pd.DataFrame],
+        rsi_data: Dict[str, pd.Series],
+        date,
+    ) -> tuple:
+        """해당 날짜의 prices/rsis 딕셔너리 구성. (prices, rsis) 반환."""
+        prices: Dict[str, float] = {}
+        rsis: Dict[str, float] = {}
+        for t, df in price_data.items():
+            if date in df.index:
+                prices[t] = float(df.loc[date, "Close"])
+                if date in rsi_data[t].index:
+                    rsi_val = rsi_data[t].loc[date]
+                    if not np.isnan(rsi_val):
+                        rsis[t] = float(rsi_val)
+        return prices, rsis
+
+    @staticmethod
+    def _process_sell_phase(
+        portfolio: BtPortfolio,
+        prices: Dict[str, float],
+        rsis: Dict[str, float],
+        stop_loss_pct: float,
+        take_profit_pct: float,
+        rsi_overbought: int,
+        trades: list,
+        date,
+    ) -> tuple:
+        """매도 조건 평가 후 포지션 청산. (wins_delta, losses_delta) 반환."""
+        wins = 0
+        losses = 0
+        for t in list(portfolio.holdings.keys()):
+            if t not in prices:
+                continue
+            h = portfolio.holdings[t]
+            price = prices[t]
+            profit_pct = (price - h.avg_price) / h.avg_price
+            sell_reason = None
+            if profit_pct <= stop_loss_pct:
+                sell_reason = "stop_loss"
+            elif profit_pct >= take_profit_pct:
+                sell_reason = "take_profit"
+            elif t in rsis and rsis[t] > rsi_overbought:
+                sell_reason = "rsi_overbought"
+            if sell_reason:
+                portfolio.cash += h.shares * price
+                wins += 1 if profit_pct > 0 else 0
+                losses += 1 if profit_pct <= 0 else 0
+                trades.append({
+                    "date": str(date.date()) if hasattr(date, 'date') else str(date),
+                    "ticker": t, "action": "SELL", "reason": sell_reason,
+                    "shares": h.shares, "price": round(price, 2),
+                    "profit_pct": round(profit_pct * 100, 2),
+                })
+                del portfolio.holdings[t]
+        return wins, losses
+
+    @staticmethod
+    def _process_buy_phase(
+        portfolio: BtPortfolio,
+        prices: Dict[str, float],
+        rsis: Dict[str, float],
+        tickers: List[str],
+        position_pct: float,
+        target_cash_ratio: float,
+        rsi_oversold: int,
+        trades: list,
+        date,
+    ) -> None:
+        """매수 조건 평가 후 포지션 진입."""
+        for t in tickers:
+            if t not in prices or t not in rsis or t in portfolio.holdings:
+                continue
+            if rsis[t] >= rsi_oversold:
+                continue
+            total = portfolio.total_assets(prices)
+            if portfolio.cash_ratio(prices) <= target_cash_ratio:
+                continue
+            buy_budget = min(total * position_pct, portfolio.cash - total * target_cash_ratio)
+            if buy_budget <= 0 or buy_budget > portfolio.cash:
+                continue
+            price = prices[t]
+            shares = int(buy_budget / price)
+            if shares <= 0:
+                continue
+            cost = shares * price
+            portfolio.cash -= cost
+            portfolio.holdings[t] = BtHolding(ticker=t, shares=shares, avg_price=price)
+            trades.append({
+                "date": str(date.date()) if hasattr(date, 'date') else str(date),
+                "ticker": t, "action": "BUY", "reason": "rsi_oversold",
+                "shares": shares, "price": round(price, 2), "cost": round(cost, 2),
+            })
+
+    @classmethod
+    def _run_simulation_loop(
+        cls,
+        price_data: Dict[str, pd.DataFrame],
+        rsi_data: Dict[str, pd.Series],
+        all_dates: list,
+        portfolio: BtPortfolio,
+        tickers: List[str],
+        position_pct: float,
+        target_cash_ratio: float,
+        take_profit_pct: float,
+        stop_loss_pct: float,
+        rsi_oversold: int,
+        rsi_overbought: int,
+    ) -> tuple:
+        """날짜 루프 — 매도/매수 신호 평가 + 스냅샷 기록.
+        Returns (equity_curve, cash_ratio_curve, trades, wins, losses)."""
         equity_curve = []
         cash_ratio_curve = []
         trades = []
@@ -156,106 +286,36 @@ class BacktestService:
         losses = 0
 
         for date in all_dates:
-            # Get today's prices for all tickers
-            prices: Dict[str, float] = {}
-            rsis: Dict[str, float] = {}
-            for t, df in price_data.items():
-                if date in df.index:
-                    prices[t] = float(df.loc[date, "Close"])
-                    if date in rsi_data[t].index:
-                        rsi_val = rsi_data[t].loc[date]
-                        if not np.isnan(rsi_val):
-                            rsis[t] = float(rsi_val)
-
+            prices, rsis = cls._build_daily_snapshot(price_data, rsi_data, date)
             if not prices:
                 continue
-
-            # Phase 1 - Sell (check existing holdings)
-            for t in list(portfolio.holdings.keys()):
-                if t not in prices:
-                    continue
-                h = portfolio.holdings[t]
-                price = prices[t]
-                profit_pct = (price - h.avg_price) / h.avg_price
-
-                sell_reason = None
-                if profit_pct <= stop_loss_pct:
-                    sell_reason = "stop_loss"
-                elif profit_pct >= take_profit_pct:
-                    sell_reason = "take_profit"
-                elif t in rsis and rsis[t] > rsi_overbought:
-                    sell_reason = "rsi_overbought"
-
-                if sell_reason:
-                    proceeds = h.shares * price
-                    portfolio.cash += proceeds
-                    if profit_pct > 0:
-                        wins += 1
-                    else:
-                        losses += 1
-                    trades.append({
-                        "date": str(date.date()) if hasattr(date, 'date') else str(date),
-                        "ticker": t,
-                        "action": "SELL",
-                        "reason": sell_reason,
-                        "shares": h.shares,
-                        "price": round(price, 2),
-                        "profit_pct": round(profit_pct * 100, 2),
-                    })
-                    del portfolio.holdings[t]
-
-            # Phase 2 - Buy (after sells complete)
-            for t in tickers:
-                if t not in prices or t not in rsis:
-                    continue
-                if t in portfolio.holdings:
-                    continue
-                if rsis[t] >= rsi_oversold:
-                    continue
-
-                total = portfolio.total_assets(prices)
-                current_cash_ratio = portfolio.cash_ratio(prices)
-                if current_cash_ratio <= target_cash_ratio:
-                    continue
-
-                buy_budget = min(
-                    total * position_pct,
-                    portfolio.cash - total * target_cash_ratio,
-                )
-                if buy_budget <= 0 or buy_budget > portfolio.cash:
-                    continue
-
-                price = prices[t]
-                shares = int(buy_budget / price)
-                if shares <= 0:
-                    continue
-
-                cost = shares * price
-                portfolio.cash -= cost
-                portfolio.holdings[t] = BtHolding(ticker=t, shares=shares, avg_price=price)
-                trades.append({
-                    "date": str(date.date()) if hasattr(date, 'date') else str(date),
-                    "ticker": t,
-                    "action": "BUY",
-                    "reason": "rsi_oversold",
-                    "shares": shares,
-                    "price": round(price, 2),
-                    "cost": round(cost, 2),
-                })
-
-            total_val = portfolio.total_assets(prices)
-            equity_curve.append(round(total_val, 0))
+            w, l = cls._process_sell_phase(
+                portfolio, prices, rsis, stop_loss_pct, take_profit_pct, rsi_overbought, trades, date
+            )
+            wins += w
+            losses += l
+            cls._process_buy_phase(
+                portfolio, prices, rsis, tickers, position_pct, target_cash_ratio, rsi_oversold, trades, date
+            )
+            equity_curve.append(round(portfolio.total_assets(prices), 0))
             cash_ratio_curve.append(round(portfolio.cash_ratio(prices) * 100, 2))
 
-        # Final metrics
+        return equity_curve, cash_ratio_curve, trades, wins, losses
+
+    @classmethod
+    def _build_backtest_result(
+        cls,
+        equity_curve: list, cash_ratio_curve: list, trades: list,
+        wins: int, losses: int, initial_capital: float,
+        portfolio: BtPortfolio, config: dict,
+    ) -> dict:
+        """최종 성과 메트릭 계산 후 결과 dict 반환."""
         final_value = equity_curve[-1] if equity_curve else initial_capital
         total_return_pct = (final_value - initial_capital) / initial_capital * 100
         mdd_pct = cls._calc_mdd_from_equity(equity_curve)
-        total_trades = len(trades)
         total_closed = wins + losses
         win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
 
-        # Sharpe ratio (annualized, daily returns)
         sharpe = 0.0
         if len(equity_curve) > 1:
             eq = pd.Series(equity_curve, dtype=float)
@@ -263,38 +323,21 @@ class BacktestService:
             if daily_returns.std() > 0:
                 sharpe = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
 
-        # Max simultaneous holdings
         max_holdings = 0
         current_count = 0
         for tr in trades:
-            if tr["action"] == "BUY":
-                current_count += 1
-            else:
-                current_count -= 1
+            current_count += 1 if tr["action"] == "BUY" else -1
             max_holdings = max(max_holdings, current_count)
 
-        cash_never_negative = all(
-            cr >= 0 for cr in cash_ratio_curve
-        ) and portfolio.cash >= 0
-
+        cash_never_negative = all(cr >= 0 for cr in cash_ratio_curve) and portfolio.cash >= 0
         return {
-            "config": {
-                "tickers": tickers,
-                "years": years,
-                "initial_capital": initial_capital,
-                "position_pct": position_pct,
-                "target_cash_ratio": target_cash_ratio,
-                "take_profit_pct": take_profit_pct,
-                "stop_loss_pct": stop_loss_pct,
-                "rsi_oversold": rsi_oversold,
-                "rsi_overbought": rsi_overbought,
-            },
+            "config": config,
             "results": {
                 "final_value": round(final_value, 0),
                 "total_return_pct": round(total_return_pct, 2),
                 "mdd_pct": round(mdd_pct, 2),
                 "sharpe_ratio": round(sharpe, 2),
-                "total_trades": total_trades,
+                "total_trades": len(trades),
                 "win_rate_pct": round(win_rate, 1),
                 "avg_cash_ratio_pct": round(np.mean(cash_ratio_curve), 1) if cash_ratio_curve else 0.0,
                 "min_cash_ratio_pct": round(min(cash_ratio_curve), 1) if cash_ratio_curve else 0.0,

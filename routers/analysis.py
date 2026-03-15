@@ -14,7 +14,7 @@ from models.schemas import (
     ValuationResult, ReturnAnalysis, DcfOverrideRequest, StrategyWeightOverrideRequest,
     FinancialMetricsResponse, CustomDcfResponse, CustomDcfParameters,
     DcfOverrideResponse, StrategyWeightsResponse, DcfInputData, ComprehensiveReport,
-    DcfListResponse, DcfDetailResponse,
+    DcfListResponse, DcfDetailResponse, MacroDataSnapshot, UserState,
 )
 
 router = APIRouter(
@@ -150,12 +150,6 @@ def update_strategy_weights(payload: StrategyWeightOverrideRequest) -> StrategyW
     return StrategyWeightsResponse(overrides=overrides)
 
 
-@router.get("/sector-weights", response_model=Dict[str, Any])
-def get_sector_weights(user_id: str = "sean") -> Dict[str, Any]:
-    """Sector group (tech/value/financial) current allocation and rebalancing status vs targets."""
-    return TradingStrategyService.get_sector_rebalance_status(user_id=user_id)
-
-
 @router.get("/score/{ticker_input}")
 def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]:
     """Calculate and return strategy score, recommendation, and reasons for a ticker."""
@@ -176,19 +170,20 @@ def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]
 
     # Assemble data (same pattern as get_waiting_list)
     holdings = PortfolioService.load_portfolio(user_id)
-    macro_data = MacroService.get_macro_data()
+    raw_macro = MacroService.get_macro_data()
+    macro_snapshot = MacroDataSnapshot(**{k: v for k, v in raw_macro.items() if k != "timestamp"})
     user_state_map = TradingStrategyService._load_state(user_id)
-    user_state = user_state_map.get(user_id, {})
+    user_state = user_state_map.get(user_id, UserState())
     cash_balance = PortfolioService.load_cash(user_id)
-    kr_total, us_total_krw, _, _ = TradeExecutorService._calculate_total_assets(holdings, cash_balance, macro_data)
+    kr_total, us_total_krw, _, _ = TradeExecutorService._calculate_total_assets(holdings, cash_balance, macro_snapshot)
     exchange_rate = MacroService.get_exchange_rate()
 
     market_total = kr_total if is_kr(real_ticker) else us_total_krw
-    holdings_map = {h['ticker']: h for h in holdings}
+    holdings_map = {h.ticker: h for h in holdings}
     holding = holdings_map.get(real_ticker)
 
     result = TradingStrategyService.analyze_ticker(
-        real_ticker, state, holding, macro_data, user_state,
+        real_ticker, state, holding, macro_snapshot, user_state,
         cash_balance, exchange_rate, market_total_krw=market_total,
     )
     result["name"] = getattr(state, 'name', None) or real_ticker

@@ -513,6 +513,17 @@ class StockMetaRepo:
             return []
 
     @classmethod
+    def get_30d_avg_regime_score(cls) -> Optional[float]:
+        """Return average regime_score for the last 30 days. None if no data."""
+        try:
+            rows = cls.get_market_regime_history(30)
+            scores = [r["regime_score"] for r in rows if r.get("regime_score") is not None]
+            return round(sum(scores) / len(scores), 1) if scores else None
+        except Exception as e:
+            logger.error(f"get_30d_avg_regime_score error: {e}")
+            return None
+
+    @classmethod
     def get_regime_for_date(cls, date_str: str) -> Optional[dict]:
         """Return regime for a specific date."""
         try:

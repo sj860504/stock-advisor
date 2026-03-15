@@ -141,35 +141,31 @@ class MarketDataService:
             state.target_sell_price = round(ema200 * 1.15, 2)
 
     @classmethod
-    def _full_api_warmup(cls, ticker: str, state: TickerState):
-        """Full warm-up via KIS API calls. Must be called after acquiring semaphore."""
+    def _warmup_save_basic(cls, ticker: str, state: TickerState, basic_info: dict, df) -> dict:
+        """Phase 1: Build and save basic metrics to DB. Returns partial_metrics dict."""
         from services.market.stock_meta_service import StockMetaService
-
-        api_ticker     = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
-        basic_info     = cls._fetch_basic_price(ticker)
-        df             = DataService.get_price_history(api_ticker, days=300)
-
-        if df.empty:
-            logger.warning(f"⚠️ No history data for {api_ticker}. Skipping warm-up.")
-            time.sleep(1.0)
-            return
-
-        # Phase 1: Save basic data
         partial_metrics = cls._build_partial_metrics(state, basic_info, df)
         try:
             StockMetaService.save_financials(ticker, partial_metrics)
         except Exception as e:
             logger.error(f"⚠️ Failed to save base data for {ticker}: {e}")
+        return partial_metrics
 
-        # Phase 2: Calculate indicators and apply to state
+    @classmethod
+    def _warmup_compute_indicators(cls, ticker: str, state: TickerState, df, partial_metrics: dict):
+        """Phase 2: Compute indicators + DCF, apply to state. Returns (snapshot, rsi, dcf_val)."""
         state.prev_close    = float(df.iloc[-2]["Close"]) if len(df) > 1 else float(df.iloc[-1]["Close"])
         state.current_price = partial_metrics["current_price"]
         snapshot = IndicatorService.compute_latest_indicators_snapshot(df["Close"])
         rsi      = snapshot.rsi if snapshot else None
         dcf_val  = DcfService.calculate_dcf(ticker)
         state.update_indicators(emas=snapshot.ema if snapshot else {}, dcf=dcf_val, rsi=rsi)
+        return snapshot, rsi, dcf_val
 
-        # Phase 3: Save final metrics to DB
+    @classmethod
+    def _warmup_save_final(cls, ticker: str, partial_metrics: dict, snapshot, dcf_val: float) -> None:
+        """Phase 3: Merge and save final metrics (indicators + DCF) to DB."""
+        from services.market.stock_meta_service import StockMetaService
         try:
             StockMetaService.save_financials(ticker, {
                 **partial_metrics,
@@ -179,7 +175,21 @@ class MarketDataService:
         except Exception as e:
             logger.error(f"⚠️ Failed to save final metrics for {ticker}: {e}")
 
-        # Phase 4: Calculate EMA200-based target prices
+    @classmethod
+    def _full_api_warmup(cls, ticker: str, state: TickerState):
+        """Full warm-up via KIS API calls. Must be called after acquiring semaphore."""
+        api_ticker = cls._normalize_kr_ticker(ticker) if is_kr(ticker) else ticker
+        basic_info = cls._fetch_basic_price(ticker)
+        df         = DataService.get_price_history(api_ticker, days=300)
+
+        if df.empty:
+            logger.warning(f"⚠️ No history data for {api_ticker}. Skipping warm-up.")
+            time.sleep(1.0)
+            return
+
+        partial_metrics          = cls._warmup_save_basic(ticker, state, basic_info, df)
+        snapshot, rsi, dcf_val   = cls._warmup_compute_indicators(ticker, state, df, partial_metrics)
+        cls._warmup_save_final(ticker, partial_metrics, snapshot, dcf_val)
         cls._update_target_prices_from_snapshot(state, snapshot)
         logger.info(
             f"✅ Full warm-up: {ticker} ({state.name}) "

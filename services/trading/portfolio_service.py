@@ -77,9 +77,10 @@ class PortfolioService:
         return PortfolioRepo.save(user_id, holding_dicts, cash_balance)
 
     @classmethod
-    def load_portfolio(cls, user_id: str) -> List[dict]:
-        """Load portfolio holdings from DB and return as list of dicts."""
-        return PortfolioRepo.load_holdings(user_id)
+    def load_portfolio(cls, user_id: str) -> List[HoldingSchema]:
+        """Load portfolio holdings from DB and return as list of HoldingSchema."""
+        raw = PortfolioRepo.load_holdings(user_id)
+        return [HoldingSchema(**h) for h in raw]
 
     @classmethod
     def load_portfolio_dtos(cls, user_id: str) -> List[PortfolioHoldingDto]:
@@ -175,6 +176,37 @@ class PortfolioService:
         return summary, cash
 
     @classmethod
+    def _resolve_us_holdings(
+        cls,
+        overseas_balance: Optional[dict],
+        us_by_ticker: Dict[str, HoldingSchema],
+        existing_us_map: Dict[str, HoldingSchema],
+        existing_sector_map: dict,
+    ) -> List[HoldingSchema]:
+        """해외 잔고 stale 여부에 따라 US holdings 결정. Returns list to extend main holdings."""
+        if not overseas_balance or overseas_balance.get("_stale", False):
+            if overseas_balance and overseas_balance.get("_stale", False):
+                logger.warning("⚠️ Overseas balance is stale (cached fallback). Keeping existing DB US holdings instead.")
+            return list(existing_us_map.values())
+        cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
+        return list(us_by_ticker.values()) if us_by_ticker else list(existing_us_map.values())
+
+    @classmethod
+    def _enrich_summary_with_overseas(cls, summary: dict, overseas_balance: Optional[dict]) -> None:
+        """해외 잔고 요약 정보를 KR summary dict에 주입 (in-place)."""
+        if not overseas_balance or not overseas_balance.get("summary"):
+            return
+        ovrs_summary = overseas_balance["summary"]
+        if isinstance(ovrs_summary, list) and ovrs_summary:
+            ovrs_summary = ovrs_summary[0]
+        if not isinstance(ovrs_summary, dict):
+            return
+        tot_evlu_pfls = cls._extract_float(ovrs_summary, "tot_evlu_pfls_amt")
+        summary["_overseas_summary"] = ovrs_summary
+        if tot_evlu_pfls != 0:
+            summary["_overseas_evlu_pfls_krw"] = tot_evlu_pfls
+
+    @classmethod
     def sync_with_kis(cls, user_id: str = "sean") -> List[HoldingSchema]:
         """Sync with actual KIS balance (includes DB update)."""
         logger.info(f"🔄 Syncing portfolio with KIS for user: {user_id}")
@@ -183,51 +215,36 @@ class PortfolioService:
             return cls.load_portfolio(user_id)
 
         existing_holdings = cls.load_portfolio(user_id)
-        existing_sector_map = {h["ticker"]: h.get("sector") or DEFAULT_SECTOR for h in existing_holdings}
+        existing_sector_map = {h.ticker: h.sector or DEFAULT_SECTOR for h in existing_holdings}
         existing_us_map = {
-            h["ticker"]: HoldingSchema(**h)
+            h.ticker: h
             for h in existing_holdings
-            if str(h.get("ticker", "")).isalpha()
+            if str(h.ticker).isalpha()
         }
 
         holdings, us_by_ticker = cls._parse_balance_holdings(balance_data, existing_sector_map)
         overseas_balance = KisService.get_overseas_balance()
-        is_overseas_stale = overseas_balance.get("_stale", False) if overseas_balance else False
-        if is_overseas_stale:
-            logger.warning("⚠️ Overseas balance is stale (cached fallback). Keeping existing DB US holdings instead.")
-            holdings.extend(existing_us_map.values())
-        else:
-            cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
-            holdings.extend(us_by_ticker.values() if us_by_ticker else existing_us_map.values())
+        holdings.extend(cls._resolve_us_holdings(overseas_balance, us_by_ticker, existing_us_map, existing_sector_map))
 
         summary, cash = cls._extract_kr_cash_from_summary(balance_data)
 
-        # Store overseas KRW evaluation from overseas balance summary
-        if overseas_balance and overseas_balance.get("summary"):
-            ovrs_summary = overseas_balance["summary"]
-            if isinstance(ovrs_summary, list) and ovrs_summary:
-                ovrs_summary = ovrs_summary[0]
-            if isinstance(ovrs_summary, dict):
-                ovrs_tot_pfls = cls._extract_float(ovrs_summary, "ovrs_tot_pfls")
-                frcr_pchs_amt = cls._extract_float(ovrs_summary, "frcr_pchs_amt1")
-                tot_evlu_pfls = cls._extract_float(ovrs_summary, "tot_evlu_pfls_amt")
-                summary["_overseas_summary"] = ovrs_summary
-                if tot_evlu_pfls != 0:
-                    summary["_overseas_evlu_pfls_krw"] = tot_evlu_pfls
+        cls._enrich_summary_with_overseas(summary, overseas_balance)
 
         summary["_usd_cash_balance"] = cls.get_usd_cash_balance(overseas_balance=overseas_balance)
         cls._last_balance_summary = summary
 
         cls.save_portfolio(user_id, holdings, cash_balance=cash)
+        cls._sync_in_memory_prices(holdings)
+        return holdings
 
-        # In-memory state price sync (compensates for VTS WebSocket not supporting overseas real-time)
+    @classmethod
+    def _sync_in_memory_prices(cls, holdings: List[HoldingSchema]) -> None:
+        """Push current_price from each holding into MarketDataService in-memory state."""
         from services.market.market_data_service import MarketDataService
         for h in holdings:
             price = float(h.current_price or 0)
             if price > 0:
                 MarketDataService.update_price_from_sync(h.ticker, price)
-
-        return [h.model_dump() for h in holdings]
 
     @classmethod
     def get_last_balance_summary(cls) -> dict:
@@ -300,7 +317,7 @@ class PortfolioService:
     def analyze_portfolio(cls, user_id: str, price_cache: dict) -> dict:
         """Portfolio return analysis (KR/US separated)."""
         from services.market.macro_service import MacroService
-        holdings     = cls.load_portfolio(user_id)
+        holdings     = [h.model_dump() for h in cls.load_portfolio(user_id)]
         cash         = cls.load_cash(user_id)
         usd_cash     = cls.get_usd_cash_balance()
         exchange_rate = MacroService.get_exchange_rate()
@@ -483,8 +500,8 @@ class PortfolioService:
         """Return detailed analysis data for all holdings (sorted by return descending)."""
         holdings = cls.load_portfolio(user_id)
         report = [
-            cls.build_holding_report_row(h, price_cache.get(h.get("ticker"), {}))
-            for h in holdings if h.get("ticker")
+            cls.build_holding_report_row(h.model_dump(), price_cache.get(h.ticker, {}))
+            for h in holdings if h.ticker
         ]
         report.sort(key=lambda row: row["return_pct"], reverse=True)
         return report
@@ -494,32 +511,55 @@ class PortfolioService:
         cls, user_id: str, ticker: str, quantity: float, buy_price: float, name: Optional[str] = None
     ) -> list:
         """Manually add a holding (includes average cost calculation)."""
-        holdings = cls.load_portfolio(user_id)
-        holdings = cls.apply_buy(holdings, ticker, quantity, buy_price)
+        holdings_raw = PortfolioRepo.load_holdings(user_id)
+        holdings_raw = cls.apply_buy(holdings_raw, ticker, quantity, buy_price)
         if name:
-            target = next((h for h in holdings if h.get("ticker") == ticker), None)
+            target = next((h for h in holdings_raw if h.get("ticker") == ticker), None)
             if target and target.get("name") == ticker:
                 target["name"] = name
-        cls.save_portfolio(user_id, holdings)
-        return holdings
+        cls.save_portfolio(user_id, holdings_raw)
+        return holdings_raw
 
     @classmethod
     def update_holding_sector(cls, user_id: str, ticker: str, sector: str) -> list:
         """Manually update a holding's sector."""
-        holdings = cls.load_portfolio(user_id)
-        target = next((h for h in holdings if h.get("ticker") == ticker), None)
+        holdings_raw = PortfolioRepo.load_holdings(user_id)
+        target = next((h for h in holdings_raw if h.get("ticker") == ticker), None)
         if not target:
             raise ValueError(f"Ticker {ticker} not found.")
         target["sector"] = sector
-        cls.save_portfolio(user_id, holdings)
-        return holdings
+        cls.save_portfolio(user_id, holdings_raw)
+        return holdings_raw
 
     @classmethod
-    def rebalance_portfolio(cls, user_id: str = "sean"):
-        # Same logic as before; leverages sync_with_kis which updates DB
+    def rebalance_portfolio(cls, user_id: str = "sean") -> dict:
+        """Sync portfolio with KIS and log sector deviation report."""
         return cls._rebalance_logic(user_id)
 
     @classmethod
-    def _rebalance_logic(cls, user_id: str):
-        # (Extracted and preserved internal rebalance_portfolio logic)
-        pass # Actual implementation based on analyze and sync results above
+    def _rebalance_logic(cls, user_id: str) -> dict:
+        """Sync holdings, calculate current sector weights, and log any deviations."""
+        logger.info(f"⚖️ Starting portfolio rebalance check for {user_id}")
+        holdings = cls.sync_with_kis(user_id)
+        if not holdings:
+            logger.warning("⚠️ No holdings to rebalance.")
+            return {}
+
+        total_value = sum((h.current_price or 0) * (h.quantity or 0) for h in holdings)
+        if total_value <= 0:
+            logger.warning("⚠️ Total portfolio value is zero — skipping rebalance.")
+            return {}
+
+        sector_values: dict[str, float] = {}
+        for h in holdings:
+            sector = h.sector or DEFAULT_SECTOR
+            sector_values[sector] = sector_values.get(sector, 0.0) + (h.current_price or 0) * (h.quantity or 0)
+
+        sector_weights = {s: round(v / total_value * 100, 2) for s, v in sector_values.items()}
+        logger.info(f"📊 Sector weights: {sector_weights} | Total: {total_value:,.0f} KRW | Holdings: {len(holdings)}")
+
+        return {
+            "sector_weights": sector_weights,
+            "total_value": total_value,
+            "holdings_count": len(holdings),
+        }

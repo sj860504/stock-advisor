@@ -36,6 +36,23 @@
             overflow: hidden;
         }
 
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3d4a5c;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a5568;
+        }
+
         /* GNB */
         .gnb {
             background: var(--nav);
@@ -143,6 +160,7 @@
             border-radius: 10px;
             padding: 18px;
             border: 1px solid var(--border);
+            min-width: 0; /* Add this to prevent grid items from overflowing */
         }
 
         .card-title {
@@ -169,6 +187,12 @@
         .grid-main {
             display: grid;
             grid-template-columns: 3fr 1fr;
+            gap: 16px;
+        }
+
+        .grid-market {
+            display: grid;
+            grid-template-columns: 3fr 2fr;
             gap: 16px;
         }
 
@@ -199,8 +223,20 @@
         th.sort-asc::after { content:' ▲'; font-size:0.7rem; }
         th.sort-desc::after { content:' ▼'; font-size:0.7rem; }
         .tbl-search {
-            background:var(--bg); border:1px solid var(--border); border-radius:6px;
-            padding:5px 10px; font-size:0.82rem; color:var(--text); width:180px;
+            background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E") no-repeat 10px center;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 10px 6px 32px;
+            font-size: 0.85rem;
+            color: var(--text);
+            width: 180px;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, width 0.2s ease;
+        }
+
+        .tbl-search:focus {
+            border-color: var(--accent);
+            outline: none;
+            width: 210px;
         }
         .tbl-search::placeholder { color:var(--sub); }
 
@@ -215,8 +251,12 @@
             border-bottom: none;
         }
 
+        tr {
+            transition: background 0.15s ease;
+        }
+
         tr:hover td {
-            background: rgba(255, 255, 255, .02);
+            background: rgba(255, 255, 255, .05);
         }
 
         .ticker-cell {
@@ -344,6 +384,16 @@
             font-size: 0.9rem;
             outline: none;
             font-family: inherit;
+            color-scheme: dark;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+
+        input[type="range"] {
+            accent-color: var(--accent);
+            padding: 0;
+            background: transparent;
+            border: none;
+            width: 100%;
         }
 
         input:focus,
@@ -736,6 +786,23 @@
             color: var(--sub);
             cursor: not-allowed;
         }
+        /* Responsive Overrides */
+        @media (max-width: 1400px) {
+            .grid-market, .grid-main {
+                grid-template-columns: 1fr;
+            }
+        }
+        @media (max-width: 900px) {
+            .grid-2, .grid-3 {
+                grid-template-columns: 1fr;
+            }
+            .tbl-search {
+                width: 140px;
+            }
+            .tbl-search:focus {
+                width: 160px;
+            }
+        }
     </style>
 </head>
 
@@ -876,7 +943,6 @@
                     </div>
                 </div>
             </div>
-        </div>
 
         <!-- Portfolio tab removed - integrated into Dashboard -->
 
@@ -940,7 +1006,7 @@
                 <input type="text" class="tbl-search" placeholder="종목 검색..."
                     oninput="searchState['top20-tbody']=this.value.toLowerCase();renderTop20Filtered();searchState['signals-tbody']=this.value.toLowerCase();renderSignalsFiltered()">
             </div>
-            <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px">
+            <div class="grid-market" style="margin-bottom:16px">
                 <div class="card">
                     <div class="card-title">📈 Top 100 실시간
                         <button class="btn btn-outline btn-sm" onclick="fetchTop20()">🔄</button>
@@ -954,6 +1020,7 @@
                                     <th class="sortable" onclick="handleSort('top20-tbody',2,renderTop20Filtered)">현재가</th>
                                     <th class="sortable" onclick="handleSort('top20-tbody',3,renderTop20Filtered)">등락</th>
                                     <th class="sortable" onclick="handleSort('top20-tbody',4,renderTop20Filtered)">RSI</th>
+                                    <th class="sortable" onclick="handleSort('top20-tbody',5,renderTop20Filtered)">점수</th>
                                     <th>신호</th>
                                     <th>갱신</th>
                                     <th>액션</th>
@@ -961,7 +1028,7 @@
                             </thead>
                             <tbody id="top20-tbody">
                                 <tr>
-                                    <td colspan="8" class="empty">Loading...</td>
+                                    <td colspan="9" class="empty">Loading...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -978,13 +1045,14 @@
                                     <th>유형</th>
                                     <th>종목</th>
                                     <th>이름</th>
+                                    <th>점수</th>
                                     <th>지표</th>
                                     <th>현재가</th>
                                 </tr>
                             </thead>
                             <tbody id="signals-tbody">
                                 <tr>
-                                    <td colspan="5" class="empty">Loading...</td>
+                                    <td colspan="6" class="empty">Loading...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1521,6 +1589,7 @@
                 ([,i]) => i.price ?? 0,
                 ([,i]) => i.change_pct ?? 0,
                 ([,i]) => i.rsi ?? 0,
+                ([,i]) => i.score ?? 0,
             ],
             'history-tbody': [
                 d => d.created_at || d.timestamp || d.date || '',
@@ -2289,7 +2358,7 @@
             entries = applySortToData('top20-tbody', entries);
             if (!entries.length) {
                 const msg = marketFilter === 'all' ? '수집 중...' : '해당 시장 종목 없음';
-                tbody.innerHTML = `<tr><td colspan="8" class="empty">${msg}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="empty">${msg}</td></tr>`;
                 return;
             }
             tbody.innerHTML = entries.map(([ticker, info]) => {
@@ -2301,12 +2370,19 @@
                 const updatedStr = info.last_updated
                     ? new Date(info.last_updated).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                     : '-';
+                
+                const score = info.score ?? 0;
+                let scoreCls = 'b-gray';
+                if (score <= 30) scoreCls = 'b-up';
+                else if (score >= 70) scoreCls = 'b-down';
+
                 return `<tr>
             <td class="ticker-cell">${ticker}</td>
             <td class="sub-text">${info.name || ''}</td>
             <td>${priceStr}</td>
             <td class="${cls(info.change_pct || 0)}">${fmtPct(info.change_pct)}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi, 1)}</span></td>
+            <td><span class="badge ${scoreCls}">${score}</span></td>
             <td>${sig}</td>
             <td class="sub-text">${updatedStr}</td>
             <td style="white-space:nowrap;">
@@ -2349,37 +2425,45 @@
             const rows = [];
             // RSI=0 (데이터 없음) 제외, 유효한 과매도만 표시
             (data.oversold || []).filter(i => filterTicker(i.ticker) && (i.rsi || 0) > 0).forEach(i => {
+                const score = top20Cache?.[i.ticker]?.score ?? '-';
                 rows.push(`<tr>
             <td><span class="badge b-up" style="white-space:nowrap">과매도</span></td>
             <td class="ticker-cell">${i.ticker}</td>
             <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
+            <td><span class="badge b-gray">${score}</span></td>
             <td>RSI <b class="up">${fmt(i.rsi, 1)}</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
             });
             (data.overbought || []).filter(i => filterTicker(i.ticker) && (i.rsi || 0) > 0).forEach(i => {
+                const score = top20Cache?.[i.ticker]?.score ?? '-';
                 rows.push(`<tr>
             <td><span class="badge b-down" style="white-space:nowrap">과매수</span></td>
             <td class="ticker-cell">${i.ticker}</td>
             <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
+            <td><span class="badge b-gray">${score}</span></td>
             <td>RSI <b class="down">${fmt(i.rsi, 1)}</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
             });
             (data.undervalued || []).filter(i => filterTicker(i.ticker) && (i.price || 0) > 0).forEach(i => {
+                const score = top20Cache?.[i.ticker]?.score ?? '-';
                 rows.push(`<tr>
             <td><span class="badge b-warn" style="white-space:nowrap">저평가</span></td>
             <td class="ticker-cell">${i.ticker}</td>
             <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
+            <td><span class="badge b-gray">${score}</span></td>
             <td>여유 <b class="up">+${fmt(i.upside_pct, 1)}%</b></td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
             });
             (data.ema200_support || []).filter(i => filterTicker(i.ticker) && (i.price || 0) > 0).forEach(i => {
+                const score = top20Cache?.[i.ticker]?.score ?? '-';
                 rows.push(`<tr>
             <td><span class="badge b-gray" style="white-space:nowrap">EMA200</span></td>
             <td class="ticker-cell">${i.ticker}</td>
             <td style="font-size:.8rem;color:var(--sub)">${getName(i.ticker)}</td>
+            <td><span class="badge b-gray">${score}</span></td>
             <td style="font-size:.78rem;color:var(--sub)">EMA ${fmtSigPrice(i.ticker, i.ema200)}</td>
             <td>${fmtSigPrice(i.ticker, i.price)}</td>
         </tr>`);
@@ -2748,5 +2832,4 @@
         })();
     </script>
 </body>
-
 </html>

@@ -18,6 +18,7 @@
 10. [틱 트레이딩 플로우](#10-틱-트레이딩-플로우)
 11. [스케줄러 작업표](#11-스케줄러-작업표)
 12. [주요 설정값 (DB Settings)](#12-주요-설정값-db-settings)
+13. [Slack 알림 포맷](#13-slack-알림-포맷)
 
 ---
 
@@ -40,13 +41,13 @@ run_strategy(user_id) [매 1분 실행]
   │
   ├─ 4. 신호 실행 (_execute_collected_signals)
   │      ├─ 우선순위 정렬: 신규종목(0) > 기존보유(1) > split tranche(2)
-  │      ├─ 익절 신호 우선 처리
-  │      ├─ 손절 신호 처리 (forced_sell)
+  │      ├─ 익절/트레일링 스탑 신호 우선 처리
+  │      ├─ 손절 신호 처리 → _handle_forced_sell (전량 즉시 매도)
   │      ├─ 매수 신호 처리 (분할 매수)
   │      └─ 미모니터링 보유종목 손절/익절 체크
   │
-  ├─ 5. 틱 트레이딩 (_run_tick_trade)
-  │      └─ STRATEGY_TICK_ENABLED=1 일 때만 실행
+  ├─ 5. 자산관리 서비스 (AssetManagementService.run)
+  │      └─ 현금 비중 gap 계산 → 여유 시 매수 / 부족 시 매도
   │
   └─ 6. 포트폴리오 리포트 (_send_portfolio_report)
          └─ 매매 실행 시 Slack 전송
@@ -171,6 +172,37 @@ _collect_trading_signals() 내부:
 
 > 보유 종목(holding 있음)은 위 게이트를 통과하지 않음 — 익절/손절/추매는 항상 score 계산.
 
+### 보유 종목 RSI/현금 처리 방식
+
+하드 게이트는 없지만 별도 필터가 존재한다.
+
+| 항목 | 미보유 | 보유 |
+|------|--------|------|
+| RSI 차단 | RSI ≥ 75 하드 게이트 | 없음 |
+| 현금 차단 | 현금비중 하드 게이트 | 없음 |
+| 추매 RSI 체크 | 해당 없음 | `add_rsi_limit(60)` — `_handle_add_buy_signal()` 내부 2차 필터 |
+| 추매 score 체크 | 해당 없음 | `add_score_limit(55)` — `_handle_add_buy_signal()` 내부 2차 필터 |
+| 현금 부족 | 하드 차단 | [H] +15 패널티로 score 억제 |
+
+손절/익절은 현금·RSI 무관하게 동작. 의도적 설계 — 현금이 없어도 손절은 실행돼야 함.
+
+### ⚠️ 알려진 허점 — 미모니터링 보유 종목
+
+**현상**: `all_states`(모니터링 유니버스)에 없는 보유 종목은 score 계산 없이 `_check_unmonitored_holdings()`에서 **profit_pct만 보고** 손절/익절 판단.
+
+```
+모니터링 종목  → score 계산 → [A]~[H] 복합 신호 → 분할 매도
+미모니터링 종목 → profit_pct 단순 비교 → 단일 트랜치 즉시 매도
+```
+
+**문제점**:
+- RSI, DCF, 레짐 등 복합 신호 반영 없이 단순 수익률만 보고 매도 결정
+- 분할 매도(SplitSellOrderState) 없이 단일 트랜치 실행 — 대량 보유 시 슬리피지 위험
+
+**수정 방향**:
+- 보유 종목이 `all_states`에 없을 경우 강제로 모니터링 유니버스에 등록 후 정규 score 경로 통과
+- 또는 `_check_unmonitored_holdings()` 내부에서도 `calculate_score()` 호출 후 분할 매도 로직 적용
+
 ---
 
 ## 4. 분할 매수/매도
@@ -212,6 +244,39 @@ _collect_trading_signals() 내부:
 점수 BUY로 회복 시 (score <= buy_max):
   → sell_split_orders[ticker].pop()  # 진행 중인 분할 매도 취소
 ```
+
+### ✅ 구현 완료 — split_orders 만료 기한 (2026-03-14)
+
+`SplitOrderState.start_date` 기준으로 `STRATEGY_SPLIT_EXPIRE_DAYS`(기본 5일) 초과 시 `_expire_split_orders()` 내에서 자동 파기.
+`_execute_collected_signals()` 루프 진입 전 매번 호출.
+
+### 추매와 split tranche 간 쿨다운 처리
+
+`_process_single_signal()` 처리 순서상 추매(`_handle_add_buy_signal()`)가 성공하면 즉시 `return`되어 split tranche는 같은 루프에서 실행되지 않음.
+
+`_handle_buy_split()`에서 `has_pending_splits=True`인 경우 `_is_buy_cooldown_active` 체크를 **건너뜀**. 즉, split tranche는 add_buy_cooldown에 차단되지 않으며 추매와 독립적으로 처리됨. (정상 동작)
+
+---
+
+### ⚠️ 알려진 허점 — 분할 매도 수량 트리거 시점 고정
+
+**현상**: `SplitSellOrderState.total_qty`가 SELL 트리거 시점 보유 수량으로 고정됨.
+
+```
+트리거 후 추매 발생 → 실제 보유 수량 증가 → 초과분 매도 계획에서 누락
+트리거 후 손절 발생 → 실제 보유 수량 감소 → 분할 매도 수량 > 실제 보유 → KIS 주문 실패
+```
+
+**수정 계획**: `_get_sell_split_qty()` 호출 시점에 실제 `holding_qty`를 재조회하여 `remaining_qty` 보정.
+
+### ✅ 구현 완료 — USD 루프 내 현금 차감 (2026-03-15)
+
+`_deduct_loop_cash(ticker, spent_krw, spent_usd, cash_balance, usd_cash)` 헬퍼가 KR/US 모두 처리.
+- KR 매수 후: `cash_balance -= spent_krw`
+- US 매수 후: `usd_cash -= spent_usd`
+- `_execute_collected_signals` 루프 내 매 신호 처리 후 자동 호출, 다음 신호에 반영됨.
+
+---
 
 ### sell_cooldown 설정 시점
 
@@ -270,22 +335,44 @@ _execute_collected_signals() 루프:
 profit_pct ≤ STRATEGY_STOP_LOSS_PCT (-8%)
   → [B] _score_portfolio() 즉시 return (0, ["stop_loss_hit"], forced_sell=True)
   → _apply_score_components()에서 감지 → score=100 반환, 이하 컴포넌트 계산 생략
-  → _handle_sell_signal() 호출 (점수 매도 경로와 동일)
-  → _get_sell_split_qty()로 수량 산출 → 첫 트랜치 ceiling division으로 매도
-  → 주의: "전량 즉시 매도"가 아닌 분할 매도 첫 트랜치 실행
-         (완전 청산은 매일 1트랜치씩 SELL_SPLIT_COUNT일 소요될 수 있음)
+  → _process_single_signal()에서 forced_sell 감지 → _handle_forced_sell() 호출
+  → _execute_trade_v2(side="sell", forced_qty=holding.quantity) 호출
+  → _execute_sell_order(forced_qty=holding_qty) → sell_qty = holding_qty (전량 즉시 매도)
+  → split_orders / sell_split_orders 즉시 제거, 쿨다운 없음
 ```
 
 ### 익절 (Take-Profit)
 
 ```
-profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (3%)
+profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (레짐별 상이)
   → [B] score += PROFIT_TAKE_TARGET (+30)
   → _process_single_signal() 1순위 체크: _handle_profit_take_signal()
   → _get_sell_split_qty()로 SplitSellOrderState 생성 (split_count=5)
   → 분할 매도 (트랜치당 ceiling(remaining/splits_left))
   → sell_cooldown[ticker] = today (성공/실패 무관)
 ```
+
+### 트레일링 스탑 — ✅ 구현 완료 (2026-03-14)
+
+레짐별 트레일링 스탑 임계값:
+
+| 레짐 | 트레일링 스탑 | 동작 |
+|------|------------|------|
+| BULL | -7% (고점 대비) | 상승 추세 끝까지 따라가다 반전 시 매도 |
+| NEUTRAL/BEAR | -5% (고점 대비) | 고점 대비 5% 하락 시 즉시 매도 |
+
+트레일링 스탑 동작 (position_service.py):
+```
+매 신호 처리 시:
+  1. _update_trailing_high(ticker, current_price, trailing_high)
+     → trailing_high[ticker] = max(기존값, current_price)  # 항상 고점 추적
+  2. _handle_trailing_stop(ticker, holding, current_price, trailing_high, macro)
+     → drawdown = (current_price - high) / high × 100
+     → drawdown <= _get_trailing_stop_pct(macro) → _handle_forced_sell() 전량 즉시 매도
+```
+
+> `trailing_high`: `StrategyState.trailing_high` DB 컬럼 (JSON dict {ticker: float})으로 영속.
+> 익절 기준: 단일 설정키 `STRATEGY_TAKE_PROFIT_PCT` (기본 3.0%) 사용. 레짐별 분기 없음.
 
 ### 추매 쿨다운 (Add-Buy Cooldown)
 
@@ -308,6 +395,10 @@ profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (3%)
   (국내 종목은 재조회 없이 상태 캐시 가격 그대로 사용)
 ```
 
+### ✅ 수정 완료 — 손절 전량 즉시 매도 (2026-03-15)
+
+`_handle_forced_sell()`이 `forced_qty=holding.quantity`를 전달하여 `_execute_sell_order`에서 전량 즉시 매도. sell_split_orders 잔존 문제 해결.
+
 ---
 
 ## 6. 현금 비중 관리
@@ -323,44 +414,91 @@ profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (3%)
 ### 검사 로직
 
 ```python
-_is_cash_ratio_sufficient(ticker, holdings, cash_balance, ...)
+_is_cash_below_target(ticker, holdings, cash_balance, ...)
   → KR 또는 US 시장별 현재 현금비중 계산
-  → 현재비중 < 목표비중 → 현금 부족 → 매수 억제 (+15점 패널티)
+  → 현재비중 ≤ 목표비중 → True 반환 → 매수 차단
+  → 패닉장(VIX≥25 OR F&G≤30) → False 반환 → 매수 허용
 ```
+
+### ⚠️ 알려진 이슈 — 하드 게이트와 주문 직전 체크의 불일치
+
+공포장(VIX ≥ 25)에서 현금 부족 시:
+- [1] 하드 게이트 → 미보유 종목 skip (공포장 예외 없음)
+- [3] 주문 직전 → 공포장이면 현금 부족 무시
+
+[1]에서 이미 차단되어 [3]까지 도달하지 못함 → 공포장 매수 허용 로직이 실제로 동작 안 할 수 있음.
 
 ---
 
-## 7. 섹터 비중 관리
+## 6-1. ✅ 자산관리 서비스 (구현 완료 2026-03-14)
 
-### 섹터 그룹 (3개)
+> 기존 score 루프의 **상위 레이어**로 동작. 포트폴리오 전체 자산 배분을 능동적으로 관리.
+> `AssetManagementService._get_target_cash_ratio()` 는 Section 6의 execution_service_v2 비율과 **별도**로 동작:
+> - extreme fear (fear_greed < 10) → 0.0% (전액 투자)
+> - BEAR → base 20% (저가 매수 공격적 대응)
+> - NEUTRAL → base 40%
+> - BULL → base 40% (보유 종목 30%이상이 수익 초과 시 +10%p, 상한 60%)
 
-| 그룹 | 포함 섹터 | 기본 목표 비중 |
-|------|---------|------------|
-| tech | Technology, Software, Semiconductors 등 | 50% |
-| value | Energy, Materials, Real Estate, Healthcare 등 | 30% |
-| financial | Financial Services, Insurance, Banks 등 | 20% |
-
-> 설정키: `SECTOR_TARGET_{MARKET}_{GROUP}` (DB로 오버라이드 가능)
-
-### 리밸런싱 임계값
+### 동작 방식
 
 ```
-SECTOR_REBAL_THRESHOLD = 0.05 (5% 편차)
-편차 > 5% → 리밸런싱 대상
+[자산관리 레이어] — 매 루프 실행
+  │
+  ├─ 1. 현재 현금 비중 계산
+  │      현금 비중 = cash / (보유종목 시장가 + cash)
+  │      목표 현금 비중 = 레짐별 (BEAR 20% / NEUTRAL 40% / BULL 40%)
+  │
+  ├─ 2. 여유/부족 판단 (임계값 ±5% 이내면 조정 안 함)
+  │      현금 비중 > 목표 + 5%  → 여유 (매수 여력 있음)
+  │      현금 비중 < 목표 - 5%  → 부족 (현금 조달 필요)
+  │      그 외                  → 유지 (조정 없음)
+  │
+  ├─ 3. 현금 여유 시 → 매수
+  │      score 낮은 순(BUY 신호 강한 순) 후보 선정
+  │      → 여유 현금 소진될 때까지 순서대로 매수
+  │
+  ├─ 4. 현금 부족 시 → 매도 후 매수
+  │      매도 우선순위: score × 이익률 복합 정렬
+  │        ① score 높을수록 우선 (매도 신호 강한 것)
+  │        ② 이익률 높을수록 우선 (실현 손실 최소화)
+  │        → 부족분 현금 확보될 때까지 순서대로 일부 매도
+  │      → 확보된 현금으로 매수 후보 실행
+  │
+  └─ [기존 score 루프] — 하위에서 독립 실행
+       손절 / 익절 / 추매 등 개별 종목 신호 처리
+
 ```
 
-### 주간 섹터 리밸런싱 (매주 월요일 09:20)
+### 섹터 리밸런서 통합
 
-```
-run_sector_rebalance(user_id)
-  1. STEP 1: 초과 섹터 매도
-     - 편차 내림차순 정렬
-     - 초과 보유종목 중 점수 가장 낮은 것 매도
+기존 `sector_rebalancer_service.py`(매주 월요일 1회) 제거.
+자산관리 서비스가 매 루프마다 현금 비중과 함께 섹터 편차도 매수 우선순위 산정에 반영하여 대체.
 
-  2. STEP 2: 부족 섹터 매수
-     - 점수 기반 후보 종목 스코어링
-     - BUY_THRESHOLD 미만 최우량 종목 매수
-```
+### ✅ 구현 완료 (2026-03-14)
+
+- `services/strategy/asset_management_service.py` 신규 서비스 작성
+- `trading_strategy_service.py` 에서 score 루프 실행 **이후** AssetManagementService.run() 호출
+- `weekly_sector_rebalance` 스케줄러 잡 제거 완료
+
+> 현재 AssetManagementService는 score 루프 **이후** 실행되어 잔여 예산 소진/현금 확보 목적으로 동작.
+
+---
+
+## 7. 섹터 비중 관리 — ❌ 제거 예정
+
+> **자산관리 서비스(Section 6-1)로 대체. 아래 항목 전체 제거.**
+
+### 제거 대상
+
+| 항목 | 파일/위치 | 비고 |
+|------|---------|------|
+| 섹터 리밸런서 서비스 | `services/strategy/sector_rebalancer_service.py` | 파일 전체 삭제 |
+| 스케줄러 잡 | `weekly_sector_rebalance` (매주 월 09:20) | 스케줄러에서 제거 |
+| 섹터 보너스 점수 [G] | `signal_service.py` `_score_bonuses()` | 섹터 편차 ±10 로직 제거 |
+| 섹터 비중 검사 | `execution_service_v2.py` `_check_sector_group_limit()` | 함수 제거 |
+| 섹터 비중 계산 | `execution_service_v2.py` `_get_sector_group_weights()` | 함수 제거 |
+| 섹터 관련 상수 | `execution_service_v2.py` `SECTOR_GROUP_MAP`, `SECTOR_TARGET_WEIGHT`, `SECTOR_REBAL_THRESHOLD` | 제거 |
+| 섹터 관련 설정키 | `SECTOR_TARGET_{MARKET}_{GROUP}` 등 | DB Settings에서 제거 |
 
 ---
 
@@ -648,6 +786,70 @@ SPX 데이터 조회 실패 시 DB 저장 생략.
 
 ---
 
+### ⚠️ 개선 계획 — 레짐 스코어
+
+**1. 레짐 스코어 EMA 평활화**
+
+```
+현재: 매 재계산 시 이전 값과 완전 독립 → 하루 단위 레짐 급변 가능
+
+개선:
+  regime_score = 현재 × 0.4 + 이전 스코어 × 0.6
+  → 급격한 레짐 전환 방지, 현금 목표비중/익절기준 안정화
+  → MacroService에서 직전 regime_score를 캐시에 보존 후 적용
+```
+
+**2. 극단적 공포 시 Bear 즉시 강제 지정**
+
+```
+현재: VIX 60이어도 다른 컴포넌트가 높으면 Neutral 가능
+
+개선: VIX ≥ 40 OR F&G ≤ 10 → 스코어 무관하게 Bear 강제 지정
+  → _assemble_regime_result() 에서 스코어 판정 전 사전 체크
+```
+
+**3. phase_modifier 범위 ±8 → ±15**
+
+```
+현재: Stagflation -8, Goldilocks +5 — 전체 스코어 대비 영향 미미
+
+개선:
+  Stagflation → -15
+  Deflation   → -10
+  Inflation   → -5
+  Reflation   → +3
+  Goldilocks  → +8
+  → 경제 국면이 레짐 판정에 실질적 영향
+```
+
+**4. Bull 임계값 동적화**
+
+```
+현재: Bull 임계값 65 고정 (Bear 임계값만 동적)
+
+개선: Bear 지속 시 Bull 진입 기준도 상향
+  직전 1개월 Bear → Bull 임계값 67
+  직전 2개월 Bear → Bull 임계값 70
+  → Bear 탈출 후 섣부른 Bull 진입 방지, Neutral 충분히 거치도록
+  → _get_bear_threshold()와 동일 패턴으로 _get_bull_threshold() 추가
+```
+
+**5. 컴포넌트 가중치 재조정 (실시간 우선)**
+
+```
+현재: Technical/VIX/F&G/FRED/복합자산 각 0~20 동일 비중
+
+개선: 실시간 데이터 가중치 상향, FRED(지연 데이터) 하향
+  Technical  0~25 (현재가 기반, 실시간)
+  VIX        0~25 (실시간)
+  F&G        0~20 (실시간)
+  FRED 경제  0~15 (월/주 발표, 지연)
+  복합자산   0~15 (일별, 준실시간)
+  합계: 0~100 유지
+```
+
+---
+
 ## 9. DCF 밸류에이션
 
 **파일**: `services/analysis/dcf_service.py`, `services/analysis/financial_service.py`
@@ -677,46 +879,75 @@ Base: DCF_DEFAULT_DISCOUNT_RATE (10%)
 ### 데이터 소스 우선순위 (폴백)
 
 ```
-1. DcfOverride (수동 오버라이드)
-2. EPS CAGR (재무 이력 5개년)
-3. yfinance FCF 데이터
-4. EPS × PER 추정
-5. KIS 재무 데이터
+1. DcfOverride (사용자 수동 오버라이드 — DB DcfOverride 테이블)
+2. 5년 EPS CAGR (_dcf_from_eps_history)
+   └─ DB Financials 이력에서 연도별 EPS 추출 → CAGR 계산 → 할인율 산출
+   └─ 5년치 미만이면 skip
+3. yfinance FCF (_dcf_from_yfinance)
+   └─ fcf_per_share > 0 일 때만 사용
+4. 기관 컨센서스 목표주가 (_dcf_from_analyst_target)
+   └─ yfinance target_mean_price (애널리스트 평균 목표주가)
+   └─ FCF 음수 / 적자 기업 등 DCF 계산 불가 종목 대상
+   └─ fallback_fair_value로 설정 → DCF 계산 없이 목표주가 자체를 공정가치로 사용
+   └─ 이 단계가 성공하면 DCF 없음 패널티(+10) 발생하지 않음
+5. EPS × PER 추정 (_dcf_from_eps_per_fallback)
+   └─ DB 최신 EPS × PER → fallback_fair_value
+6. KIS API (_dcf_from_kis_api, 최후 수단 — 항상 반환)
+   └─ KIS 재무 데이터 → EPS × PER 또는 FCF 그대로 사용
+```
+
+> **캐시**: 메모리 30분 TTL (`_dcf_input_by_ticker`). 오버라이드는 캐시 우선 확인 없이 항상 DB 조회.
+
+---
+
+### ⚠️ 개선 계획 — DCF 밸류에이션
+
+**1. 성장률 상한 25% 캡핑 문제**
+
+```
+현재: CAGR 계산 후 min(25%, cagr) 클리핑
+  → 고성장 초기 기업(50%+ 성장)은 25%로 고정
+  → 실제 성장 포텐셜 과소 평가 → 저평가 종목을 공정가치로 판단
+
+개선:
+  yfinance analyst growth estimate 우선 반영
+  또는 업종별 상한 차등 적용 (tech: 40%, value: 20%)
+```
+
+**2. 기관 목표주가 커버리지 가중치 없음**
+
+```
+현재: target_mean_price만 사용, 애널리스트 수 무시
+  → 커버리지 1명짜리 목표주가와 30명짜리 동일 신뢰도
+
+개선:
+  number_of_analyst_opinions < 3 → analyst_target 폴백 skip
+  → EPS×PER(5번)으로 내려가도록
+```
+
+**3. Top100 외 종목 DCF 업데이트 주기 없음**
+
+```
+현재: sync_daily_market(04:00)은 Top100만 갱신
+  → Top100 밖 보유 종목은 수개월 된 EPS로 DCF 계산 가능
+
+개선:
+  보유 종목은 Top100 여부 무관하게 daily 갱신 대상에 포함
+  → trading_strategy_service.py 의 _update_target_universe()에서 보유 종목 강제 포함
 ```
 
 ---
 
-## 10. 틱 트레이딩 플로우
+## 10. 틱 트레이딩 플로우 — ✅ 제거 완료 (2026-03-14)
 
-**파일**: `services/strategy/trading_strategy_service.py`
+아래 항목 모두 제거됨:
 
-> 설정 `STRATEGY_TICK_ENABLED=1`, `STRATEGY_TICK_TICKER=AAPL` 등으로 활성화
-
-### 진입 조건
-
-```
-_evaluate_tick_buy_conditions()
-  - 초기 진입: 현재가 ≤ 당일 시가 × (1 + TICK_ENTRY_PCT(-1%))
-  - 추매: 현재가 ≤ 직전 매수가 × (1 + TICK_ADD_PCT(-3%))
-  - 재진입: 당일 매도 후 → 1시간 저가(low_1h) 추적 → 저가 대비 반등
-```
-
-### 청산 조건
-
-```
-_evaluate_tick_sell_conditions()
-  - 익절: profit ≥ TICK_TAKE_PROFIT_PCT (1%)
-  - 손절: profit ≤ TICK_STOP_LOSS_PCT (-5%)
-  - EOD: 장종료 TICK_CLOSE_MINUTES(5분) 전 전량 매도
-```
-
-### 1시간 가격 윈도우
-
-```
-_update_price_window(trade_state, current_price)
-  - 최근 60분 가격 슬라이딩 윈도우 유지
-  - low_1h = 60분 내 최저가 (재진입 트리거)
-```
+| 항목 | 위치 | 상태 |
+|------|------|------|
+| 틱 트레이딩 로직 | `trading_strategy_service.py` `_run_tick_trade()` 및 관련 메서드 | ✅ 삭제 완료 |
+| 틱 트레이딩 상태 | `StrategyState.tick_trade` 컬럼 | ✅ 제거 완료 |
+| 스케줄러 잡 | `report_tick_trade_status` (매 10분) | ✅ 제거 완료 |
+| 틱 관련 설정키 | `STRATEGY_TICK_ENABLED`, `STRATEGY_TICK_TICKER` 등 8개 | ⚠️ DB Settings 잔존 (무효화)
 
 ---
 
@@ -731,10 +962,10 @@ _update_price_window(trade_state, current_price)
 | us_close_report | 06:05 KST | 매일 | US 장마감 리포트 |
 | report_daily_trade_history | 09:00 KST | 매일 | 일일 매매 내역 Slack 전송 |
 | run_rebalancing | 09:10 KST | 매일 | 포트폴리오 리밸런싱 |
-| weekly_sector_rebalance | 월 09:20 KST | 매주 | 섹터 리밸런싱 실행 |
+| ~~weekly_sector_rebalance~~ | ~~월 09:20 KST~~ | ~~매주~~ | ~~섹터 리밸런싱~~ ❌ 제거 |
 | refresh_low_tier_prices | - | 매 5분 | LOW tier 종목 가격 폴링 |
 | sync_portfolio_periodic | - | 매 10분 | KIS 잔고 동기화 |
-| report_tick_trade_status | - | 매 10분 | 틱 트레이딩 상태 Slack 전송 |
+| ~~report_tick_trade_status~~ | ~~매 10분~~ | ~~매 10분~~ | ~~틱 트레이딩 상태~~ ❌ 제거 |
 | econ_0830/0915/1000 | 08:31/09:16/10:01 ET | 매일 | FRED 경제지표 발표 확인 |
 | vix_spike_check | 09:00~15:00 ET | 30분 (월-금) | VIX 급등 감지 |
 
@@ -770,6 +1001,7 @@ _update_price_window(trade_state, current_price)
 | `STRATEGY_PER_TRADE_RATIO` | 0.05 | 1회 매매 비중 (5%) |
 | `STRATEGY_SPLIT_COUNT` | 3 | 분할 매수 횟수 |
 | `STRATEGY_SELL_SPLIT_COUNT` | 5 | 분할 매도 횟수 |
+| `STRATEGY_SPLIT_EXPIRE_DAYS` | 5 | 분할 매수 만료 기한 (일) |
 | `STRATEGY_MAX_SECTOR_RATIO` | 0.30 | 섹터 최대 비중 (30%) |
 
 ### 현금 비중 (레짐별)
@@ -783,19 +1015,57 @@ _update_price_window(trade_state, current_price)
 | `STRATEGY_TARGET_CASH_RATIO_US_NEUTRAL` | 0.40 |
 | `STRATEGY_TARGET_CASH_RATIO_US_BEAR` | 0.50 |
 
-### 틱 트레이딩
+### 틱 트레이딩 — ❌ 제거됨 (2026-03-14)
 
-| 설정키 | 기본값 | 설명 |
-|--------|--------|------|
-| `STRATEGY_TICK_ENABLED` | 0 | 틱매매 활성화 여부 |
-| `STRATEGY_TICK_TICKER` | - | 틱매매 대상 종목 |
-| `STRATEGY_TICK_TAKE_PROFIT_PCT` | 1.0 | 틱 익절 (%) |
-| `STRATEGY_TICK_STOP_LOSS_PCT` | -5.0 | 틱 손절 (%) |
-| `STRATEGY_TICK_ADD_PCT` | -3.0 | 틱 추매 기준 (%) |
-| `STRATEGY_TICK_ENTRY_PCT` | -1.0 | 틱 진입 기준 (%) |
-| `STRATEGY_TICK_CASH_RATIO` | 0.20 | 트랜치당 현금 비중 |
-| `STRATEGY_TICK_CLOSE_MINUTES` | 5 | EOD 청산 시간 (분전) |
+> `STRATEGY_TICK_*` 설정키 8개는 DB에 잔존하나 코드에서 미사용.
 
 ---
 
-**Last Updated**: 2026-03-12 (매도 로직 상세화 / BEAR 레짐 수정 / Section 8 레짐 판정 전체 상세화 / DCF 점수 오류 수정 / [B] 추매 조건 오류 수정 / 매수 수량 승수 오류 수정 / Section 12 설정키 5개 추가)
+## 13. Slack 알림 포맷
+
+> `services/notification/report_service.py`
+
+### 13-1. 자산 현황 리포트 (`format_portfolio_report`)
+
+**현재 → 개선 완료 (2026-03-14)**
+
+**보유종목 라인 — 2줄 compact 포맷 (모바일 대응)**
+
+KR:
+```
+  • 삼성전자(005930) 72,000 +1.2%
+    10주 | 매입 68,000 | 🔴+5.9% (+40,000)
+```
+
+US:
+```
+  • AAPL(Apple Inc) $185.20 +0.8%
+    5sh | avg $170.00 | 🔴+8.8% (+$76.00)
+```
+
+**변경 이유**: 기존 1줄 포맷(100자+)이 모바일 Slack에서 잘림 → 2줄로 분리하여 가독성 확보
+
+---
+
+### 13-2. 매수/매도 리포트 (`format_trade_result_report`)
+
+**현재 포맷 (미변경)**
+```
+🔵 [BUY] • Ticker: AAPL Apple Inc, price: $185.20, Qty: 5 shares
+🔴 [SELL] • Ticker: AAPL Apple Inc, price: $185.20, Qty: 5 shares, • PnL: +8.82%, Profit: +$76.00
+```
+
+**수정 계획**
+```
+🔵 BUY  AAPL 5sh @$185.2
+🔴 SELL AAPL 5sh @$185.2 | +8.8% +$76.0
+💰 총평가: 12,450,000 | 현금: 2,100,000
+```
+
+- `• Ticker:`, `price:`, `Qty:` 등 장황한 레이블 제거
+- PnL은 % + 금액만 표시 (profit 레이블 제거)
+- 총자산 라인도 간소화
+
+---
+
+**Last Updated**: 2026-03-15 (USD 루프 현금차감 구현완료, forced_sell 전량 매도 수정 완료, AssetManagementService 목표비율 수정, 토큰 DB 마이그레이션, TR ID 하드코딩 제거)

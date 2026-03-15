@@ -231,7 +231,9 @@ class KisFetcher:
 
         try:
             headers = cls._get_price_headers(token, tr_id=tr_id)
-            response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+            response = cls._get_with_retry(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_DEFAULT)
+            if response is None:
+                return {}
             if response.status_code == 200:
                 response_data = response.json()
                 output = response_data.get("output", {})
@@ -359,9 +361,9 @@ class KisFetcher:
             return {}
 
     @staticmethod
-    def _build_overseas_daily_params(tr_id: str, ticker: str, excd: str, start_date: str, end_date: str) -> dict:
+    def _build_overseas_daily_params(tr_id: str, ticker: str, excd: str, start_date: str, end_date: str, legacy_tr_id: str = "") -> dict:
         """Build params dict for overseas daily price request based on TR ID."""
-        if tr_id == "FHKST03030100":
+        if tr_id == legacy_tr_id and legacy_tr_id:
             mrkt_map = {"NASD": "N", "NAS": "N", "NYSE": "Y", "NYS": "Y", "AMEX": "A", "AMS": "A", "IDX": "U"}
             mrkt_code = mrkt_map.get(excd.upper(), "N")
             return {
@@ -415,6 +417,7 @@ class KisFetcher:
         """Fetch overseas stock daily OHLCV data."""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_기간별시세")
+        legacy_tr_id, _ = StockMetaService.get_api_info("해외주식_종목지수환율기간별")
 
         url = f"{cls._get_price_base_url()}{path}"
 
@@ -426,9 +429,10 @@ class KisFetcher:
                 meta = StockMetaService.get_stock_meta(ticker)
                 if meta and meta.api_market_code:
                     excd = meta.api_market_code
-            except: pass
+            except Exception as e:
+                    logger.debug(f"[kis_fetcher] {ticker} api_market_code 조회 실패 무시: {e}")
 
-        params = cls._build_overseas_daily_params(tr_id, ticker, excd, start_date, end_date)
+        params = cls._build_overseas_daily_params(tr_id, ticker, excd, start_date, end_date, legacy_tr_id=legacy_tr_id or "")
 
         try:
             headers = cls._get_price_headers(token, tr_id=tr_id)
@@ -442,7 +446,7 @@ class KisFetcher:
             if response_data.get("output2") and not response_data.get("output"):
                 response_data["output"] = response_data["output2"]
 
-            if tr_id != "FHKST03030100" and not response_data.get("output"):
+            if tr_id != legacy_tr_id and not response_data.get("output"):
                 fallback = cls._try_exchange_fallback(ticker, url, headers, params)
                 if fallback is not None:
                     return fallback

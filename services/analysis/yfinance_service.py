@@ -23,6 +23,7 @@ class YFinanceFundamentals:
     currency: str = "USD"
     source_ticker: str = ""         # Actual ticker sent to yfinance (e.g. "005930.KS")
     target_mean_price: Optional[float] = None  # Analyst consensus target price
+    analyst_count: int = 0                     # numberOfAnalystOpinions
 
 
 class YFinanceService:
@@ -88,11 +89,12 @@ class YFinanceService:
                 target_mean_price = info.get("targetMeanPrice")
                 if target_mean_price is not None:
                     target_mean_price = float(target_mean_price)
+                analyst_count = int(info.get("numberOfAnalystOpinions") or 0)
 
                 logger.info(
                     f"[yfinance] {yf_ticker}: FCF/share={fcf_per_share}, "
                     f"beta={beta:.2f}, growth={growth_rate:.3f}, "
-                    f"targetMeanPrice={target_mean_price}"
+                    f"targetMeanPrice={target_mean_price}, analysts={analyst_count}"
                 )
                 return YFinanceFundamentals(
                     fcf_per_share=fcf_per_share,
@@ -101,6 +103,7 @@ class YFinanceService:
                     currency=currency,
                     source_ticker=yf_ticker,
                     target_mean_price=target_mean_price,
+                    analyst_count=analyst_count,
                 )
 
             except Exception as e:

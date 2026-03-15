@@ -20,6 +20,23 @@ from models.schemas import (
 
 logger = get_logger("financial_service")
 
+# 섹터별 FCF 성장률 상한 (소수점). 섹터 정보 없으면 DEFAULT 적용.
+GROWTH_RATE_CAP_BY_SECTOR: dict = {
+    "Technology":             0.30,
+    "Communication Services": 0.25,
+    "Consumer Cyclical":      0.20,
+    "Healthcare":             0.20,
+    "Financial Services":     0.15,
+    "Industrials":            0.15,
+    "Consumer Defensive":     0.12,
+    "Energy":                 0.12,
+    "Basic Materials":        0.12,
+    "Utilities":              0.10,
+    "Real Estate":            0.10,
+    "DEFAULT":                0.20,
+}
+
+
 class FinancialService:
     """
     Per-ticker financial metrics and DCF data provider.
@@ -156,12 +173,16 @@ class FinancialService:
 
     @classmethod
     def _dcf_from_analyst_target(cls, ticker: str) -> Optional[DcfInputData]:
-        """Analyst consensus target price as DCF fallback (for pre-revenue / negative FCF stocks)."""
+        """Analyst consensus target price as DCF fallback (for pre-revenue / negative FCF stocks).
+        Skip if fewer than 3 analysts (too few opinions to be reliable)."""
         market_type = "KR" if is_kr(ticker) else "US"
         yf_data = YFinanceService.get_fundamentals(ticker, market_type=market_type)
         if not (yf_data and yf_data.target_mean_price and yf_data.target_mean_price > 0):
             return None
-        logger.info(f"[DCF] {ticker}: using analyst target price {yf_data.target_mean_price}")
+        if yf_data.analyst_count < 3:
+            logger.info(f"[DCF] {ticker}: analyst_count={yf_data.analyst_count} < 3 → skip analyst_target")
+            return None
+        logger.info(f"[DCF] {ticker}: using analyst target price {yf_data.target_mean_price} (analysts={yf_data.analyst_count})")
         return DcfInputData(
             fcf_per_share=None,
             beta=yf_data.beta,
@@ -170,6 +191,7 @@ class FinancialService:
             fallback_fair_value=round(yf_data.target_mean_price, 2),
             timestamp=time.time(),
             source="analyst_target",
+            analyst_count=yf_data.analyst_count,
         )
 
     @classmethod
@@ -277,11 +299,27 @@ class FinancialService:
             ):
                 dcf_input = method(ticker)
                 if dcf_input is not None:
+                    dcf_input = cls._apply_growth_rate_cap(ticker, dcf_input)
                     cls._dcf_input_by_ticker[ticker] = dcf_input.model_dump()
                     return dcf_input
         except Exception as e:
             logger.error(f"Error getting DCF data for {ticker}: {e}")
         return None
+
+    @classmethod
+    def _apply_growth_rate_cap(cls, ticker: str, dcf_input: DcfInputData) -> DcfInputData:
+        """섹터별 FCF 성장률 상한을 적용한 DcfInputData 반환."""
+        try:
+            from repositories.stock_meta_repo import StockMetaRepo
+            meta = StockMetaRepo.get_stock_meta(ticker)
+            sector = (meta.sector or "DEFAULT") if meta else "DEFAULT"
+        except Exception:
+            sector = "DEFAULT"
+        cap = GROWTH_RATE_CAP_BY_SECTOR.get(sector, GROWTH_RATE_CAP_BY_SECTOR["DEFAULT"])
+        if dcf_input.growth_rate > cap:
+            logger.info(f"[DCF] {ticker}: growth_rate {dcf_input.growth_rate:.3f} → capped at {cap} (sector={sector})")
+            return dcf_input.model_copy(update={"growth_rate": cap})
+        return dcf_input
 
     @staticmethod
     def _dict_to_dcf_input(data: dict) -> DcfInputData:

@@ -91,7 +91,7 @@ class SettingsService:
         try:
             val = cls.get_setting(key)
             return float(val) if val is not None else default
-        except:
+        except (ValueError, TypeError):
             return default
 
     @classmethod
@@ -99,7 +99,7 @@ class SettingsService:
         try:
             val = cls.get_setting(key)
             return int(float(val)) if val is not None else default
-        except:
+        except (ValueError, TypeError):
             return default
 
     @classmethod

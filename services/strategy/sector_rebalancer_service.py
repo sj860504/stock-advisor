@@ -9,6 +9,7 @@ from services.market.macro_service import MacroService
 from services.trading.portfolio_service import PortfolioService
 from services.config.settings_service import SettingsService
 from services.strategy.execution_service_v2 import TradeExecutorService
+from models.schemas import MacroDataSnapshot, UserState
 from utils.logger import get_logger
 from utils.market import is_kr
 
@@ -24,7 +25,7 @@ class SectorRebalancerService:
     def _build_market_rebalance(cls, holdings: list, exchange_rate: float, market: str) -> dict:
         sw = TradeExecutorService._get_sector_group_weights(holdings, exchange_rate, market)
         weights = sw["weights"]
-        mkt_holdings = [h for h in holdings if (is_kr(h.get("ticker", "")) == (market == "kr"))]
+        mkt_holdings = [h for h in holdings if (is_kr(h.ticker) == (market == "kr"))]
         under, over = TradeExecutorService._classify_holdings_by_deviation(mkt_holdings, weights)
         under.sort(key=lambda x: x["dev"])
         over.sort(key=lambda x: -x["dev"])
@@ -54,16 +55,16 @@ class SectorRebalancerService:
 
     @classmethod
     def _try_sell_overweight_holding(
-        cls, h: dict, grp: str, dev: float,
+        cls, h, grp: str, dev: float,
         holdings: list, market_total: float, cash_balance: float, exchange_rate: float,
-        user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
+        user_id: str, macro: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
         """Attempt to sell 1 holding in overweight group. Returns (executed, skipped_entry, cash_delta)."""
-        ticker = h["ticker"]
+        ticker = h.ticker
         if not TradeExecutorService._check_market_hours(ticker):
             return False, {"ticker": ticker, "reason": "market_closed"}, 0.0
-        current_price = float(h.get("current_price") or 0)
-        buy_price     = float(h.get("buy_price") or 0)
+        current_price = float(h.current_price or 0)
+        buy_price     = float(h.buy_price or 0)
         profit_pct    = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
         if profit_pct < 0:
             return False, {"ticker": ticker, "reason": f"in_loss({profit_pct:.1f}%) rebalance_excluded"}, 0.0
@@ -74,7 +75,7 @@ class SectorRebalancerService:
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
         )
         if executed:
-            sell_val = current_price * max(1, int(h.get("quantity", 0) / 3))
+            sell_val = current_price * max(1, int(h.quantity / 3))
             cash_delta = sell_val * (exchange_rate if not is_kr(ticker) else 1.0)
             return True, None, cash_delta
         return False, None, 0.0
@@ -83,7 +84,7 @@ class SectorRebalancerService:
     def _execute_overweight_sells(
         cls, weights: dict, holdings: list,
         kr_total: float, us_total_krw: float, cash_balance: float, exchange_rate: float,
-        user_id: str, macro: dict, target_cash_kr: float, target_cash_us: float,
+        user_id: str, macro: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
         """STEP 1: Split sell overweight sector holdings -> (sells_executed, sold_list, skipped_list, updated_cash)"""
         overweight_groups = cls._get_overweight_groups(weights, TradeExecutorService.SECTOR_REBAL_THRESHOLD)
@@ -91,12 +92,12 @@ class SectorRebalancerService:
         for grp, info in overweight_groups:
             dev = info["dev"]
             grp_holdings = sorted(
-                [h for h in holdings if h.get("quantity", 0) > 0 and TradeExecutorService._get_sector_group(h["ticker"], h) == grp],
-                key=lambda h: (float(h.get("current_price") or 0) - float(h.get("buy_price") or 1)) / float(h.get("buy_price") or 1),
+                [h for h in holdings if h.quantity > 0 and TradeExecutorService._get_sector_group(h.ticker, h) == grp],
+                key=lambda h: (float(h.current_price or 0) - float(h.buy_price or 1)) / float(h.buy_price or 1),
                 reverse=True,
             )
             for h in grp_holdings:
-                market_total = kr_total if is_kr(h["ticker"]) else us_total_krw
+                market_total = kr_total if is_kr(h.ticker) else us_total_krw
                 executed, skip_entry, cash_delta = cls._try_sell_overweight_holding(
                     h, grp, dev, holdings, market_total, cash_balance, exchange_rate,
                     user_id, macro, target_cash_kr, target_cash_us,
@@ -107,7 +108,7 @@ class SectorRebalancerService:
                 if executed:
                     sells_executed += 1
                     cash_balance += cash_delta
-                    sold.append({"ticker": h["ticker"], "group": grp, "dev": round(dev, 4), "profit_pct": round((float(h.get("current_price") or 0) - float(h.get("buy_price") or 0)) / float(h.get("buy_price") or 1) * 100, 2)})
+                    sold.append({"ticker": h.ticker, "group": grp, "dev": round(dev, 4), "profit_pct": round((float(h.current_price or 0) - float(h.buy_price or 0)) / float(h.buy_price or 1) * 100, 2)})
                     break
         return sells_executed, sold, skipped, cash_balance
 
@@ -115,7 +116,7 @@ class SectorRebalancerService:
 
     @classmethod
     def _score_underweight_buy_candidates(
-        cls, grp: str, all_states: dict, holdings_map: dict, macro: dict, user_state: dict,
+        cls, grp: str, all_states: dict, holdings_map: dict, macro: MacroDataSnapshot, user_state: UserState,
         kr_total: float, us_total_krw: float, cash_balance: float, target_cash_kr: float, target_cash_us: float,
     ) -> list:
         """Return buy candidate list for given sector group, sorted by score ascending."""
@@ -166,7 +167,7 @@ class SectorRebalancerService:
     @classmethod
     def _execute_underweight_buys(
         cls, weights: dict, holdings: list, kr_total: float, us_total_krw: float,
-        cash_balance: float, exchange_rate: float, user_id: str, macro: dict,
+        cash_balance: float, exchange_rate: float, user_id: str, macro: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
     ) -> tuple:
         """STEP 2: Buy candidates for underweight sectors -> (buys_executed, bought_list, skipped_list)"""
@@ -176,8 +177,8 @@ class SectorRebalancerService:
             key=lambda x: x[1]["dev"],
         )
         all_states   = MarketDataService.get_all_states()
-        holdings_map = {h["ticker"]: h for h in holdings}
-        user_state   = {"user_id": user_id}
+        holdings_map = {h.ticker: h for h in holdings}
+        user_state   = UserState(user_id=user_id)
         bought, skipped, buys_executed = [], [], 0
         buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
         for grp, info in underweight_groups:
@@ -230,7 +231,7 @@ class SectorRebalancerService:
     @classmethod
     def _execute_rebalance_trades(
         cls, weights: dict, holdings: list, kr_total: float, us_total_krw: float, cash_balance: float,
-        exchange_rate: float, user_id: str, macro: dict,
+        exchange_rate: float, user_id: str, macro: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
     ) -> dict:
         """Execute overweight sells + underweight buys and return result dict (sold, bought, skipped)."""
@@ -260,7 +261,8 @@ class SectorRebalancerService:
         logger.info("🔄 Weekly sector rebalancing started...")
         exchange_rate = MacroService.get_exchange_rate()
         holdings      = PortfolioService.load_portfolio(user_id)
-        macro         = MacroService.get_macro_data()
+        raw_macro     = MacroService.get_macro_data()
+        macro         = MacroDataSnapshot(**{k: v for k, v in raw_macro.items() if k != "timestamp"})
         cash_balance  = PortfolioService.get_cash_balance(user_id) or 0.0
         kr_total, us_total_krw, target_cash_kr, target_cash_us = TradeExecutorService._calculate_total_assets(holdings, cash_balance, macro)
 

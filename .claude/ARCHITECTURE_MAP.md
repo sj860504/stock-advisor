@@ -73,10 +73,10 @@
 │   │   └── report_service.py            # 리포트 포맷팅
 │   ├── strategy/                        # ★ develop-1 리팩토링으로 분리됨
 │   │   ├── trading_strategy_service.py  # 오케스트레이터 (sub-service에 위임)
-│   │   ├── signal_service.py            # 점수 계산 + 신호 수집
+│   │   ├── signal_service.py            # 점수 계산 + 신호 수집 → list[SignalSchema]
 │   │   ├── position_service.py          # 신호 실행 (매수/매도/분할)
 │   │   ├── execution_service_v2.py      # 주문 실행, 비중 검사, 알림
-│   │   ├── sector_rebalancer_service.py # 섹터 리밸런싱 (매주 월요일)
+│   │   ├── asset_management_service.py  # 예산 관리자 (현금비중·매수예산 계산)
 │   │   ├── backtest_service.py          # 백테스트 (RSI 전략)
 │   │   └── simulation_service.py        # 전략 시뮬레이션
 │   └── trading/
@@ -84,6 +84,7 @@
 │       ├── order_service.py             # 주문 기록 & 이력
 │       └── portfolio_service.py         # 포트폴리오 동기화, 현금 관리
 ├── scripts/
+│   ├── migrate_trailing_high.py         # trailing high 마이그레이션 스크립트
 │   └── verify_kis_services.py           # KIS 서비스 검증 스크립트
 └── static/                              # 프론트엔드 대시보드 파일
 ```
@@ -98,7 +99,7 @@
 | 점수 계산 & 신호 수집 | `services/strategy/signal_service.py` ★ |
 | 주문 실행 & 비중 검사 | `services/strategy/execution_service_v2.py` ★ |
 | 신호 → 매매 실행 | `services/strategy/position_service.py` ★ |
-| 섹터 리밸런싱 | `services/strategy/sector_rebalancer_service.py` ★ |
+| 예산 관리자 | `services/strategy/asset_management_service.py` ★ |
 | KIS REST 저수준 | `services/kis/fetch/kis_fetcher.py` ★ |
 | In-Memory 가격 캐시 | `services/market/market_data_service.py` |
 | 시장 레짐 | `services/market/macro_service.py` |
@@ -115,20 +116,40 @@
 
 ```
 trading_strategy_service (오케스트레이터)
-  ├── signal_service          # 점수 계산, 신호 수집
-  │     └── execution_service_v2._execute_trade_v2()
-  ├── position_service        # 신호 실행 (분할매수, 익절, 손절)
-  │     └── execution_service_v2._execute_trade_v2()
-  ├── execution_service_v2    # 주문 조건 검증 + KIS 주문
-  │     ├── kis_service       # 실제 주문 전송
-  │     ├── portfolio_service # 보유 비중 계산
-  │     └── alert_service     # Slack 알림
-  └── sector_rebalancer_service # 섹터 리밸런싱
-        └── execution_service_v2._execute_trade_v2()
+  ├── _validate_preconditions() → MarketHourService
+  ├── _load_macro_and_assets() → MacroService.get_macro_data()
+  │     └── StockMetaRepo.get_30d_avg_regime_score()
+  ├── _load_and_sync_portfolio() → PortfolioService.sync_with_kis()
+  ├── _run_signals_and_execute()
+  │     ├── signal_service._collect_trading_signals()
+  │     │     ├── _determine_analysis_markets() → MarketHourService
+  │     │     ├── _apply_hard_gates() → _is_fear_market_exception()
+  │     │     └── calculate_score()
+  │     └── position_service._execute_collected_signals()
+  │           ├── _load_execution_config() → SettingsService
+  │           ├── _expire_split_orders()
+  │           ├── _process_single_signal()
+  │           │     ├── _handle_forced_sell() → execution_service_v2._execute_trade_v2()
+  │           │     ├── _handle_trailing_stop() → _handle_forced_sell()
+  │           │     ├── _handle_profit_take_signal() → execution_service_v2
+  │           │     └── _handle_score_trade() → execution_service_v2
+  │           └── _check_unmonitored_holdings()
+  └── _send_portfolio_report()
+        ├── _load_latest_portfolio() → PortfolioService
+        └── _filter_report_changes()
+
+execution_service_v2 (주문 실행)
+  ├── _execute_buy_order() → TradeResult(executed, spent_krw, spent_usd)
+  │     ├── _check_buy_cash_and_entry_conditions()
+  │     ├── _compute_buy_market_totals()
+  │     ├── _calculate_buy_quantity()
+  │     └── KisService.send_order() / send_overseas_order()
+  └── _execute_sell_order() → TradeResult
+        └── KisService.send_order() / send_overseas_order()
 
 market_data_service (In-Memory TickerState)
-  ├── kis_fetcher             # KIS REST 현재가 조회
-  └── kis_ws_service          # WebSocket 실시간 가격 수신
+  ├── kis_fetcher    # KIS REST 현재가 조회
+  └── kis_ws_service # WebSocket 실시간 가격 수신
 ```
 
 ---
@@ -150,13 +171,25 @@ market_data_service (In-Memory TickerState)
 - HIGH tier: WebSocket 실시간 (최대 20종목/시장)
 - LOW tier: 5분 폴링 (나머지)
 
+### 핵심 Pydantic 모델 (models/schemas.py)
+
+| 모델 | 필드 요약 | 사용처 |
+|------|-----------|--------|
+| `HoldingSchema` | ticker, name, quantity, buy_price, current_price, sector | `PortfolioService.load_portfolio()` 반환, 전략 전체 |
+| `MacroDataSnapshot` | us_10y_yield, market_regime, vix, fear_greed, indices, economic_indicators | 전략 실행 전 거시 스냅샷 |
+| `UserState` | user_id, panic_locks, sell_cooldown, add_buy_cooldown, split_orders, sell_split_orders, trailing_high | `_load_user_state()` 반환, 전략 상태 |
+| `SignalSchema` | ticker, state(TickerState), holding(HoldingSchema), score, reasons | `_collect_trading_signals()` 반환 |
+
+> **규칙**: `PortfolioService.load_portfolio()` → `List[HoldingSchema]`. 내부 CRUD(`apply_buy`, `apply_sell`)는 `PortfolioRepo.load_holdings()` raw dict 사용.
+
 ### 전략 상태 영속
 - `StrategyStateRepo`: user_id별 JSON 컬럼 (sell_cooldown, split_orders 등)
 - `StrategyState` ORM 모델 (`models/strategy_state.py`)
 
 ### 시장 레짐 (Regime)
 - Bull ≥ 65점, Bear ≤ 동적 임계값
-- 5개 컴포넌트: 기술(EMA200) + VIX + F&G + 경제지표 + 기타
+- 5개 컴포넌트 (COMPONENT_WEIGHTS: technical:20, vix:25, fng:20, econ:20, other:15) + 경제 국면 modifier(±15) + extreme_fear=True 시 Bear 강제 + 30일 평균 blending(현재 60% + 과거 40%)
+- EMA 비교: close.tail(20) 평균 거리 기준
 - `MacroService.get_macro_data()` → 1시간 캐시
 
 ### DEV_MODE / VTS
@@ -173,13 +206,18 @@ market_data_service (In-Memory TickerState)
 
 | 잡 | 주기 | 역할 |
 |----|------|------|
-| sync_daily_market | 매일 04:00 | Top100 시세/지표/DCF 동기화 |
+| sync_daily_market | 매일 04:00 | Top100 + 보유종목 시세/지표/DCF 동기화 |
+| manage_subscriptions | 매일 08:30 KST | WebSocket 구독 갱신 |
 | run_trading_strategy | 매 1분 | 전략 실행 루프 |
-| weekly_sector_rebalance | 매주 월 09:20 | 섹터 리밸런싱 |
+| kr_close_report | 매일 15:35 KST | KR 장마감 리포트 |
+| us_close_report | 매일 06:05 KST | US 장마감 리포트 |
+| report_daily_trade_history | 매일 09:00 KST | 일일 매매 내역 Slack 전송 |
+| run_rebalancing | 매일 09:10 KST | 포트폴리오 리밸런싱 (현재 pass) |
 | refresh_low_tier_prices | 매 5분 | LOW tier 가격 폴링 |
 | sync_portfolio_periodic | 매 10분 | 포트폴리오 동기화 |
+| econ_0830/0915/1000 | 08:31/09:16/10:01 ET | FRED 경제지표 발표 확인 |
 | vix_spike_check | 월-금 9:00-15:00 ET, 30분 | VIX 급등 감지 |
 
 ---
 
-**Last Updated**: 2026-03-12
+**Last Updated**: 2026-03-15
