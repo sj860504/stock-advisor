@@ -360,7 +360,39 @@ profit_pct ≤ STRATEGY_STOP_LOSS_PCT (-8%)
   → _execute_trade_v2(side="sell", forced_qty=holding.quantity) 호출
   → _execute_sell_order(forced_qty=holding_qty) → sell_qty = holding_qty (전량 즉시 매도)
   → split_orders / sell_split_orders 즉시 제거, 쿨다운 없음
+  → ✅ _set_panic_lock(ticker, user_state) → 재매수 3일 차단 (2026-03-16)
 ```
+
+### ✅ 손절 후 재매수 차단 (panic_lock) — 2026-03-16
+
+```
+손절 실행 성공 시:
+  → _set_panic_lock(ticker, user_state)
+  → panic_locks[ticker] = "2026-03-16" (당일 날짜)
+  → DB StrategyState에 영속
+
+다음 루프 calculate_score() 진입 시:
+  → ticker in panic_locks → score=50 반환 (중립, 매수/매도 트리거 안 됨)
+  → RSI < oversold_rsi(30)이면 → score=20 (강한 반등 시에만 재진입 허용)
+
+만료:
+  → _clear_expired_panic_locks(user_state, expire_days=3)
+  → 3일 경과 후 자동 해제
+  → _execute_collected_signals() 루프 시작 시 매번 호출
+```
+
+### 점수 범위 규칙
+
+| 점수 | 의미 |
+|------|------|
+| 0 | ❌ 사용 불가 (매수 차단 예약, 시스템 내부용) |
+| 1~30 | 매수 신호 (낮을수록 강한 매수) |
+| 31~69 | 중립 (홀드) |
+| 70~99 | 매도 신호 (높을수록 강한 매도) |
+| 100 | 강제 손절 (forced_sell) |
+
+> `max(1, min(100, score))` — 최소 1점, 0점은 no_price_data 등 비정상 상태 예약.
+> `no_price_data` 시 score=50(중립) 반환 — 가격 없는 종목 매수/매도 방지.
 
 ### 익절 (Take-Profit)
 

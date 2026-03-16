@@ -353,6 +353,7 @@ class PositionService:
         holdings: list, user_id: str, kr_total: float, us_total_krw: float, cash_balance: float,
         macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
         split_orders: dict = None, sell_split_orders: dict = None, trailing_high: dict = None,
+        user_state: UserState = None,
     ) -> tuple:
         """Process a single signal. Returns (executed: bool, ticker_or_None: Optional[str], spent_krw: float, spent_usd: float)."""
         u = cls._unpack_signal(sig, kr_total, us_total_krw)
@@ -360,7 +361,7 @@ class PositionService:
         return cls._route_signal(
             u, cfg, sell_cooldown, add_buy_cooldown, holdings, user_id,
             cash_balance, macro_data, target_cash_kr, target_cash_us,
-            split_orders, sell_split_orders, trailing_high,
+            split_orders, sell_split_orders, trailing_high, user_state=user_state,
         )
 
     @classmethod
@@ -378,6 +379,7 @@ class PositionService:
         holdings: list, user_id: str, cash_balance: float,
         macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
         split_orders: dict = None, sell_split_orders: dict = None, trailing_high: dict = None,
+        user_state: UserState = None,
     ) -> tuple:
         """강제매도/트레일링/익절/추매/점수매매 분기 라우터. (executed, ticker_or_None, spent_krw, spent_usd) 반환."""
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
@@ -389,6 +391,8 @@ class PositionService:
                 getattr(u.state, 'current_price', 0), u.market_total,
                 cash_balance, cfg.exchange_rate, **common_kwargs,
             )
+            if result.executed and user_state:
+                cls._set_panic_lock(u.ticker, user_state)
             return result.executed, u.ticker if result.executed else None, 0.0, 0.0
         current_price = getattr(u.state, 'current_price', 0)
         th = trailing_high if trailing_high is not None else {}
@@ -450,6 +454,25 @@ class PositionService:
             holdings=holdings, user_id=user_id, macro_data=macro_data,
             target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
         )
+
+    # ── Panic Lock (손절 후 재매수 차단) ─────────────────────────────────────────
+
+    @staticmethod
+    def _set_panic_lock(ticker: str, user_state: UserState) -> None:
+        """손절 실행된 종목을 panic_locks에 등록하여 재매수 차단."""
+        from datetime import datetime
+        user_state.panic_locks[ticker] = datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"🔒 {ticker} panic_lock 설정 (손절 후 재매수 차단)")
+
+    @staticmethod
+    def _clear_expired_panic_locks(user_state: UserState, expire_days: int = 3) -> None:
+        """만료된 panic_locks 제거. 기본 3일 후 해제."""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=expire_days)).strftime("%Y-%m-%d")
+        expired = [t for t, d in user_state.panic_locks.items() if d <= cutoff]
+        for t in expired:
+            user_state.panic_locks.pop(t, None)
+            logger.info(f"🔓 {t} panic_lock 해제 ({expire_days}일 경과)")
 
     # ── Forced Sell (Stop-Loss) ────────────────────────────────────────────────
 
@@ -614,6 +637,7 @@ class PositionService:
         executed_tickers = set()
 
         cls._expire_split_orders(split_orders)
+        cls._clear_expired_panic_locks(user_state)
         prepared_signals = cls._sort_signals_by_priority(prepared_signals, split_orders)
 
         for sig in prepared_signals:
@@ -622,7 +646,7 @@ class PositionService:
                 holdings, user_id, kr_total, us_total_krw, cash_balance,
                 macro_data, target_cash_kr, target_cash_us,
                 split_orders=split_orders, sell_split_orders=sell_split_orders,
-                trailing_high=trailing_high,
+                trailing_high=trailing_high, user_state=user_state,
             )
             if sig_executed and sig_ticker:
                 executed_tickers.add(sig_ticker)

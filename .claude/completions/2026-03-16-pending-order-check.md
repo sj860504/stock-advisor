@@ -199,6 +199,22 @@ run_strategy() 시작
 🔵005930 10주 @₩72,000 (10:04:34)  🔴AAPL 5주 @$185.20 (10:05:26)
 ```
 
+### 4-6. 손절 후 재매수 차단 (panic_lock) + 점수 범위 수정
+
+**문제**: 손절 실행 후 해당 종목이 다음 루프에서 신규 매수 후보로 재진입 (DCF 저평가 + 공포장으로 score가 낮게 계산)
+
+**수정**:
+
+| 파일 | 변경 |
+|------|------|
+| `services/strategy/position_service.py` | `_set_panic_lock()`, `_clear_expired_panic_locks()` 추가. `_route_signal()`에서 forced_sell 성공 시 호출. `_execute_collected_signals()`에서 만료 정리 |
+| `services/strategy/signal_service.py` | score 최소값 `max(0,...)` → `max(1,...)`. `no_price_data` 시 score=0 → score=50 |
+
+**동작**:
+- 손절 성공 → `panic_locks[ticker] = 당일 날짜` (DB 영속)
+- `calculate_score()` 진입 시 panic_lock 확인 → score=50(중립) 반환, 매수 트리거 안 됨
+- 3일 후 자동 해제 (`_clear_expired_panic_locks`)
+
 ---
 
 ## 5. 향후 고려사항

@@ -259,7 +259,7 @@ class SignalService:
     def calculate_score(cls, ticker: str, state, holding, macro: MacroDataSnapshot, user_state: UserState, cash_balance: float, market_cash_ratio: float = None, market_total_krw: float = 0.0) -> tuple:
         """Calculate individual stock investment score (integrates [A]~[G] helpers)."""
         curr_price = state.current_price
-        if curr_price <= 0: return 0, ["no_price_data"], {}
+        if curr_price <= 0: return 50, ["no_price_data"], {}
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         cash_ratio = cash_balance / market_total_krw if market_total_krw > 0 else 0
         panic_locks = user_state.panic_locks
@@ -276,7 +276,7 @@ class SignalService:
         if cash_ratio < target_cash_ratio and score > 50:
             score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("cash_shortage")
             breakdown["cash_penalty"] = TradeExecutorService.WEIGHTS['CASH_PENALTY']
-        return max(0, min(100, score)), reasons, breakdown
+        return max(1, min(100, score)), reasons, breakdown
 
     # ── Analysis Interface ───────────────────────────────────────────────────────
 

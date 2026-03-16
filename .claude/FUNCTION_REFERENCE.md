@@ -428,7 +428,9 @@
 | `_expire_split_orders(split_orders)` | dict | None | STRATEGY_SPLIT_EXPIRE_DAYS(기본5) 초과 항목 제거. `pop(t, None)` 사용 (KeyError 방지) |
 | `_deduct_loop_cash(ticker, spent_krw, spent_usd, cash_balance, usd_cash)` | str, float, float, float, float | tuple[float, float] | KR 매수 시 cash_balance 차감, US 매수 시 usd_cash 차감. 순수 함수 |
 | `_unpack_signal(sig, kr_total, us_total_krw)` | SignalSchema, float, float | UnpackedSignal | sig 정형화. forced_sell=stop_loss_hit, profit_pct, market_total 계산. 순수 함수 |
-| `_handle_forced_sell(ticker, holding, profit_pct, current_price, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)` | str, HoldingSchema, float, float, float, float, float, list, str, MacroDataSnapshot, float, float | TradeResult | _execute_trade_v2(side="sell", forced_qty=holding.quantity) 호출. 전량 즉시 매도. 쿨다운 없음 |
+| `_set_panic_lock(ticker, user_state)` | str, UserState | None | 손절 종목 panic_locks에 등록 (당일 날짜). 재매수 3일 차단 ★ |
+| `_clear_expired_panic_locks(user_state, expire_days)` | UserState, int=3 | None | 만료된 panic_locks 자동 해제. 루프 시작 시 호출 ★ |
+| `_handle_forced_sell(ticker, holding, profit_pct, current_price, market_total, cash_balance, exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us)` | str, HoldingSchema, float, float, float, float, float, list, str, MacroDataSnapshot, float, float | TradeResult | _execute_trade_v2(side="sell", forced_qty=holding.quantity) 호출. 전량 즉시 매도. 성공 시 _set_panic_lock() ★ |
 | `_get_trailing_stop_pct(macro_data)` | MacroDataSnapshot | float | BULL→-7.0 / NEUTRAL/BEAR→-5.0 |
 | `_update_trailing_high(ticker, price, trailing_high)` | str, float, dict | None | trailing_high[ticker] = max(기존값, price). 순수 함수 |
 | `_handle_trailing_stop(ticker, holding, current_price, trailing_high, macro_data, market_total, cash_balance, exchange_rate, holdings, user_id, target_cash_kr, target_cash_us)` | str, HoldingSchema, float, dict, MacroDataSnapshot, float, float, float, list, str, float, float | Optional[TradeResult] | drawdown = (current - high) / high × 100. drawdown <= threshold 시 _handle_forced_sell() 호출. None if not triggered |
