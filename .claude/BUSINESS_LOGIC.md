@@ -301,6 +301,21 @@ _handle_profit_take_signal() 및 _handle_sell_signal() 공통:
 현재는 `_calculate_committed_cash`를 호출하지 않으며, 현금은 실제 잔고 원본 그대로 사용.
 현금 부족 시 split tranche는 `qty=0`으로 자연스럽게 실패 후 다음날 재시도.
 
+### ✅ 미체결 주문 관리 (2026-03-16)
+
+```
+주문 접수 (KIS "success")
+  ├─ 현금: 즉시 차감 (KIS 예수금 잠금과 동일)
+  ├─ DB: trade_history에 status='pending' 기록
+  └─ 프론트: 잔고 카드에 "미체결 자산" 섹션 표시
+
+다음 루프 시작 시:
+  ├─ _verify_pending_orders() → KIS 미체결 API로 체결 확인
+  │    ├─ 체결 완료 → status='filled'
+  │    └─ 미체결 유지 → pending 유지
+  └─ _place_and_record() → 동일 종목+방향 pending 있으면 스킵
+```
+
 ### 매수 수량 점수 승수
 
 ```python

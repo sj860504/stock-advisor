@@ -70,14 +70,49 @@ async def get_balance() -> Dict[str, Any]:
             analysis.get("us", {}).get("cash_krw", 0)
         )
         
+        from repositories.trade_history_repo import TradeHistoryRepo
+        from utils.market import is_kr as _is_kr
+        pending_trades = TradeHistoryRepo.get_pending_orders()
+        pending_list = []
+        pending_buy_krw = 0.0
+        pending_buy_usd = 0.0
+        pending_sell_krw = 0.0
+        pending_sell_usd = 0.0
+        for t in pending_trades:
+            amt = t.quantity * t.price
+            is_kr_ticker = _is_kr(t.ticker)
+            if t.order_type == "buy":
+                if is_kr_ticker:
+                    pending_buy_krw += amt
+                else:
+                    pending_buy_usd += amt
+            else:
+                if is_kr_ticker:
+                    pending_sell_krw += amt
+                else:
+                    pending_sell_usd += amt
+            pending_list.append({
+                "id": t.id, "ticker": t.ticker, "order_type": t.order_type,
+                "quantity": t.quantity, "price": t.price,
+                "timestamp": t.timestamp.strftime("%H:%M:%S") if t.timestamp else "",
+            })
+
         return {
             "total_eval": total_eval,
             "cash_kr": analysis.get("kr", {}).get("cash", 0),
             "cash_us": analysis.get("us", {}).get("cash_usd", 0),
             "profit_loss": analysis.get("summary", {}).get("profit", 0),
-            "holdings": analysis.get("holdings", []), # Unified holdings with profit_pct
+            "holdings": analysis.get("holdings", []),
             "analysis": analysis,
-            "summary": kis_balance.get("summary", [])
+            "summary": kis_balance.get("summary", []),
+            "pending": {
+                "orders": pending_list,
+                "buy_krw": pending_buy_krw,
+                "buy_usd": pending_buy_usd,
+                "sell_krw": pending_sell_krw,
+                "sell_usd": pending_sell_usd,
+                "count": len(pending_list),
+            },
         }
     except Exception as e:
         logger.error(f"Error fetching balance: {e}")

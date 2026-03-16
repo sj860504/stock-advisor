@@ -179,13 +179,32 @@ run_strategy() 시작
 | `routers/portfolio.py` | `full-report` 반환 구조 `{holdings, exchange_rate}` |
 | `static/index.html` | `fetchPortfolioFull()` 환율 적용 + US 달러/원화 동시 표시 |
 
+### 4-5. 미체결 자산 표시 (잔고 카드)
+
+**설계 결정**: 매수 주문 접수 시 현금은 즉시 차감 (KIS가 예수금 잠금하므로 실제와 일치). 미체결 주문은 별도 섹션으로 표시.
+
+**수정**:
+- `/trading/balance` 응답에 `pending` 필드 추가: `{orders, buy_krw, buy_usd, sell_krw, sell_usd, count}`
+- 프론트 잔고 카드에 미체결 섹션 표시 (주황색 박스, 종목별 매수/매도 상세)
+- 미체결 없으면 해당 섹션 숨김
+
+| 파일 | 변경 |
+|------|------|
+| `routers/trading.py` | `/trading/balance` 응답에 `pending` 데이터 추가 |
+| `static/index.html` | `renderBalanceContent()`에 미체결 표시 UI 추가 |
+
+**표시 예시**:
+```
+⏳ 미체결 3건 (매수 ₩1,500,000 / 매도 $1,200.00)
+🔵005930 10주 @₩72,000 (10:04:34)  🔴AAPL 5주 @$185.20 (10:05:26)
+```
+
 ---
 
 ## 5. 향후 고려사항
 
 - **미체결 주문 자동 취소**: 일정 시간 경과 후 미체결 주문을 KIS API로 취소하는 기능 (현재 미구현)
 - **장 종료 후 정리**: 장 마감 시 미체결 주문 일괄 취소 + DB 정리
-- **프론트엔드 표시**: 미체결 주문 목록을 대시보드에 표시하는 UI
 
 ---
 

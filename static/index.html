@@ -1887,6 +1887,35 @@
             const cashPct = dispTotal > 0 ? (dispCash / dispTotal * 100) : 0;
             const stockPct = dispTotal > 0 ? (dispStock / dispTotal * 100) : 0;
 
+            const pending = data.pending || {};
+            const pendingCount = pending.count || 0;
+            const pendingOrders = pending.orders || [];
+
+            let pendingHtml = '';
+            if (pendingCount > 0) {
+                const pendingBuyKrw = pending.buy_krw || 0;
+                const pendingBuyUsd = pending.buy_usd || 0;
+                const pendingSellKrw = pending.sell_krw || 0;
+                const pendingSellUsd = pending.sell_usd || 0;
+                let pendingItems = pendingOrders.map(o => {
+                    const isKrT = /^\d{6}$/.test(o.ticker);
+                    const priceStr = isKrT ? `₩${Math.round(o.price).toLocaleString()}` : `$${o.price.toFixed(2)}`;
+                    const icon = o.order_type === 'buy' ? '🔵' : '🔴';
+                    return `<span style="margin-right:8px">${icon}${o.ticker} ${o.quantity}주 @${priceStr} (${o.timestamp})</span>`;
+                }).join('');
+                let pendingSummary = [];
+                if (pendingBuyKrw > 0) pendingSummary.push(`매수 ₩${Math.round(pendingBuyKrw).toLocaleString()}`);
+                if (pendingBuyUsd > 0) pendingSummary.push(`매수 $${pendingBuyUsd.toFixed(2)}`);
+                if (pendingSellKrw > 0) pendingSummary.push(`매도 ₩${Math.round(pendingSellKrw).toLocaleString()}`);
+                if (pendingSellUsd > 0) pendingSummary.push(`매도 $${pendingSellUsd.toFixed(2)}`);
+                pendingHtml = `
+                    <div style="background:var(--card-bg);border:1px solid #f0ad4e;border-radius:6px;padding:6px 12px;margin:4px 0;font-size:0.82rem;">
+                        <div style="color:#f0ad4e;font-weight:bold;margin-bottom:4px;">⏳ 미체결 ${pendingCount}건 (${pendingSummary.join(' / ')})</div>
+                        <div style="color:var(--sub);line-height:1.6;">${pendingItems}</div>
+                    </div>
+                `;
+            }
+
             const summaryHtml = `
                 <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin:10px 0;font-size:0.85rem;display:flex;justify-content:space-around;">
                     <div style="text-align:center;"><div style="color:var(--sub);margin-bottom:2px;">전체자산</div><b>${dispTotalStr}</b> <span style="font-size:0.8rem">${badge(dispRet)}</span></div>
@@ -1895,6 +1924,7 @@
                     <div style="width:1px;background:var(--border);"></div>
                     <div style="text-align:center;"><div style="color:var(--sub);margin-bottom:2px;">보유주식</div><b>${dispStockStr}</b> <span style="font-size:0.8rem;color:var(--sub)">(${fmtPct(stockPct, false)})</span></div>
                 </div>
+                ${pendingHtml}
             `;
 
             el.innerHTML = summaryHtml;
