@@ -298,6 +298,21 @@ class TradingStrategyService:
         return macro_snapshot, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us
 
     @classmethod
+    def _verify_pending_orders(cls) -> None:
+        """DB의 pending 주문을 KIS 미체결 API로 확인하여 체결 상태 갱신."""
+        try:
+            results = OrderService.verify_and_update_pending_orders()
+            if results:
+                filled = [r for r in results if r.is_filled]
+                pending = [r for r in results if not r.is_filled]
+                if filled:
+                    logger.info(f"✅ 체결 확인: {', '.join(r.ticker for r in filled)}")
+                if pending:
+                    logger.info(f"⏳ 미체결 대기: {', '.join(f'{r.ticker}({r.remaining_qty}주)' for r in pending)}")
+        except Exception as e:
+            logger.warning(f"⚠️ 미체결 확인 실패 (무시하고 계속): {e}")
+
+    @classmethod
     def _load_user_state(cls, user_id: str) -> tuple[dict, UserState]:
         """Load and initialize user strategy state.
         Returns (state, user_state)."""
@@ -333,6 +348,7 @@ class TradingStrategyService:
         markets = (["KR"] if is_kr_open else []) + (["US"] if is_us_open else [])
         logger.info(f"🚀 Running Trading Strategy for {user_id} (markets: {', '.join(markets)})...")
 
+        cls._verify_pending_orders()
         cls._update_target_universe(user_id, run_kr=is_kr_open, run_us=is_us_open)
 
         holdings, kr_cash, usd_cash, before_snapshot = cls._load_and_sync_portfolio(user_id)

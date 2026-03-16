@@ -394,7 +394,7 @@ class PositionService:
         th = trailing_high if trailing_high is not None else {}
         cls._update_trailing_high(u.ticker, current_price, th)
         trail_result = cls._handle_trailing_stop(
-            u.ticker, u.holding, current_price, th, macro_data,
+            u.ticker, u.holding, current_price, th,
             u.market_total, cash_balance, cfg.exchange_rate, **common_kwargs,
         )
         if trail_result and trail_result.executed:
@@ -425,9 +425,10 @@ class PositionService:
     @classmethod
     def _handle_trailing_stop(
         cls, ticker: str, holding: HoldingSchema, current_price: float,
-        trailing_high: dict, macro_data: MacroDataSnapshot,
+        trailing_high: dict,
         market_total: float, cash_balance: float, exchange_rate: float,
-        holdings: list, user_id: str, target_cash_kr: float, target_cash_us: float,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot = None,
+        target_cash_kr: float = 0.0, target_cash_us: float = 0.0,
     ) -> Optional[TradeResult]:
         """고점 대비 drawdown이 레짐별 임계값 초과 시 전량 즉시 매도.
         Returns TradeResult if triggered, None if not applicable."""

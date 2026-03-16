@@ -121,6 +121,9 @@
 | `get_overseas_ranking(excd)` | str="NAS" | dict | 해외 시가총액 순위 via KisFetcher | 없음 |
 | `get_domestic_trade_history(start_date, end_date)` | str, str | list | KIS API 국내 체결조회. TR ID DB 조회 → `_paginate_trade_history` 위임 | 없음 |
 | `get_overseas_trade_history(start_date, end_date)` | str, str | list | KIS API 해외 체결조회. TR ID DB 조회 → `_paginate_trade_history` 위임 | 없음 |
+| `get_unfilled_orders_kr()` | - | UnfilledOrdersResult | 국내 미체결 주문 조회 (CCLD_DVSN=02). `_fetch_unfilled_orders` 위임 ★ | 없음 |
+| `get_unfilled_orders_us()` | - | UnfilledOrdersResult | 해외 미체결 주문 조회 (CCLD_NCCS_DVSN=01). `_fetch_unfilled_orders` 위임 ★ | 없음 |
+| `_fetch_unfilled_orders(url, tr_id, params, output_key, ctx_suffix, market)` | str, str, dict, str, str, str | UnfilledOrdersResult | 미체결 조회 공통 헬퍼. `_paginate_trade_history` 재사용 → UnfilledOrder 파싱 ★ | 없음 |
 | `_paginate_trade_history(url, tr_id, params, output_key, ctx_suffix, description)` | str, str, dict, str, str, str | list | 공통 페이지루프 헬퍼. tr_cont 기반 최대10페이지, ctx_area 갱신, output_key 누적 | 없음 |
 
 ---
@@ -502,7 +505,7 @@
 | `get_last_balance_summary()` | - | dict | _last_balance_summary 반환 | 메모리읽기 |
 | `get_usd_cash_balance(overseas_balance)` | Optional[dict]=None | float | KIS 가용현금 API → 해외잔고 역산 → SettingsService 순 폴백 | 없음 |
 | `analyze_portfolio(user_id, price_cache)` | str, dict | dict | 한국/미국 수익률 분리 분석 + 환율 적용 | 없음 |
-| `build_full_report(user_id, price_cache)` | str, dict | list | 보유 종목 전체 상세 분석 (수익률 내림차순) | 없음 |
+| `build_full_report(user_id, price_cache)` | str, dict | list | 보유 종목 전체 상세 분석 (수익률 내림차순). API 반환 시 `{holdings, exchange_rate}` 래핑 ★ | 없음 |
 | `add_holding_manual(user_id, ticker, quantity, buy_price, name)` | str, str, float, float, Optional[str]=None | list | 수동 추가 (평단가 계산 포함) | 없음 |
 | `apply_buy(holdings, ticker, quantity, price)` | list, str, float, float | list | 기존 보유 시 평단가 재계산, 없으면 신규 추가 | 없음 |
 | `apply_sell(holdings, ticker, quantity)` | list, str, float | list | 수량 차감 후 0 이하이면 제거 (잔고부족→ValueError) | 없음 |
@@ -531,7 +534,9 @@
 |------|---------|------|-----------|
 | `sell_single_holding(ticker, name, qty, price)` | str, str, int, float | Tuple[bool, str] | is_kr로 국내/해외 분기 → KIS send_order |
 | `execute_mass_sell(holdings)` | list | Tuple[int, int, list] | 전 보유 종목 매도 (성공수, 실패수, 실패티커) |
-| `record_trade(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price)` | str, str, int, float, str, str="manual", Optional[float]=None | Optional[TradeHistory] | TradeHistoryRepo.record 래퍼 |
+| `record_trade(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price, status)` | str, str, int, float, str, str="manual", Optional[float]=None, str="pending" | Optional[TradeHistory] | TradeHistoryRepo.record 래퍼. 기본 status='pending' |
+| `verify_and_update_pending_orders()` | - | List[OrderVerificationResult] | DB pending → KIS 미체결 API 확인 → filled/pending 갱신 ★ |
+| `has_pending_order(ticker, order_type)` | str, str=None | bool | DB에 해당 종목/방향의 pending 주문 존재 여부 ★ |
 | `get_trade_history(limit, market, date)` | int=50, Optional[str]=None, Optional[str]=None | List[TradeRecordDto] | TradeHistoryRepo.query + _to_dto 변환 |
 | `get_trade_history_by_date_range(start_dt, end_dt)` | datetime, datetime | List[TradeRecordDto] | TradeHistoryRepo.query_by_date_range + 변환 |
 | `_to_dto(record, holdings_map)` | TradeHistory, dict | TradeRecordDto | 엔티티→DTO 변환 (손익=(매도가-평단가)×수량) |

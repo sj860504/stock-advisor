@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime
 from datetime import datetime
 from .stock_meta import Base
 
+
 class TradeHistory(Base):
     """
     Trade history model.
@@ -17,6 +18,7 @@ class TradeHistory(Base):
     result_msg = Column(String(255))
     timestamp = Column(DateTime, default=datetime.now)
     strategy_name = Column(String(50), default="manual")  # 'manual', 'rsi_strategy', etc.
+    status = Column(String(20), nullable=False, default="filled")  # 'pending' or 'filled'
 
     def __repr__(self):
-        return f"<TradeHistory(ticker='{self.ticker}', type='{self.order_type}', qty={self.quantity}, price={self.price})>"
+        return f"<TradeHistory(ticker='{self.ticker}', type='{self.order_type}', qty={self.quantity}, price={self.price}, status='{self.status}')>"

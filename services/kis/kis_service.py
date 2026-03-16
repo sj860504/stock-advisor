@@ -730,3 +730,95 @@ class KisService:
             "CTX_AREA_FK200": ""
         }
         return cls._paginate_trade_history(url, tr_id, params, output_key="output", ctx_suffix="200", description="overseas")
+
+    # ── Unfilled Order Query ─────────────────────────────────────────────────
+
+    @classmethod
+    def get_unfilled_orders_kr(cls) -> "UnfilledOrdersResult":
+        """국내 미체결 주문 조회. CCLD_DVSN=02(미체결)로 당일 미체결 조회."""
+        from services.market.stock_meta_service import StockMetaService
+        from models.schemas import UnfilledOrder, UnfilledOrdersResult
+
+        tr_id, path = StockMetaService.get_api_info("국내주식_미체결조회")
+        if not tr_id or not path:
+            return UnfilledOrdersResult(error="국내주식_미체결조회 TR 정보 없음")
+
+        url = f"{Config.KIS_BASE_URL}{path}"
+        cano, acnt_prdt_cd = cls._get_account_parts()
+        today = datetime.now().strftime("%Y%m%d")
+        params = {
+            "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
+            "INQR_STRT_DT": today, "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00", "INQR_DVSN": "00",
+            "PDNO": "", "CCLD_DVSN": "02",
+            "ORD_GNO_BRNO": "", "ODNO": "",
+            "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
+            "EXCG_ID_DVSN_CD": "KRX",
+            "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+        }
+        return cls._fetch_unfilled_orders(url, tr_id, params, "output1", "100", "KR")
+
+    @classmethod
+    def get_unfilled_orders_us(cls) -> "UnfilledOrdersResult":
+        """해외 미체결 주문 조회."""
+        from services.market.stock_meta_service import StockMetaService
+        from models.schemas import UnfilledOrder, UnfilledOrdersResult
+
+        tr_id, path = StockMetaService.get_api_info("해외주식_미체결조회")
+        if not tr_id or not path:
+            return UnfilledOrdersResult(error="해외주식_미체결조회 TR 정보 없음")
+
+        url = f"{Config.KIS_BASE_URL}{path}"
+        cano, acnt_prdt_cd = cls._get_account_parts()
+        today = datetime.now().strftime("%Y%m%d")
+        params = {
+            "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": "NASD", "PDNO": "%",
+            "ORD_STRT_DT": today, "ORD_END_DT": today,
+            "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "01",
+            "ORD_DT": "", "ORD_GNO_BRNO": "", "ODNO": "",
+            "SORT_SQN": "",
+            "CTX_AREA_NK200": "", "CTX_AREA_FK200": "",
+        }
+        return cls._fetch_unfilled_orders(url, tr_id, params, "output", "200", "US")
+
+    @classmethod
+    def _fetch_unfilled_orders(
+        cls, url: str, tr_id: str, params: dict,
+        output_key: str, ctx_suffix: str, market: str,
+    ) -> "UnfilledOrdersResult":
+        """미체결 조회 공통 헬퍼. KR/US 모두 동일 패턴."""
+        from models.schemas import UnfilledOrder, UnfilledOrdersResult
+
+        orders: list[UnfilledOrder] = []
+        try:
+            raw_records = cls._paginate_trade_history(
+                url, tr_id, params, output_key, ctx_suffix,
+                description=f"{market} unfilled orders",
+            )
+            for item in raw_records:
+                ticker = str(
+                    item.get("pdno") or item.get("ovrs_pdno") or ""
+                ).strip().upper()
+                if not ticker:
+                    continue
+                rmn = int(float(item.get("rmn_qty") or item.get("nccs_qty") or 0))
+                if rmn <= 0:
+                    continue
+                sll_buy = item.get("sll_buy_dvsn_cd", "")
+                order_type = "sell" if sll_buy == "01" else "buy"
+                orders.append(UnfilledOrder(
+                    ticker=ticker,
+                    order_type=order_type,
+                    order_qty=int(float(item.get("ord_qty") or item.get("ft_ord_qty") or 0)),
+                    filled_qty=int(float(item.get("tot_ccld_qty") or item.get("ft_ccld_qty") or 0)),
+                    remaining_qty=rmn,
+                    order_price=float(item.get("ord_unpr") or item.get("ft_ord_unpr3") or 0),
+                    order_date=item.get("ord_dt", ""),
+                    order_time=item.get("ord_tmd", ""),
+                ))
+            logger.info(f"📋 [{market}] 미체결 조회: {len(orders)}건")
+        except Exception as e:
+            logger.error(f"❌ [{market}] 미체결 조회 실패: {e}")
+            return UnfilledOrdersResult(error=f"{market} 미체결 조회 실패: {str(e)}")
+        return UnfilledOrdersResult(orders=orders)

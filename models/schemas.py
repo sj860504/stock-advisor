@@ -89,6 +89,50 @@ class TradeResult(BaseModel):
         return cls(executed=False)
 
 
+class UnfilledOrder(BaseModel):
+    """KIS 미체결 주문 1건."""
+    ticker: str
+    order_type: str  # 'buy' or 'sell'
+    order_qty: int = 0
+    filled_qty: int = 0
+    remaining_qty: int = 0
+    order_price: float = 0.0
+    order_date: str = ""
+    order_time: str = ""
+
+
+class UnfilledOrdersResult(BaseModel):
+    """KIS 미체결 조회 결과."""
+    orders: List[UnfilledOrder] = Field(default_factory=list)
+    error: Optional[str] = None
+
+    def has_pending(self, ticker: str, order_type: str = None) -> bool:
+        """특정 종목에 미체결 주문이 있는지 확인."""
+        for o in self.orders:
+            if o.ticker == ticker and o.remaining_qty > 0:
+                if order_type is None or o.order_type == order_type:
+                    return True
+        return False
+
+    def pending_qty(self, ticker: str, order_type: str = None) -> int:
+        """특정 종목의 미체결 잔여수량 합계."""
+        total = 0
+        for o in self.orders:
+            if o.ticker == ticker and o.remaining_qty > 0:
+                if order_type is None or o.order_type == order_type:
+                    total += o.remaining_qty
+        return total
+
+
+class OrderVerificationResult(BaseModel):
+    """주문 체결 확인 결과."""
+    ticker: str
+    order_type: str
+    is_filled: bool
+    remaining_qty: int = 0
+    message: str = ""
+
+
 class StockRequest(BaseModel):
     ticker: str
     market: str = "KRX"  # KRX, NASDAQ, etc.

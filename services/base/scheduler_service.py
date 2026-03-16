@@ -283,7 +283,11 @@ class SchedulerService:
 
             summary = PortfolioService.get_last_balance_summary()
             cash = PortfolioService.load_cash('sean')
-            portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
+            is_kr_open = MarketHourService.is_kr_market_open()
+            is_us_open = MarketHourService.is_us_market_open()
+            portfolio_msg = ReportService.format_portfolio_report(
+                portfolio, cash, all_states, summary, show_kr=is_kr_open, show_us=is_us_open,
+            )
             AlertService.send_slack_alert(portfolio_msg)
             logger.info("📤 Hourly portfolio report sent to Slack.")
         except Exception as e:
@@ -291,7 +295,8 @@ class SchedulerService:
 
     @classmethod
     def send_market_close_report(cls) -> None:
-        """Market close portfolio report (KR 15:35 KST, US 06:05 KST)."""
+        """Market close portfolio report (KR 15:35 KST, US 06:05 KST).
+        Always shows the closing market's section."""
         logger.info("📊 Generating market close portfolio report...")
         try:
             PortfolioService.sync_with_kis('sean')
@@ -301,7 +306,11 @@ class SchedulerService:
             from services.notification.report_service import ReportService
             summary = PortfolioService.get_last_balance_summary()
             cash = PortfolioService.load_cash('sean')
-            portfolio_msg = ReportService.format_portfolio_report(portfolio, cash, all_states, summary)
+            is_kr_open = MarketHourService.is_kr_market_open()
+            is_us_open = MarketHourService.is_us_market_open()
+            portfolio_msg = ReportService.format_portfolio_report(
+                portfolio, cash, all_states, summary, show_kr=is_kr_open, show_us=is_us_open,
+            )
             AlertService.send_slack_alert(portfolio_msg)
             logger.info("📤 Market close portfolio report sent to Slack.")
         except Exception as e:

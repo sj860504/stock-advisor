@@ -152,9 +152,11 @@ class StockMetaService:
             {"category": "해외주식", "api_name": "해외주식_잔고조회_종합", "tr_id_real": "TTTT3012R", "tr_id_vts": "VTTT3012R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-balance"},
             {"category": "해외주식", "api_name": "해외주식_가용현금조회", "tr_id_real": "TTTS3007R", "tr_id_vts": "VTTS3007R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-present-balance"},
 
-            # 3. Trade history
-            {"category": "국내주식", "api_name": "국내주식_체결조회", "tr_id_real": "TTTC8001R", "tr_id_vts": "VTTC8001R", "api_path": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"},
+            # 3. Trade history / unfilled order query
+            {"category": "국내주식", "api_name": "국내주식_체결조회", "tr_id_real": "TTTC0081R", "tr_id_vts": "VTTC0081R", "api_path": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"},
             {"category": "해외주식", "api_name": "해외주식_체결조회", "tr_id_real": "JTTT3001R", "tr_id_vts": "VTTT3001R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-ccnl"},
+            {"category": "국내주식", "api_name": "국내주식_미체결조회", "tr_id_real": "TTTC0081R", "tr_id_vts": "VTTC0081R", "api_path": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"},
+            {"category": "해외주식", "api_name": "해외주식_미체결조회", "tr_id_real": "JTTT3001R", "tr_id_vts": "VTTT3001R", "api_path": "/uapi/overseas-stock/v1/trading/inquire-ccnl"},
 
             # 4. Common/auth
             {"category": "공통", "api_name": "접근토큰발급", "tr_id_real": "tokenP", "tr_id_vts": "tokenP", "api_path": "/oauth2/tokenP"},

@@ -258,8 +258,11 @@ class ReportService:
         return lines
 
     @staticmethod
-    def format_portfolio_report(holdings: List[HoldingSchema], cash: float, states: dict = None, summary: dict = None) -> str:
-        """Portfolio status report — displays KRW/foreign currency assets separately."""
+    def format_portfolio_report(
+        holdings: List[HoldingSchema], cash: float, states: dict = None, summary: dict = None,
+        show_kr: bool = True, show_us: bool = True,
+    ) -> str:
+        """Portfolio status report — displays open market assets only."""
         t = ReportService._compute_portfolio_totals(holdings, cash, summary)
 
         lines = [
@@ -270,15 +273,17 @@ class ReportService:
 
         lines.extend(ReportService._format_kis_summary_lines(t, summary))
 
-        lines.extend(ReportService._format_kr_section(
-            t['kr_holdings'], t['kr_stock_val'], t['kr_invested'], t['kr_profit'], t['kr_profit_pct'],
-            t['cash_krw'], t['kr_total_krw'], t['kr_ratio'], states
-        ))
-        lines.extend(ReportService._format_us_section(
-            t['us_holdings'], t['us_stock_usd'], t['us_invested_usd'], t['us_profit_usd'], t['us_profit_pct'],
-            t['usd_cash'], t['usd_cash_krw'], t['us_total_usd'], t['us_total_krw'], t['us_ratio'],
-            t['exchange_rate'], states
-        ))
+        if show_kr:
+            lines.extend(ReportService._format_kr_section(
+                t['kr_holdings'], t['kr_stock_val'], t['kr_invested'], t['kr_profit'], t['kr_profit_pct'],
+                t['cash_krw'], t['kr_total_krw'], t['kr_ratio'], states
+            ))
+        if show_us:
+            lines.extend(ReportService._format_us_section(
+                t['us_holdings'], t['us_stock_usd'], t['us_invested_usd'], t['us_profit_usd'], t['us_profit_pct'],
+                t['usd_cash'], t['usd_cash_krw'], t['us_total_usd'], t['us_total_krw'], t['us_ratio'],
+                t['exchange_rate'], states
+            ))
         return "\n".join(lines)
 
     @staticmethod

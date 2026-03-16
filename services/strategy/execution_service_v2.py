@@ -474,12 +474,21 @@ class TradeExecutorService:
         return cls._fetch_fresh_us_price(ticker, current_price)
 
     @classmethod
+    def _has_pending_order(cls, ticker: str, side: str) -> bool:
+        """DB에 해당 종목/방향의 pending 주문이 있는지 확인."""
+        return OrderService.has_pending_order(ticker, side)
+
+    @classmethod
     def _place_and_record(
         cls, ticker: str, side: str, qty: int, price: float,
         reason: str, user_id: str, buy_price: Optional[float] = None,
     ) -> bool:
         """Send KIS order and record trade on success. Common for buy and sell.
+        Skips if there is a pending (unfilled) order for the same ticker and side.
         Returns True if order succeeded."""
+        if cls._has_pending_order(ticker, side):
+            logger.info(f"⏸️ {ticker} {side.upper()} 스킵: 미체결 주문 대기 중")
+            return False
         excg_cd = StockMetaService.get_exchange_code(ticker) if not is_kr(ticker) else None
         if is_kr(ticker):
             order_result = KisService.send_order(ticker, qty, 0, side)
@@ -586,7 +595,13 @@ class TradeExecutorService:
             trade_qty = int(result.spent_krw / current_price) if result.spent_krw else int(result.spent_usd / current_price) if result.spent_usd else 0
         elif side == "sell":
             executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty)
-            result = TradeResult(executed=executed)
+            if executed and trade_qty > 0:
+                is_kr_flag = is_kr(ticker)
+                sold_krw = trade_qty * current_price if is_kr_flag else 0.0
+                sold_usd = trade_qty * current_price if not is_kr_flag else 0.0
+                result = TradeResult(executed=True, spent_krw=sold_krw, spent_usd=sold_usd)
+            else:
+                result = TradeResult(executed=executed)
         else:
             return TradeResult.no_op()
 

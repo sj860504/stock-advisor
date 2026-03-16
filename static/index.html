@@ -1659,27 +1659,30 @@
 
         async function fetchPortfolioFull() {
             try {
-                const data = await apiFetch('/portfolio/' + USER + '/full-report');
+                const resp = await apiFetch('/portfolio/' + USER + '/full-report');
+                const data = resp.holdings || resp;
+                const exRate = resp.exchange_rate || 1350;
                 _portfolioDataCache = data;
 
-                // Calculate US/KR breakdown
+                // Calculate US/KR breakdown (US는 USD→KRW 환산)
                 let valKr = 0;
-                let valUs = 0;
+                let valUsUsd = 0;
                 data.forEach(d => {
                     const price = d.price ?? d.current_price ?? 0;
                     const val = d.current_value || (price * (d.quantity || 0));
                     if (isKr(d)) valKr += val;
-                    else valUs += val;
+                    else valUsUsd += val;
                 });
-                const totalVal = valKr + valUs;
+                const valUsKrw = valUsUsd * exRate;
+                const totalVal = valKr + valUsKrw;
                 const krPct = totalVal > 0 ? ((valKr / totalVal) * 100).toFixed(1) : 0;
-                const usPct = totalVal > 0 ? ((valUs / totalVal) * 100).toFixed(1) : 0;
+                const usPct = totalVal > 0 ? ((valUsKrw / totalVal) * 100).toFixed(1) : 0;
 
                 const summaryHtml = `
                     <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;display:flex;gap:16px;">
                         <div><span style="color:var(--sub)">총 자산(주식) </span><b>₩${Math.round(totalVal).toLocaleString()}</b></div>
                         <div><span style="color:var(--sub)">🇰🇷 한국 </span><b>₩${Math.round(valKr).toLocaleString()}</b> <span class="sub-text">(${krPct}%)</span></div>
-                        <div><span style="color:var(--sub)">🇺🇸 미국 </span><b>₩${Math.round(valUs).toLocaleString()}</b> <span class="sub-text">(${usPct}%)</span></div>
+                        <div><span style="color:var(--sub)">🇺🇸 미국 </span><b>$${Math.round(valUsUsd).toLocaleString()}</b> <span class="sub-text">(₩${Math.round(valUsKrw).toLocaleString()}, ${usPct}%)</span></div>
                     </div>
                 `;
 
@@ -1694,9 +1697,10 @@
         async function syncPortfolio() {
             showToast('KIS 동기화 중...');
             try {
-                await apiFetch('/portfolio/' + USER, { method: 'GET' });
+                const res = await apiFetch('/portfolio/' + USER + '/sync', { method: 'POST' });
+                await fetchBalance();
                 await fetchPortfolioFull();
-                showToast('✅ 동기화 완료');
+                showToast('✅ ' + (res.message || '동기화 완료'));
             } catch (e) { showToast('❌ ' + e.message, false); }
         }
 

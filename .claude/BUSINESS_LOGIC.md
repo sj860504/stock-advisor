@@ -27,6 +27,11 @@
 ```
 run_strategy(user_id) [매 1분 실행]
   │
+  ├─ 0. 미체결 주문 확인 (_verify_pending_orders)  ★ 2026-03-16
+  │      ├─ DB에서 status='pending' 주문 조회
+  │      ├─ KIS 미체결 API로 체결 여부 확인
+  │      └─ 체결 완료 → status='filled' 업데이트
+  │
   ├─ 1. 유니버스 갱신 (_update_target_universe)
   │      └─ Top100 변경 감지 → MarketDataService.prune_states()
   │
@@ -41,6 +46,7 @@ run_strategy(user_id) [매 1분 실행]
   │
   ├─ 4. 신호 실행 (_execute_collected_signals)
   │      ├─ 우선순위 정렬: 신규종목(0) > 기존보유(1) > split tranche(2)
+  │      ├─ _place_and_record(): 미체결 있으면 스킵  ★ 2026-03-16
   │      ├─ 익절/트레일링 스탑 신호 우선 처리
   │      ├─ 손절 신호 처리 → _handle_forced_sell (전량 즉시 매도)
   │      ├─ 매수 신호 처리 (분할 매수)
@@ -1068,4 +1074,4 @@ US:
 
 ---
 
-**Last Updated**: 2026-03-15 (USD 루프 현금차감 구현완료, forced_sell 전량 매도 수정 완료, AssetManagementService 목표비율 수정, 토큰 DB 마이그레이션, TR ID 하드코딩 제거)
+**Last Updated**: 2026-03-16 (미체결 주문 확인 시스템 추가, DB 스키마 마이그레이션, trailing_stop 버그 수정, 매도 spent_krw 반영)

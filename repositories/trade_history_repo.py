@@ -23,6 +23,7 @@ class TradeHistoryRepo:
         result_msg: str,
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
+        status: str = "filled",
     ) -> Optional[TradeHistory]:
         """Record trade to DB. Returns detached TradeHistory on success, None on failure."""
         try:
@@ -36,15 +37,47 @@ class TradeHistoryRepo:
                     result_msg=result_msg,
                     timestamp=datetime.now(),
                     strategy_name=strategy_name,
+                    status=status,
                 )
                 session.add(trade)
                 session.flush()
                 session.expunge(trade)
-                logger.info(f"💾 Trade recorded: {ticker} {order_type} {quantity} @ {price}")
+                logger.info(f"💾 Trade recorded: {ticker} {order_type} {quantity} @ {price} (status={status})")
                 return trade
         except Exception as e:
             logger.error(f"❌ Error recording trade: {e}")
             return None
+
+    @classmethod
+    def get_pending_orders(cls, ticker: str = None) -> List[TradeHistory]:
+        """Fetch pending (unfilled) orders, optionally filtered by ticker."""
+        session = get_session()
+        try:
+            q = session.query(TradeHistory).filter(TradeHistory.status == "pending")
+            if ticker:
+                q = q.filter(TradeHistory.ticker == ticker)
+            return q.order_by(TradeHistory.timestamp.desc()).all()
+        finally:
+            session.close()
+
+    @classmethod
+    def update_status(cls, trade_id: int, status: str) -> bool:
+        """Update the status of a trade record."""
+        try:
+            with session_scope() as session:
+                trade = session.query(TradeHistory).filter_by(id=trade_id).first()
+                if trade:
+                    trade.status = status
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error updating trade status (id={trade_id}): {e}")
+            return False
+
+    @classmethod
+    def mark_filled(cls, trade_id: int) -> bool:
+        """Mark a pending order as filled."""
+        return cls.update_status(trade_id, "filled")
 
     @classmethod
     def query(

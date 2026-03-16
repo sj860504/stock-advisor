@@ -84,9 +84,65 @@ class OrderService:
         result_msg: str,
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
+        status: str = "pending",
     ):
-        """Record trade history to DB. Returns TradeHistory entity on success, None on failure."""
-        return TradeHistoryRepo.record(ticker, order_type, quantity, price, result_msg, strategy_name, buy_price=buy_price)
+        """Record trade history to DB. Default status is 'pending' (verified later).
+        Returns TradeHistory entity on success, None on failure."""
+        return TradeHistoryRepo.record(
+            ticker, order_type, quantity, price, result_msg, strategy_name,
+            buy_price=buy_price, status=status,
+        )
+
+    @classmethod
+    def verify_and_update_pending_orders(cls) -> List["OrderVerificationResult"]:
+        """DB의 pending 주문을 KIS 미체결 API로 확인하여 상태 갱신.
+        - KIS 미체결 목록에 없으면 → filled로 업데이트
+        - KIS 미체결 목록에 있으면 → pending 유지
+        Returns list of verification results."""
+        from services.kis.kis_service import KisService
+        from models.schemas import OrderVerificationResult
+
+        pending_trades = TradeHistoryRepo.get_pending_orders()
+        if not pending_trades:
+            return []
+
+        # KR/US 미체결 조회 (pending 있을 때만)
+        has_kr = any(is_kr(t.ticker) for t in pending_trades)
+        has_us = any(not is_kr(t.ticker) for t in pending_trades)
+        kr_unfilled = KisService.get_unfilled_orders_kr() if has_kr else None
+        us_unfilled = KisService.get_unfilled_orders_us() if has_us else None
+
+        results = []
+        for trade in pending_trades:
+            ticker = trade.ticker
+            unfilled = kr_unfilled if is_kr(ticker) else us_unfilled
+            if unfilled and unfilled.has_pending(ticker, trade.order_type):
+                rmn = unfilled.pending_qty(ticker, trade.order_type)
+                results.append(OrderVerificationResult(
+                    ticker=ticker, order_type=trade.order_type,
+                    is_filled=False, remaining_qty=rmn,
+                    message=f"{ticker} 미체결 {rmn}주 대기 중",
+                ))
+            else:
+                TradeHistoryRepo.mark_filled(trade.id)
+                results.append(OrderVerificationResult(
+                    ticker=ticker, order_type=trade.order_type,
+                    is_filled=True, remaining_qty=0,
+                    message=f"{ticker} 체결 완료 확인",
+                ))
+                logger.info(f"✅ {ticker} {trade.order_type} 체결 확인 → status=filled (id={trade.id})")
+
+        return results
+
+    @classmethod
+    def has_pending_order(cls, ticker: str, order_type: str = None) -> bool:
+        """특정 종목에 DB상 pending 주문이 있는지 확인."""
+        pending = TradeHistoryRepo.get_pending_orders(ticker)
+        if not pending:
+            return False
+        if order_type:
+            return any(t.order_type == order_type for t in pending)
+        return True
 
     @classmethod
     def _to_dto(cls, record, holdings_map: dict) -> TradeRecordDto:

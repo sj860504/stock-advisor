@@ -29,8 +29,11 @@ async def lifespan(app: FastAPI):
         cash = PortfolioService.load_cash(user_id)
         from services.notification.report_service import ReportService
         from services.market.market_data_service import MarketDataService
+        from services.market.market_hour_service import MarketHourService
         states = MarketDataService.get_all_states()
-        msg = ReportService.format_portfolio_report(holdings, cash, states, summary)
+        is_kr_open = MarketHourService.is_kr_market_open()
+        is_us_open = MarketHourService.is_us_market_open()
+        msg = ReportService.format_portfolio_report(holdings, cash, states, summary, show_kr=is_kr_open, show_us=is_us_open)
         AlertService.send_slack_alert(msg)
     except Exception as e:
         AlertService.send_slack_alert(f"⚠️ Portfolio notification failed: {e}")

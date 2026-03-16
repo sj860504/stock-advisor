@@ -37,6 +37,20 @@ def get_portfolio(user_id: str = "default") -> PortfolioListResponse:
     return PortfolioListResponse(holdings=holdings)
 
 
+@router.post("/{user_id}/sync")
+def sync_portfolio_with_kis(user_id: str = "sean") -> Dict[str, Any]:
+    """Sync portfolio with KIS actual balance."""
+    try:
+        holdings = PortfolioService.sync_with_kis(user_id)
+        return {
+            "status": "success",
+            "message": f"KIS 동기화 완료 ({len(holdings)}종목)",
+            "holdings_count": len(holdings),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"KIS 동기화 실패: {str(e)}")
+
+
 @router.get("/{user_id}/analysis", response_model=Dict[str, Any])
 def analyze_portfolio(user_id: str = "default") -> Dict[str, Any]:
     """Analyze portfolio returns."""
@@ -44,11 +58,16 @@ def analyze_portfolio(user_id: str = "default") -> Dict[str, Any]:
     return PortfolioService.analyze_portfolio(user_id, price_cache)
 
 
-@router.get("/{user_id}/full-report", response_model=List[Dict[str, Any]])
-def get_full_portfolio_report(user_id: str = "default") -> List[Dict[str, Any]]:
-    """Return detailed analysis data for all holdings."""
+@router.get("/{user_id}/full-report", response_model=Dict[str, Any])
+def get_full_portfolio_report(user_id: str = "default") -> Dict[str, Any]:
+    """Return detailed analysis data for all holdings with exchange rate."""
+    from services.market.macro_service import MacroService
     price_cache = SchedulerService.get_all_cached_prices()
-    return PortfolioService.build_full_report(user_id, price_cache)
+    holdings = PortfolioService.build_full_report(user_id, price_cache)
+    return {
+        "holdings": holdings,
+        "exchange_rate": MacroService.get_exchange_rate(),
+    }
 
 
 @router.post("/{user_id}/add", response_model=HoldingActionResponse)
