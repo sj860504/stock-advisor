@@ -665,12 +665,15 @@ class PositionService:
 
     @classmethod
     def execute_buy_budget(
-        cls, user_id: str, budget_krw: float, budget_usd: float, signals: list[SignalSchema]
+        cls, user_id: str, budget_krw: float, budget_usd: float, signals: list[SignalSchema],
+        user_state: UserState = None,
     ) -> None:
         """Buy top-scored tickers within given budget (called by AssetManagementService).
         Iterates signals in score ascending order until budget is exhausted."""
         from services.market.macro_service import MacroService
         exchange_rate = MacroService.get_exchange_rate()
+        today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+        add_buy_cooldown = user_state.add_buy_cooldown if user_state else {}
         sorted_signals = sorted(signals, key=lambda s: s.score)
         for sig in sorted_signals:
             if budget_krw <= 0 and budget_usd <= 0:
@@ -678,6 +681,9 @@ class PositionService:
             ticker = sig.ticker
             current_price = getattr(sig.state, 'current_price', 0)
             if current_price <= 0:
+                continue
+            if cls._is_buy_cooldown_active(ticker, today, current_price, add_buy_cooldown):
+                logger.info(f"⏭️ [BuyBudget] {ticker} 쿨다운 활성 → 스킵")
                 continue
             is_kr_ticker = is_kr(ticker)
             market_total = budget_krw if is_kr_ticker else budget_usd * exchange_rate
@@ -691,20 +697,27 @@ class PositionService:
                 user_id=user_id, holding=sig.holding,
             )
             if result.executed:
+                add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price)
                 budget_krw = max(0.0, budget_krw - result.spent_krw)
                 budget_usd = max(0.0, budget_usd - result.spent_usd)
                 logger.info(f"[BuyBudget] {ticker} executed. KR budget left={budget_krw:,.0f} US budget left=${budget_usd:,.2f}")
 
     @classmethod
     def execute_sell_for_cash(
-        cls, user_id: str, need_krw: float, need_usd: float, candidates: list[HoldingSchema]
+        cls, user_id: str, need_krw: float, need_usd: float, candidates: list[HoldingSchema],
+        user_state: UserState = None,
     ) -> None:
         """Sell profitable holdings to meet cash target (called by AssetManagementService).
         Iterates candidates in profit-rate descending order until need is met."""
+        today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+        sell_cooldown = user_state.sell_cooldown if user_state else {}
         for holding in candidates:
             if need_krw <= 0 and need_usd <= 0:
                 break
             ticker = holding.ticker
+            if sell_cooldown.get(ticker) == today:
+                logger.info(f"⏭️ [SellForCash] {ticker} 매도 쿨다운 활성 → 스킵")
+                continue
             current_price = holding.current_price or 0
             if current_price <= 0:
                 continue
@@ -717,6 +730,7 @@ class PositionService:
                 user_id=user_id, holding=holding,
             )
             if result.executed:
+                sell_cooldown[ticker] = today
                 need_krw = max(0.0, need_krw - result.spent_krw)
                 need_usd = max(0.0, need_usd - result.spent_usd)
                 logger.info(f"[SellForCash] {ticker} executed. KR need left={need_krw:,.0f} US need left=${need_usd:,.2f}")

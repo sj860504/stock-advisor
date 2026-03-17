@@ -1,5 +1,5 @@
 from typing import List, Optional, Tuple
-from models.schemas import HoldingSchema, MacroDataSnapshot, MarketRegimeSchema
+from models.schemas import HoldingSchema, MacroDataSnapshot, MarketRegimeSchema, UserState
 from utils.logger import get_logger
 from utils.market import is_kr, filter_kr, filter_us
 
@@ -25,6 +25,7 @@ class AssetManagementService:
         macro_data: MacroDataSnapshot,
         is_kr_open: bool = True,
         is_us_open: bool = True,
+        user_state: Optional[UserState] = None,
     ) -> None:
         """Asset allocation entry point.
         Calculates cash gap per open market and delegates buy/sell to PositionService."""
@@ -41,14 +42,15 @@ class AssetManagementService:
         )
 
         if is_kr_open:
-            cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings)
+            cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings, user_state)
         if is_us_open:
-            cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings)
+            cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings, user_state)
 
     @classmethod
     def _rebalance_market(
         cls, user_id: str, market: str, cash: float, stock_total: float,
         target_ratio: float, holdings: List[HoldingSchema],
+        user_state: Optional[UserState] = None,
     ) -> None:
         """단일 시장(KR/US) 현금갭 계산 후 매수 또는 매도 위임."""
         from services.strategy.signal_service import SignalService
@@ -62,14 +64,14 @@ class AssetManagementService:
             signals = SignalService.get_latest_signals()
             budget_krw = gap if market == "KR" else 0.0
             budget_usd = 0.0 if market == "KR" else gap
-            PositionService.execute_buy_budget(user_id, budget_krw=budget_krw, budget_usd=budget_usd, signals=signals)
+            PositionService.execute_buy_budget(user_id, budget_krw=budget_krw, budget_usd=budget_usd, signals=signals, user_state=user_state)
         elif gap < 0:
             market_holdings = [h for h in holdings if (is_kr(h.ticker) if market == "KR" else not is_kr(h.ticker))]
             candidates = cls._select_sell_candidates(market_holdings)
             if candidates:
                 need_krw = abs(gap) if market == "KR" else 0.0
                 need_usd = 0.0 if market == "KR" else abs(gap)
-                PositionService.execute_sell_for_cash(user_id, need_krw=need_krw, need_usd=need_usd, candidates=candidates)
+                PositionService.execute_sell_for_cash(user_id, need_krw=need_krw, need_usd=need_usd, candidates=candidates, user_state=user_state)
             else:
                 logger.info(f"[AssetMgmt] {market} 현금 부족 but 수익 종목 없음 → 매도 스킵")
 

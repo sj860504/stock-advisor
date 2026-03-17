@@ -368,6 +368,7 @@ class TradingStrategyService:
         AssetManagementService.run(
             user_id, holdings, kr_cash, usd_cash, macro_snapshot,
             is_kr_open=is_kr_open, is_us_open=is_us_open,
+            user_state=user_state,
         )
 
         if trade_executed and executed_tickers:

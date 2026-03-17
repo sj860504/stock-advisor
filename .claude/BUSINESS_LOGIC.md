@@ -535,6 +535,13 @@ _is_cash_below_target(ticker, holdings, cash_balance, ...)
 
 > 현재 AssetManagementService는 score 루프 **이후** 실행되어 잔여 예산 소진/현금 확보 목적으로 동작.
 
+### ✅ 쿨다운 연동 (2026-03-17)
+
+`run_strategy()` → `AssetManagementService.run(user_state=user_state)` 로 쿨다운 상태 전달.
+- `execute_buy_budget()`: `add_buy_cooldown` 체크 후 매수, 성공 시 쿨다운 설정
+- `execute_sell_for_cash()`: `sell_cooldown` 체크 후 매도, 성공 시 쿨다운 설정
+- 1단계(신호 실행)에서 매수/매도한 종목이 2단계(자산관리)에서 중복 실행되지 않음
+
 ---
 
 ## 7. 섹터 비중 관리 — ❌ 제거 예정
