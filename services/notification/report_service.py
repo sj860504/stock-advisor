@@ -108,35 +108,28 @@ class ReportService:
 
     @staticmethod
     def _format_kr_holding_line(holding, states: dict) -> str:
-        """Format a single KR holding line — 2-line compact for mobile."""
-        ticker = holding.ticker
-        name = holding.name or ticker
+        """Format a single KR holding line — 1-line compact."""
+        name = holding.name or holding.ticker
         qty = holding.quantity
         buy_price = holding.buy_price or 0
-        current_price, change_rate = ReportService._get_holding_price(holding, ticker, states)
+        current_price, _ = ReportService._get_holding_price(holding, holding.ticker, states)
         profit_rate = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
         profit_amt = (current_price - buy_price) * qty if buy_price > 0 else 0.0
         color = "🔴" if profit_amt > 0 else ("🔵" if profit_amt < 0 else "⚪")
-        change_sign = "+" if change_rate >= 0 else ""
-        line1 = f"  • {name}({ticker}) {current_price:,.0f} {change_sign}{change_rate:.1f}%"
-        line2 = f"    {qty}주 | 매입 {buy_price:,.0f} | {color}{profit_rate:+.1f}% ({profit_amt:+,.0f})"
-        return f"{line1}\n{line2}"
+        return f"  {color} {name} ₩{current_price:,.0f}×{qty} | {profit_rate:+.1f}% (₩{profit_amt:+,.0f})"
 
     @staticmethod
     def _format_us_holding_line(holding, states: dict, exchange_rate: float) -> str:
-        """Format a single US holding line — 2-line compact for mobile."""
+        """Format a single US holding line — 1-line compact."""
         ticker = holding.ticker
         name = holding.name or ticker
         qty = holding.quantity
         buy_price = holding.buy_price or 0
-        current_price, change_rate = ReportService._get_holding_price(holding, ticker, states)
+        current_price, _ = ReportService._get_holding_price(holding, ticker, states)
         profit_rate = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
         profit_usd = (current_price - buy_price) * qty if buy_price > 0 else 0.0
         color = "🔴" if profit_usd > 0 else ("🔵" if profit_usd < 0 else "⚪")
-        change_sign = "+" if change_rate >= 0 else ""
-        line1 = f"  • {ticker}({name}) ${current_price:,.2f} {change_sign}{change_rate:.1f}%"
-        line2 = f"    {qty}sh | avg ${buy_price:,.2f} | {color}{profit_rate:+.1f}% (${profit_usd:+,.2f})"
-        return f"{line1}\n{line2}"
+        return f"  {color} {ticker} ${current_price:,.2f}×{qty} | {profit_rate:+.1f}% (${profit_usd:+,.2f})"
 
     @staticmethod
     def _load_portfolio_context(summary: dict = None) -> PortfolioContext:

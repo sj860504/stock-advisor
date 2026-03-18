@@ -141,7 +141,8 @@ class AssetManagementService:
         """Return profit-positive holdings sorted by profit rate descending.
         Returns empty list if no profitable holdings → caller skips sell.
         Pure function, no I/O."""
-        profitable = [h for h in holdings if cls._calc_holding_profit_pct(h) > 0]
+        min_profit = 1.0  # 수수료 고려 최소 수익률 1%
+        profitable = [h for h in holdings if cls._calc_holding_profit_pct(h) >= min_profit]
         return sorted(profitable, key=cls._calc_holding_profit_pct, reverse=True)
 
     @classmethod

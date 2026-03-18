@@ -387,7 +387,8 @@
 | `_score_target_prices(state, curr_price)` | TickerState, float | tuple(delta, reasons) | 목표 진입/매도가 트리거 |
 | `_score_bonuses(ticker, holding, macro, user_state)` | str, Optional[HoldingSchema], MacroDataSnapshot, UserState | tuple(delta, reasons) | Top10 + 사용자 비중 + 섹터 보너스 |
 | `_compute_holding_profit_pct(holding, state)` | Optional[HoldingSchema], TickerState | float | (ref_price - buy_price) / buy_price * 100. 보유 없으면 0.0. 순수 함수 |
-| `_load_score_thresholds()` | - | dict | SettingsService에서 6개 임계값 로드 |
+| `_get_take_profit_pct_by_regime(regime)` | str | float | 레짐별 익절 기준. BULL 7% / NEUTRAL 5% / BEAR 3% |
+| `_load_score_thresholds()` | - | dict | SettingsService에서 6개 임계값 로드 (take_profit_pct는 calculate_score에서 레짐별 오버라이드) |
 | `_get_top10_market_cap_tickers()` | - | set[str] | 시총 Top10 캐시 (6h TTL) |
 | `_dispatch_analyze_trade(ticker, side, score, reason_str, state, profit_pct, market_total, cash_balance, exchange_rate, holdings, user_id, holding, macro)` | str, str, int, str, TickerState, float, float, float, float, list, str, Optional[HoldingSchema], MacroDataSnapshot | None | TradeExecutorService._execute_trade_v2() 위임 |
 | `_determine_analysis_markets(allow_extended)` | bool | tuple[bool,bool] | KR/US 분석 여부 판단. (analyze_kr, analyze_us) |
@@ -423,7 +424,8 @@
 | `_process_unmonitored_holding(h, kr_total, us_total_krw, cash_balance, cfg, macro_data, target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders, holdings, user_id)` | HoldingSchema, float, float, float, ExecutionConfig, MacroDataSnapshot, float, float, dict, dict, list, str | tuple(bool, Optional[str]) | 단일 미감시 종목 가격조회+손절/익절 실행. (executed, ticker_or_None) 반환 |
 | `execute_buy_budget(user_id, budget_krw, budget_usd, signals)` | str, float, float, list[SignalSchema] | None | score 오름차순 정렬 → budget 소진까지 매수 실행 |
 | `execute_sell_for_cash(user_id, need_krw, need_usd, candidates)` | str, float, float, list[HoldingSchema] | None | candidates 순서대로 need 충족까지 매도 실행 |
-| `_load_execution_config()` | - | ExecutionConfig | SettingsService 설정 일괄 조회 → ExecutionConfig 반환 |
+| `_get_take_profit_pct_by_regime(macro_data)` | MacroDataSnapshot=None | float | 레짐별 익절 기준. BULL 7% / NEUTRAL 5% / BEAR 3% |
+| `_load_execution_config(macro_data)` | MacroDataSnapshot=None | ExecutionConfig | SettingsService 설정 일괄 조회 + 레짐별 take_profit_pct → ExecutionConfig 반환 |
 | `_sort_signals_by_priority(signals, split_orders)` | list[SignalSchema], dict | list[SignalSchema] | 신규미보유(0)>기존보유(1)>split tranche(2). 순수 함수 |
 | `_expire_split_orders(split_orders)` | dict | None | STRATEGY_SPLIT_EXPIRE_DAYS(기본5) 초과 항목 제거. `pop(t, None)` 사용 (KeyError 방지) |
 | `_deduct_loop_cash(ticker, spent_krw, spent_usd, cash_balance, usd_cash)` | str, float, float, float, float | tuple[float, float] | KR 매수 시 cash_balance 차감, US 매수 시 usd_cash 차감. 순수 함수 |
@@ -444,8 +446,8 @@
 | 함수 | 파라미터 | 반환 | 핵심 로직 |
 |------|---------|------|-----------|
 | `_execute_trade_v2(ticker, side, reason, profit_pct, is_holding, score, current_price, market_total, cash_balance, exchange_rate, holdings, user_id, holding, macro, target_cash_ratio_kr, target_cash_ratio_us, forced_qty)` | str, str, str, float, bool, int, float, float, float, float, Optional[List[HoldingSchema]]=None, str="sean", Optional[HoldingSchema]=None, Optional[MacroDataSnapshot]=None, float=None, float=None, int=None | TradeResult | 메인 주문 실행 (조건 검사 → KIS 주문 → 기록) |
-| `_execute_buy_order(ticker, score, profit_pct, is_holding, current_price, market_total, cash_balance, exchange_rate, holdings, user_id, holding, macro, target_cash_ratio_kr, target_cash_ratio_us, forced_qty)` | str, int, float, bool, float, float, float, float, List[HoldingSchema], str, Optional[HoldingSchema], MacroDataSnapshot, float, float, int=None | TradeResult | 매수 주문 (비중 검사 포함) |
-| `_execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty)` | str, int, float, Optional[List[HoldingSchema]], str, int | tuple(executed, trade_qty) | 매도 주문 (부분/전량) |
+| `_execute_buy_order(..., reason)` | ..., reason: str="" | TradeResult | 매수 주문 (비중 검사 포함). reason → DB result_msg 저장 |
+| `_execute_sell_order(..., reason)` | ..., reason: str="" | tuple(executed, trade_qty) | 매도 주문. reason → DB result_msg 저장 |
 | `_passes_allocation_limits(ticker, add_value, holdings, cash_balance, holding, kr_assets, us_assets_krw)` | str, float, List[HoldingSchema], float, Optional[HoldingSchema], float, float | tuple(bool, list) | 시장/섹터 비중 한도 검사. `_compute_sector_value_map` + `_check_sector_group_limit` 사용 |
 | `_calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw, usd_cash_krw)` | int, float, float, float, bool, float=0.0, float=0.0 | tuple(int, float, float) | 점수 기반 매수 수량 (고점수=2배 승수). Returns (total_qty, spent_krw, final_price) |
 | `_check_sector_group_limit(ticker, holding, holdings, exchange_rate)` | str, Optional[HoldingSchema], List[HoldingSchema], float | list[str] | 섹터 비중 초과 시 경고 이유 반환 |
@@ -458,7 +460,8 @@
 | `_check_buy_cash_and_entry_conditions(ticker, cash_balance, is_holding, profit_pct, holdings, exchange_rate, target_cash_ratio_kr, target_cash_ratio_us, macro)` | str, float, bool, float, List[HoldingSchema], float, float, float, MacroDataSnapshot | bool | 현금 + 진입 조건 통합 검사 |
 | `_check_market_hours(ticker)` | str | bool | 시장 개장 여부 확인 |
 | `_get_change_rate(ticker)` | str | float | MarketDataService.get_state(ticker).change_rate 반환, 없으면 0.0 |
-| `_send_trade_alert(ticker, side, score, current_price, change_rate, trade_qty, profit_pct, holding, executed)` | str, str, int, float, float, int, float, Optional[HoldingSchema], bool | None | Slack 매매 알림 (executed=True 일 때만) |
+| `_classify_reason(reason)` | str | str | 내부 reason → 한글 라벨 (손절/익절/에셋 확보/추매/점수기반 등) |
+| `_send_trade_alert(..., reason, market_total, cash_balance, exchange_rate)` | ..., reason: str="", market_total: float=0.0, cash_balance: float=0.0, exchange_rate: float=1350.0 | None | Slack 체결 알림. 트리거 라벨 + 총자산/여유 현금 포함 |
 | `get_top_weight_overrides()` | - | dict | 티커→점수델타 로드 (SettingsService) |
 | `set_top_weight_overrides(overrides)` | dict | dict | 티커→점수델타 저장 |
 | `_has_absolute_cash(ticker, cash_balance)` | str, float | bool | KR: cash_balance>0 확인, US: get_usd_cash_balance()>0 확인. False이면 매수 차단 |

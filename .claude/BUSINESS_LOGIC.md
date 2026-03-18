@@ -394,16 +394,27 @@ profit_pct ≤ STRATEGY_STOP_LOSS_PCT (-8%)
 > `max(1, min(100, score))` — 최소 1점, 0점은 no_price_data 등 비정상 상태 예약.
 > `no_price_data` 시 score=50(중립) 반환 — 가격 없는 종목 매수/매도 방지.
 
-### 익절 (Take-Profit)
+### 익절 (Take-Profit) — ✅ 레짐별 분기 (2026-03-18)
 
 ```
-profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (레짐별 상이)
+profit_pct ≥ take_profit_pct (레짐별 상이)
   → [B] score += PROFIT_TAKE_TARGET (+30)
   → _process_single_signal() 1순위 체크: _handle_profit_take_signal()
   → _get_sell_split_qty()로 SplitSellOrderState 생성 (split_count=5)
   → 분할 매도 (트랜치당 ceiling(remaining/splits_left))
   → sell_cooldown[ticker] = today (성공/실패 무관)
 ```
+
+레짐별 익절 임계값:
+
+| 레짐 | 익절 기준 | 설정키 |
+|------|----------|--------|
+| BULL | 7% | `STRATEGY_TAKE_PROFIT_PCT_BULL` |
+| NEUTRAL | 5% | `STRATEGY_TAKE_PROFIT_PCT_NEUTRAL` |
+| BEAR | 3% | `STRATEGY_TAKE_PROFIT_PCT_BEAR` |
+
+> `_get_take_profit_pct_by_regime()` — `position_service.py`, `signal_service.py` 양쪽에서 사용.
+> `_load_execution_config(macro_data)` 및 `calculate_score()` 내부에서 레짐별 값 적용.
 
 ### 트레일링 스탑 — ✅ 구현 완료 (2026-03-14)
 
@@ -425,7 +436,6 @@ profit_pct ≥ STRATEGY_TAKE_PROFIT_PCT (레짐별 상이)
 ```
 
 > `trailing_high`: `StrategyState.trailing_high` DB 컬럼 (JSON dict {ticker: float})으로 영속.
-> 익절 기준: 단일 설정키 `STRATEGY_TAKE_PROFIT_PCT` (기본 3.0%) 사용. 레짐별 분기 없음.
 
 ### 추매 쿨다운 (Add-Buy Cooldown)
 
@@ -541,6 +551,16 @@ _is_cash_below_target(ticker, holdings, cash_balance, ...)
 - `execute_buy_budget()`: `add_buy_cooldown` 체크 후 매수, 성공 시 쿨다운 설정
 - `execute_sell_for_cash()`: `sell_cooldown` 체크 후 매도, 성공 시 쿨다운 설정
 - 1단계(신호 실행)에서 매수/매도한 종목이 2단계(자산관리)에서 중복 실행되지 않음
+
+### ✅ 쿨다운 영속 버그 수정 (2026-03-18)
+
+**버그**: `_save_state(state)`가 `AssetManagementService.run()` **이전**에만 호출되어, 자산관리에서 설정한 쿨다운이 DB에 저장되지 않았음 → 매 루프마다 동일 종목 반복 매도.
+**수정**: `AssetManagementService.run()` **이후** `_save_state(state)` 추가 (2차 저장).
+
+### ✅ 에셋 확보 매도 최소 수익률 (2026-03-18)
+
+`_select_sell_candidates()`: 수익률 `>= 1%` 이상인 종목만 매도 대상.
+수수료(약 0.25~0.5%) 고려하여 수익률 0% 근처 종목의 무의미한 매도 방지.
 
 ---
 
@@ -1042,7 +1062,9 @@ Base: DCF_DEFAULT_DISCOUNT_RATE (10%)
 | `STRATEGY_BUY_THRESHOLD_MAX` | 30 | 매수 점수 임계값 |
 | `STRATEGY_SELL_THRESHOLD_MIN` | 70 | 매도 점수 임계값 |
 | `STRATEGY_BASE_SCORE` | 50 | 기본 점수 |
-| `STRATEGY_TAKE_PROFIT_PCT` | 3.0 | 익절 기준 (%) |
+| `STRATEGY_TAKE_PROFIT_PCT_BULL` | 7.0 | 익절 기준 BULL (%) |
+| `STRATEGY_TAKE_PROFIT_PCT_NEUTRAL` | 5.0 | 익절 기준 NEUTRAL (%) |
+| `STRATEGY_TAKE_PROFIT_PCT_BEAR` | 3.0 | 익절 기준 BEAR (%) |
 | `STRATEGY_STOP_LOSS_PCT` | -8.0 | 손절 기준 (%) |
 | `STRATEGY_ADD_POSITION_BELOW` | -5.0 | 추매 기준 하락율 (%) |
 | `STRATEGY_OVERSOLD_RSI` | 30 | 과매도 RSI |
@@ -1083,49 +1105,54 @@ Base: DCF_DEFAULT_DISCOUNT_RATE (10%)
 
 ## 13. Slack 알림 포맷
 
-> `services/notification/report_service.py`
+> `services/notification/report_service.py`, `services/strategy/execution_service_v2.py`
 
 ### 13-1. 자산 현황 리포트 (`format_portfolio_report`)
 
-**현재 → 개선 완료 (2026-03-14)**
-
-**보유종목 라인 — 2줄 compact 포맷 (모바일 대응)**
+**보유종목 라인 — 1줄 compact 포맷 (2026-03-18 변경)**
 
 KR:
 ```
-  • 삼성전자(005930) 72,000 +1.2%
-    10주 | 매입 68,000 | 🔴+5.9% (+40,000)
+  🔴 삼성전자 ₩72,000×10 | +5.9% (₩+40,000)
 ```
 
 US:
 ```
-  • AAPL(Apple Inc) $185.20 +0.8%
-    5sh | avg $170.00 | 🔴+8.8% (+$76.00)
+  🔴 AAPL $185.20×5 | +8.9% ($+76.00)
 ```
-
-**변경 이유**: 기존 1줄 포맷(100자+)이 모바일 Slack에서 잘림 → 2줄로 분리하여 가독성 확보
 
 ---
 
-### 13-2. 매수/매도 리포트 (`format_trade_result_report`)
+### 13-2. 체결 알림 (`_send_trade_alert`) — ✅ 2026-03-18 리뉴얼
 
-**현재 포맷 (미변경)**
-```
-🔵 [BUY] • Ticker: AAPL Apple Inc, price: $185.20, Qty: 5 shares
-🔴 [SELL] • Ticker: AAPL Apple Inc, price: $185.20, Qty: 5 shares, • PnL: +8.82%, Profit: +$76.00
-```
+**개별 체결 시 즉시 발송. 트리거 이유 + 총자산/여유 현금 포함.**
 
-**수정 계획**
+매수:
 ```
-🔵 BUY  AAPL 5sh @$185.2
-🔴 SELL AAPL 5sh @$185.2 | +8.8% +$76.0
-💰 총평가: 12,450,000 | 현금: 2,100,000
+🔵 *[B] HD한국조선해양* (₩421,000 × 1) | 분할 매수 | 총자산: ₩11,975,217 (여유: ₩3,768,117)
 ```
 
-- `• Ticker:`, `price:`, `Qty:` 등 장황한 레이블 제거
-- PnL은 % + 금액만 표시 (profit 레이블 제거)
-- 총자산 라인도 간소화
+매도:
+```
+🔴 *[S] KT&G* (₩158,500 × 1) | Profit: ₩+3,700 (+2.39%) | 익절 | 총자산: ₩11,975,217 (여유: ₩3,768,117)
+```
+
+**트리거 라벨 매핑** (`_classify_reason()`):
+
+| 내부 reason | 표시 라벨 |
+|-------------|----------|
+| `stop_loss(...)` | 손절 |
+| `take_profit_zone(...)` | 익절 |
+| `trailing_stop(...)` | 트레일링스탑 |
+| `asset_management_cash_rebalance` | 에셋 확보 |
+| `budget_buy [...]` | 예산 매수 |
+| `add_position(...)` | 추매 |
+| `score N [...] (M/N split)` | 분할 매수 |
+| `score N [...]` | 점수기반 |
+
+> `reason` 문자열은 DB `trade_history.result_msg`에도 저장됨.
+> 기존 `format_trade_result_report` 요약 리포트는 개별 알림과 중복되어 비활성화 (2026-03-18).
 
 ---
 
-**Last Updated**: 2026-03-16 (미체결 주문 확인 시스템 추가, DB 스키마 마이그레이션, trailing_stop 버그 수정, 매도 spent_krw 반영)
+**Last Updated**: 2026-03-18 (레짐별 익절, 트리거 정보 추가, Slack 포맷 리뉴얼, 쿨다운 영속 버그 수정, 에셋 확보 최소 수익률)

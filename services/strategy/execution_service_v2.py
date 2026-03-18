@@ -375,25 +375,76 @@ class TradeExecutorService:
     # ── Alerts ─────────────────────────────────────────────────────────────────
 
     @classmethod
-    def _send_trade_alert(cls, ticker: str, side: str, score: int, current_price: float, change_rate: float, trade_qty: int, profit_pct: float, holding: HoldingSchema, executed: bool) -> None:
+    def _classify_reason(cls, reason: str) -> str:
+        """내부 reason 문자열을 사용자 친화적 한글 라벨로 변환."""
+        r = reason.lower()
+        if "stop_loss" in r:
+            return "손절"
+        if "take_profit" in r:
+            return "익절"
+        if "trailing_stop" in r:
+            return "트레일링스탑"
+        if "asset_management" in r:
+            return "에셋 확보"
+        if "budget_buy" in r:
+            return "예산 매수"
+        if "add_position" in r:
+            return "추매"
+        if "split" in r:
+            return "분할 매수"
+        if "score" in r:
+            return "점수기반"
+        return reason or "전략"
+
+    @classmethod
+    def _send_trade_alert(
+        cls, ticker: str, side: str, score: int, current_price: float,
+        change_rate: float, trade_qty: int, profit_pct: float,
+        holding: HoldingSchema, executed: bool, reason: str = "",
+        market_total: float = 0.0, cash_balance: float = 0.0, exchange_rate: float = 1350.0,
+    ) -> None:
         if not executed:
             return
         meta = StockMetaService.get_stock_meta(ticker)
         name = (holding.name if holding and holding.name
                 else (meta.name_ko or meta.name_en or "" if meta else ""))
         is_kr_flag = is_kr(ticker)
-        currency = "KRW" if is_kr_flag else "USD"
-        price_str = f"{current_price:,.0f}{currency}" if is_kr_flag else f"${current_price:,.2f}"
+        reason_label = cls._classify_reason(reason)
 
-        if side == "buy":
-            msg = f"🔵 *[BUY Executed]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {trade_qty} shares | Change: {change_rate:+.2f}%, Score: {score}"
+        if is_kr_flag:
+            price_str = f"₩{current_price:,.0f}"
+            asset_str = f"₩{market_total:,.0f}"
+            cash_str = f"₩{cash_balance:,.0f}"
         else:
+            price_str = f"${current_price:,.2f}"
+            usd_total = market_total / exchange_rate if exchange_rate > 0 else 0
+            usd_cash = PortfolioService.get_usd_cash_balance()
+            asset_str = f"${usd_total:,.0f}"
+            cash_str = f"${usd_cash:,.2f}"
+
+        side_icon = "🔵" if side == "buy" else "🔴"
+        side_tag = "[B]" if side == "buy" else "[S]"
+
+        if side == "sell":
             buy_price = float(holding.buy_price or 0) if holding else 0
             profit_amt = (current_price - buy_price) * trade_qty if buy_price else 0
-            profit_amt_str = (f"{profit_amt:+,.0f}KRW" if is_kr_flag else f"${profit_amt:+,.2f}")
-            msg = f"🔴 *[SELL Executed]* • Ticker: {ticker} {name}, price: {price_str}, Qty: {trade_qty} shares, • PnL: {profit_pct:+.2f}%, Profit: {profit_amt_str} | Change: {change_rate:+.2f}%, Score: {score}"
-        
-        # Add basic asset total to this message, maybe? Just log it for now
+            if is_kr_flag:
+                profit_str = f"₩{profit_amt:+,.0f} ({profit_pct:+.2f}%)"
+            else:
+                profit_str = f"${profit_amt:+,.2f} ({profit_pct:+.2f}%)"
+            msg = (
+                f"{side_icon} *{side_tag} {name}* ({price_str} × {trade_qty})"
+                f" | Profit: {profit_str}"
+                f" | {reason_label}"
+                f" | 총자산: {asset_str} (여유: {cash_str})"
+            )
+        else:
+            msg = (
+                f"{side_icon} *{side_tag} {name}* ({price_str} × {trade_qty})"
+                f" | {reason_label}"
+                f" | 총자산: {asset_str} (여유: {cash_str})"
+            )
+
         AlertService.send_slack_alert(msg)
 
     # ── Order Execution Helpers ────────────────────────────────────────────────────────
@@ -506,7 +557,7 @@ class TradeExecutorService:
         current_price: float, market_total: float, cash_balance: float,
         exchange_rate: float, holdings: List[HoldingSchema], user_id: str, holding: Optional[HoldingSchema],
         macro: MacroDataSnapshot, target_cash_ratio_kr: float, target_cash_ratio_us: float,
-        forced_qty: int = None,
+        forced_qty: int = None, reason: str = "",
     ) -> TradeResult:
         """Execute buy order."""
         if not cls._check_buy_cash_and_entry_conditions(
@@ -528,7 +579,7 @@ class TradeExecutorService:
         logger.info(f"⚖️ {ticker} Split buy scheduled ({quantity} shares)")
         current_price = cls._refresh_us_price(ticker, current_price)
         record_price = current_price if not is_kr_flag else final_price
-        executed = cls._place_and_record(ticker, "buy", quantity, record_price, "strategy_execution", user_id)
+        executed = cls._place_and_record(ticker, "buy", quantity, record_price, reason or "strategy_execution", user_id)
         if executed:
             spent_krw = quantity * final_price if is_kr_flag else 0.0
             spent_usd = quantity * current_price if not is_kr_flag else 0.0
@@ -539,7 +590,7 @@ class TradeExecutorService:
     @classmethod
     def _execute_sell_order(
         cls, ticker: str, score: int, current_price: float, holdings: Optional[List[HoldingSchema]], user_id: str,
-        forced_qty: int = None,
+        forced_qty: int = None, reason: str = "",
     ) -> tuple:
         """Execute sell order. Returns (executed, trade_qty)."""
         portfolio = holdings or PortfolioService.load_portfolio(user_id)
@@ -549,11 +600,10 @@ class TradeExecutorService:
         holding_qty = current_holding.quantity
         if forced_qty is not None and forced_qty > 0:
             sell_qty = min(forced_qty, holding_qty)
-            msg = "forced_sell(full)"
         else:
             split_count = SettingsService.get_int("STRATEGY_SELL_SPLIT_COUNT", 5)
             sell_qty = max(1, int(holding_qty / split_count))
-            msg = "partial_sell(take_profit)"
+        msg = reason or ("forced_sell(full)" if (forced_qty is not None and forced_qty > 0) else "partial_sell(take_profit)")
         buy_price_val = float(current_holding.buy_price or 0) or None
         current_price = cls._refresh_us_price(ticker, current_price)
         executed = cls._place_and_record(ticker, "sell", sell_qty, current_price, msg, user_id, buy_price=buy_price_val)
@@ -591,10 +641,11 @@ class TradeExecutorService:
                 ticker, score, profit_pct, is_holding, current_price, market_total,
                 cash_balance, exchange_rate, holdings, user_id, holding, macro,
                 target_cash_ratio_kr, target_cash_ratio_us, forced_qty=forced_qty,
+                reason=reason,
             )
             trade_qty = int(result.spent_krw / current_price) if result.spent_krw else int(result.spent_usd / current_price) if result.spent_usd else 0
         elif side == "sell":
-            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty)
+            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty, reason=reason)
             if executed and trade_qty > 0:
                 is_kr_flag = is_kr(ticker)
                 sold_krw = trade_qty * current_price if is_kr_flag else 0.0
@@ -605,5 +656,9 @@ class TradeExecutorService:
         else:
             return TradeResult.no_op()
 
-        cls._send_trade_alert(ticker, side, score, current_price, change_rate, trade_qty, profit_pct, holding, result.executed)
+        cls._send_trade_alert(
+            ticker, side, score, current_price, change_rate, trade_qty, profit_pct,
+            holding, result.executed, reason=reason,
+            market_total=market_total, cash_balance=cash_balance, exchange_rate=exchange_rate,
+        )
         return result

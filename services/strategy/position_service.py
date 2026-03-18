@@ -577,12 +577,22 @@ class PositionService:
             logger.info(f"⏰ {t} split_order TTL {expire_days}일 만료 → 제거")
 
     @classmethod
-    def _load_execution_config(cls) -> ExecutionConfig:
+    def _get_take_profit_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
+        """레짐별 익절 기준 반환. BULL 7%, NEUTRAL 5%, BEAR 3%."""
+        regime = (macro_data.market_regime.status if macro_data and macro_data.market_regime else "Neutral").upper()
+        if regime == "BULL":
+            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BULL", 7.0)
+        elif regime == "BEAR":
+            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BEAR", 3.0)
+        return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_NEUTRAL", 5.0)
+
+    @classmethod
+    def _load_execution_config(cls, macro_data: MacroDataSnapshot = None) -> ExecutionConfig:
         """SettingsService에서 실행 설정값 일괄 조회 후 ExecutionConfig 반환."""
         return ExecutionConfig(
             buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30),
             sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70),
-            take_profit_pct=SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT", 3.0),
+            take_profit_pct=cls._get_take_profit_pct_by_regime(macro_data),
             stop_loss_pct=SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0),
             add_rsi_limit=SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0),
             add_score_limit=SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55),
@@ -625,7 +635,7 @@ class PositionService:
     ) -> tuple:
         """Execute actual orders based on collected signals.
         Returns (trade_executed: bool, executed_tickers: set)."""
-        cfg = cls._load_execution_config()
+        cfg = cls._load_execution_config(macro_data)
         if user_state is None:
             user_state = UserState()
         sell_cooldown: dict = user_state.sell_cooldown
@@ -709,8 +719,18 @@ class PositionService:
     ) -> None:
         """Sell profitable holdings to meet cash target (called by AssetManagementService).
         Iterates candidates in profit-rate descending order until need is met."""
+        from services.trading.portfolio_service import PortfolioService as _PS
         today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
         sell_cooldown = user_state.sell_cooldown if user_state else {}
+        exchange_rate = MacroService.get_exchange_rate()
+        # 총자산/현금 계산 (Slack 알림용)
+        all_holdings = _PS.load_portfolio(user_id)
+        cash_krw = _PS.load_cash(user_id)
+        usd_cash = _PS.get_usd_cash_balance()
+        kr_market = sum((h.current_price or 0) * h.quantity for h in all_holdings if is_kr(h.ticker))
+        us_market_krw = sum((h.current_price or 0) * h.quantity * exchange_rate for h in all_holdings if not is_kr(h.ticker))
+        kr_total = kr_market + cash_krw
+        us_total_krw = us_market_krw + usd_cash * exchange_rate
         for holding in candidates:
             if need_krw <= 0 and need_usd <= 0:
                 break
@@ -721,12 +741,17 @@ class PositionService:
             current_price = holding.current_price or 0
             if current_price <= 0:
                 continue
+            buy_price = float(holding.buy_price or 0)
+            profit_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
+            is_kr_ticker = is_kr(ticker)
+            market_total = kr_total if is_kr_ticker else us_total_krw
+            cash_balance = cash_krw if is_kr_ticker else usd_cash * exchange_rate
             result = TradeExecutorService._execute_trade_v2(
                 ticker=ticker, side="sell",
                 reason="asset_management_cash_rebalance",
-                profit_pct=0.0, is_holding=True, score=70,
-                current_price=current_price, market_total=0.0,
-                cash_balance=0.0, exchange_rate=MacroService.get_exchange_rate(),
+                profit_pct=profit_pct, is_holding=True, score=70,
+                current_price=current_price, market_total=market_total,
+                cash_balance=cash_balance, exchange_rate=exchange_rate,
                 user_id=user_id, holding=holding,
             )
             if result.executed:

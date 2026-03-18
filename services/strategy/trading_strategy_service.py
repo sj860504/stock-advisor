@@ -370,9 +370,11 @@ class TradingStrategyService:
             is_kr_open=is_kr_open, is_us_open=is_us_open,
             user_state=user_state,
         )
+        cls._save_state(state)  # AssetManagement 쿨다운 변경사항 영속
 
-        if trade_executed and executed_tickers:
-            cls._send_portfolio_report(user_id, before_snapshot, executed_tickers)
+        # 개별 체결 알림(_send_trade_alert)이 트리거/자산/여유 포함하므로 요약 리포트 생략
+        # if trade_executed and executed_tickers:
+        #     cls._send_portfolio_report(user_id, before_snapshot, executed_tickers)
 
     # ── Waiting List / Opportunities ────────────────────────────────────────────────
 

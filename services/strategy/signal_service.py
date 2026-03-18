@@ -211,6 +211,15 @@ class SignalService:
     # ── Score Integration ─────────────────────────────────────────────────────────────
 
     @classmethod
+    def _get_take_profit_pct_by_regime(cls, regime: str) -> float:
+        """레짐별 익절 기준 반환. BULL 7%, NEUTRAL 5%, BEAR 3%."""
+        if regime == "BULL":
+            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BULL", 7.0)
+        elif regime == "BEAR":
+            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BEAR", 3.0)
+        return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_NEUTRAL", 5.0)
+
+    @classmethod
     def _load_score_thresholds(cls) -> dict:
         """Load 6 score thresholds from SettingsService and return as dict."""
         return {
@@ -268,6 +277,7 @@ class SignalService:
             market_cash_ratio = TradeExecutorService._get_target_cash_ratio('KR' if is_kr(ticker) else 'US', regime)
         target_cash_ratio = market_cash_ratio
         thresholds = cls._load_score_thresholds()
+        thresholds["take_profit_pct"] = cls._get_take_profit_pct_by_regime(regime)
         if ticker in panic_locks:
             return (20, ["3day_recovery_wait"], {"panic_lock": True}) if state.rsi < thresholds["oversold_rsi"] else (50, ["panic_lock_zone"], {"panic_lock": True})
         score, reasons, forced_sell, breakdown = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
