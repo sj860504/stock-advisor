@@ -18,6 +18,7 @@ from services.notification.alert_service import AlertService
 from services.config.settings_service import SettingsService
 from services.trading.order_service import OrderService
 from services.kis.kis_service import KisService
+from repositories.trade_history_repo import TradeHistoryRepo
 from models.schemas import TradeResult, MacroDataSnapshot, HoldingSchema
 from utils.logger import get_logger
 from utils.market import is_kr, filter_kr, filter_us
@@ -335,18 +336,29 @@ class TradeExecutorService:
         if target_cash_ratio is None:
             target_cash_ratio = cls._get_target_cash_ratio('KR' if is_kr_ticker else 'US', regime_status)
 
+        # Subtract pending buy orders from available cash to prevent over-leveraging
+        pending_orders = TradeHistoryRepo.get_pending_orders()
+
         if is_kr_ticker:
+            pending_krw = sum((o.price or 0) * (o.quantity or 0) for o in pending_orders if o.order_type == 'buy' and is_kr(o.ticker))
+            effective_cash = max(0.0, cash_balance - pending_krw)
             kr_holdings = [h for h in filter_kr(holdings or []) if h.quantity > 0]
             kr_market_value = sum(cls._get_holding_value(h) for h in kr_holdings)
-            kr_total = kr_market_value + cash_balance
-            cash_ratio = cash_balance / kr_total if kr_total > 0 else 0
+            kr_total = kr_market_value + effective_cash
+            cash_ratio = effective_cash / kr_total if kr_total > 0 else 0
+            if pending_krw > 0:
+                logger.debug(f"💰 [CashCheck] Pending KRW Buy: {pending_krw:,.0f}, Effective Cash: {effective_cash:,.0f}, Ratio: {cash_ratio:.2%}")
         else:
+            pending_us_usd = sum((o.price or 0) * (o.quantity or 0) for o in pending_orders if o.order_type == 'buy' and not is_kr(o.ticker))
+            usd_cash = PortfolioService.get_usd_cash_balance() or 0.0
+            effective_usd = max(0.0, usd_cash - pending_us_usd)
+            us_cash_krw = effective_usd * exchange_rate
             us_holdings = [h for h in filter_us(holdings or []) if h.quantity > 0]
-            us_market_value_krw = sum(cls._get_holding_value(h) * exchange_rate for h in us_holdings if h.quantity > 0)
-            usd_cash = PortfolioService.get_usd_cash_balance()
-            us_cash_krw = usd_cash * exchange_rate
+            us_market_value_krw = sum(cls._get_holding_value(h) * exchange_rate for h in us_holdings)
             us_total = us_market_value_krw + us_cash_krw
             cash_ratio = us_cash_krw / us_total if us_total > 0 else 0
+            if pending_us_usd > 0:
+                logger.debug(f"💵 [CashCheck] Pending US Buy: ${pending_us_usd:,.2f}, Effective USD: ${effective_usd:,.2f}, Ratio: {cash_ratio:.2%}")
 
         return cash_ratio <= target_cash_ratio and not cls._is_panic_market(macro)
 

@@ -283,9 +283,7 @@ class SignalService:
         score, reasons, forced_sell, breakdown = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
         if forced_sell:
             return 100, reasons, breakdown
-        if cash_ratio < target_cash_ratio and score > 50:
-            score += TradeExecutorService.WEIGHTS['CASH_PENALTY']; reasons.append("cash_shortage")
-            breakdown["cash_penalty"] = TradeExecutorService.WEIGHTS['CASH_PENALTY']
+
         return max(1, min(100, score)), reasons, breakdown
 
     # ── Analysis Interface ───────────────────────────────────────────────────────
