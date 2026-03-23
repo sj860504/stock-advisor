@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Union
 
 from utils.market import is_kr, filter_kr, filter_us
+from repositories.stock_meta_repo import StockMetaRepo
 
 from models.schemas import ComprehensiveReport, PortfolioContext, KrPortfolio, UsPortfolio, HoldingSchema, MacroDataSnapshot
 
@@ -382,23 +383,24 @@ class ReportService:
         return grouped
 
     @staticmethod
-    def _format_trade_group_lines(trade_list: List, label: str, icon: str) -> str:
+    def _format_trade_group_lines(trade_list: List, label: str, icon: str, name_map: dict) -> str:
         """Aggregate buy or sell group and return as Slack message section."""
         groups = ReportService._aggregate_by_ticker(trade_list)
         total_krw = sum(v["total_amt"] for v in groups.values() if v["is_kr"])
         total_usd = sum(v["total_amt"] for v in groups.values() if not v["is_kr"])
         header = f"{icon} **{label}** ({len(trade_list)}"
         if total_krw > 0:
-            header += f", KR {total_krw:,.0f}KRW"
+            header += f", KR {total_krw:,.0f}원"
         if total_usd > 0:
-            header += f", US ${total_usd:,.2f}"
+            header += f", US {total_usd:,.2f}달러"
         lines = header + ")\n"
         for ticker, info in sorted(groups.items()):
+            display = name_map.get(ticker, ticker)
             avg = info["total_amt"] / info["qty"] if info["qty"] else 0
             if info["is_kr"]:
-                lines += f"  • {ticker} {info['qty']}sh | Avg {avg:,.0f}KRW | Total {info['total_amt']:,.0f}KRW\n"
+                lines += f"  • {display} {info['qty']}sh | Avg {avg:,.0f}원 | Total {info['total_amt']:,.0f}원\n"
             else:
-                lines += f"  • {ticker} {info['qty']}sh | Avg ${avg:,.2f} | Total ${info['total_amt']:,.2f}\n"
+                lines += f"  • {display} {info['qty']}sh | Avg {avg:,.2f}달러 | Total {info['total_amt']:,.2f}달러\n"
         return lines
 
     @staticmethod
@@ -415,8 +417,11 @@ class ReportService:
         sells = [t for t in trades if t.order_type == "sell"]
         msg  += f"📊 Total **{len(trades)}** (Buy {len(buys)} / Sell {len(sells)})\n\n"
 
+        all_tickers = list({t.ticker for t in trades})
+        name_map = StockMetaRepo.get_name_map(all_tickers)
+
         if buys:
-            msg += ReportService._format_trade_group_lines(buys, "Buy", "🟢") + "\n"
+            msg += ReportService._format_trade_group_lines(buys, "Buy", "🟢", name_map) + "\n"
         if sells:
-            msg += ReportService._format_trade_group_lines(sells, "Sell", "🔴")
+            msg += ReportService._format_trade_group_lines(sells, "Sell", "🔴", name_map)
         return msg

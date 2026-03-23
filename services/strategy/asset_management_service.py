@@ -66,8 +66,9 @@ class AssetManagementService:
             budget_usd = 0.0 if market == "KR" else gap
             PositionService.execute_buy_budget(user_id, budget_krw=budget_krw, budget_usd=budget_usd, signals=signals, user_state=user_state)
         elif gap < 0:
+            signals = SignalService.get_latest_signals()
             market_holdings = [h for h in holdings if (is_kr(h.ticker) if market == "KR" else not is_kr(h.ticker))]
-            candidates = cls._select_sell_candidates(market_holdings)
+            candidates = cls._select_sell_candidates(market_holdings, signals)
             if candidates:
                 need_krw = abs(gap) if market == "KR" else 0.0
                 need_usd = 0.0 if market == "KR" else abs(gap)
@@ -137,13 +138,18 @@ class AssetManagementService:
     # ── Sell Candidates ────────────────────────────────────────────────────────
 
     @classmethod
-    def _select_sell_candidates(cls, holdings: List[HoldingSchema]) -> List[HoldingSchema]:
-        """Return profit-positive holdings sorted by profit rate descending.
+    def _select_sell_candidates(cls, holdings: List[HoldingSchema], signals=None) -> List[HoldingSchema]:
+        """Return profit-positive holdings sorted by score descending (then profit rate).
         Returns empty list if no profitable holdings → caller skips sell.
         Pure function, no I/O."""
         min_profit = 1.0  # 수수료 고려 최소 수익률 1%
         profitable = [h for h in holdings if cls._calc_holding_profit_pct(h) >= min_profit]
-        return sorted(profitable, key=cls._calc_holding_profit_pct, reverse=True)
+        score_map = {s.ticker: s.score for s in signals} if signals else {}
+        return sorted(
+            profitable,
+            key=lambda h: (score_map.get(h.ticker, 50), cls._calc_holding_profit_pct(h)),
+            reverse=True,
+        )
 
     @classmethod
     def _calc_profit_exceeding_ratio(cls, holdings: List[HoldingSchema], threshold_pct: float) -> float:

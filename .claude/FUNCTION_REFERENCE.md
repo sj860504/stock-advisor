@@ -325,11 +325,11 @@
 | 함수 | 파라미터 | 반환 | 핵심 로직 |
 |------|---------|------|-----------|
 | `run(user_id, holdings, kr_cash, usd_cash, macro_data, is_kr_open, is_us_open)` | str, List[HoldingSchema], float, float, MacroDataSnapshot, bool=True, bool=True | None | target_ratio 계산 → `_rebalance_market`("KR"/"US") 위임 |
-| `_rebalance_market(user_id, market, cash, stock_total, target_ratio, holdings)` | str, str, float, float, float, List[HoldingSchema] | None | gap>0→execute_buy_budget, gap<0→execute_sell_for_cash. KR/US 공통 로직 |
+| `_rebalance_market(user_id, market, cash, stock_total, target_ratio, holdings, user_state=None)` | str, str, float, float, float, List[HoldingSchema], Optional[UserState] | None | gap>0→execute_buy_budget, gap<0→SignalService.get_latest_signals() 조회 후 execute_sell_for_cash. KR/US 공통 로직 |
 | `_get_target_cash_ratio(regime, fear_greed, holdings)` | MarketRegimeSchema, Optional[float], List[HoldingSchema] | float | fear_greed<10→0.0, Bear→0.20, Neutral/Bull→0.40, 보유종목 30%이상 수익 초과→+10%p, 상한0.60 |
 | `_calc_totals(holdings)` | List[HoldingSchema] | Tuple[float, float] | (kr_total_krw, us_total_usd). @staticmethod, 순수 함수, I/O 없음 |
 | `_calc_cash_gap(cash, stock_total, target_ratio)` | float, float, float | float | 양수=여유(매수), 음수=부족(매도). @staticmethod, 순수 함수 |
-| `_select_sell_candidates(holdings)` | List[HoldingSchema] | List[HoldingSchema] | 수익종목(profit_pct>0) 필터 → 수익률 내림차순. 순수 함수 |
+| `_select_sell_candidates(holdings, signals=None)` | List[HoldingSchema], Optional[List] | List[HoldingSchema] | 수익종목(profit_pct≥1%) 필터 → score 높은 순(매도 신호 강한 순), 동점 시 수익률 내림차순. signals 없는 종목은 기본 score 50 |
 | `_calc_profit_exceeding_ratio(holdings, threshold_pct)` | List[HoldingSchema], float | float | threshold 이상 수익 종목 비율. 순수 함수 |
 | `_calc_holding_profit_pct(holding)` | HoldingSchema | float | (current_price - buy_price) / buy_price * 100. @staticmethod, 순수 함수 |
 

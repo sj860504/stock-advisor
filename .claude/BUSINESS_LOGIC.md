@@ -521,9 +521,12 @@ _is_cash_below_target(ticker, holdings, cash_balance, ...)
   │      → 여유 현금 소진될 때까지 순서대로 매수
   │
   ├─ 4. 현금 부족 시 → 매도 후 매수
+  │      SignalService.get_latest_signals() 조회
   │      매도 우선순위: score × 이익률 복합 정렬
   │        ① score 높을수록 우선 (매도 신호 강한 것)
   │        ② 이익률 높을수록 우선 (실현 손실 최소화)
+  │        ③ signals에 없는 종목은 기본 score 50 적용
+  │        → 수익률 ≥ 1% 종목만 대상
   │        → 부족분 현금 확보될 때까지 순서대로 일부 매도
   │      → 확보된 현금으로 매수 후보 실행
   │
@@ -561,6 +564,13 @@ _is_cash_below_target(ticker, holdings, cash_balance, ...)
 
 `_select_sell_candidates()`: 수익률 `>= 1%` 이상인 종목만 매도 대상.
 수수료(약 0.25~0.5%) 고려하여 수익률 0% 근처 종목의 무의미한 매도 방지.
+
+### ✅ 에셋 확보 매도 score 기반 정렬 (2026-03-19)
+
+**변경 전**: 수익률 높은 순으로 매도.
+**변경 후**: `SignalService.get_latest_signals()` 조회 → score 높은 순(매도 신호 강한 종목 우선) 정렬. score 동일 시 수익률 높은 순(기존 로직 유지). signals에 없는 종목은 기본 score 50 적용.
+- `_rebalance_market()`: 매도 경로(`gap < 0`)에서도 signals 조회하여 `_select_sell_candidates()`에 전달
+- `_select_sell_candidates(holdings, signals=None)`: 시그니처 변경, score 기반 복합 정렬
 
 ---
 
@@ -1155,4 +1165,4 @@ US:
 
 ---
 
-**Last Updated**: 2026-03-18 (레짐별 익절, 트리거 정보 추가, Slack 포맷 리뉴얼, 쿨다운 영속 버그 수정, 에셋 확보 최소 수익률)
+**Last Updated**: 2026-03-19 (에셋 확보 매도 score 기반 정렬, 레짐별 익절, 트리거 정보 추가, Slack 포맷 리뉴얼, 쿨다운 영속 버그 수정, 에셋 확보 최소 수익률)

@@ -453,6 +453,7 @@ class PositionService:
             cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, macro_data=macro_data,
             target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
+            reason=f"trailing_stop({drawdown:.1f}% from high {high:,.0f})",
         )
 
     # ── Panic Lock (손절 후 재매수 차단) ─────────────────────────────────────────
@@ -482,10 +483,13 @@ class PositionService:
         current_price: float, market_total: float, cash_balance: float,
         exchange_rate: float, holdings: list, user_id: str,
         macro_data: MacroDataSnapshot, target_cash_kr: float, target_cash_us: float,
+        reason: str = None,
     ) -> TradeResult:
         """Execute forced stop-loss sell at full quantity. No cooldown — stop-loss must always fire."""
+        if reason is None:
+            reason = f"stop_loss({profit_pct:.2f}%)"
         return TradeExecutorService._execute_trade_v2(
-            ticker, "sell", f"stop_loss({profit_pct:.2f}%)", profit_pct, True, 0,
+            ticker, "sell", reason, profit_pct, True, 0,
             current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
