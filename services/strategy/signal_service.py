@@ -142,7 +142,7 @@ class SignalService:
             delta += WEIGHTS['PROFIT_TAKE_TARGET']; reasons.append(f"take_profit_zone({profit_pct:.1f}%)")
         elif profit_pct <= -5.0 and profit_pct > stop_loss_pct:
             delta += WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"add_position_zone({profit_pct:.1f}%)")
-        elif profit_pct <= stop_loss_pct:
+        elif stop_loss_pct < 0 and profit_pct <= stop_loss_pct:
             return 0, ["stop_loss_hit"], True  # forced_sell: score=100
         return delta, reasons, False
 

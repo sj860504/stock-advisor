@@ -652,6 +652,13 @@ class PositionService:
 
         cls._expire_split_orders(split_orders)
         cls._clear_expired_panic_locks(user_state)
+        
+        # 미보유 종목의 과거 고점(trailing_high) 찌꺼기 일괄 정리
+        active_tickers = {h.ticker for h in holdings}
+        for t in list(trailing_high.keys()):
+            if t not in active_tickers:
+                trailing_high.pop(t, None)
+
         prepared_signals = cls._sort_signals_by_priority(prepared_signals, split_orders)
 
         for sig in prepared_signals:
@@ -747,6 +754,11 @@ class PositionService:
                 continue
             buy_price = float(holding.buy_price or 0)
             profit_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
+            
+            if profit_pct < 1.0:
+                logger.info(f"⏭️ [SellForCash] {ticker} 수익률({profit_pct:.2f}%) 1.0% 미만 → 스킵")
+                continue
+
             is_kr_ticker = is_kr(ticker)
             market_total = kr_total if is_kr_ticker else us_total_krw
             cash_balance = cash_krw if is_kr_ticker else usd_cash * exchange_rate

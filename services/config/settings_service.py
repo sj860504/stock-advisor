@@ -90,7 +90,11 @@ class SettingsService:
     def get_float(cls, key: str, default: float = 0.0) -> float:
         try:
             val = cls.get_setting(key)
-            return float(val) if val is not None else default
+            float_val = float(val) if val is not None else default
+            if key == "STRATEGY_STOP_LOSS_PCT" and float_val >= 0:
+                logger.warning(f"STRATEGY_STOP_LOSS_PCT value {float_val} is invalid (>=0). Overriding strictly to default {default}.")
+                return default
+            return float_val
         except (ValueError, TypeError):
             return default
 
