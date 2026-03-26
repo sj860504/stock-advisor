@@ -123,7 +123,12 @@ async def get_balance() -> Dict[str, Any]:
 async def get_waiting_list() -> Dict[str, Any]:
     """Get trade waiting list (BUY/SELL signals)."""
     try:
-        return TradingStrategyService.get_waiting_list()
+        items = TradingStrategyService.get_waiting_list()
+        return {
+            "enabled": TradingStrategyService.is_enabled(),
+            "buy_list": [i for i in items if i.get("action") == "BUY"],
+            "sell_list": [i for i in items if i.get("action") == "SELL"],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

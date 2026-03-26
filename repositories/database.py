@@ -51,6 +51,7 @@ def init_db() -> None:
     from models.trade_history import TradeHistory  # noqa: F401
     from models.settings import Settings  # noqa: F401
     from models.strategy_state import StrategyState  # noqa: F401
+    from models.watchlist import UserWatchlist  # noqa: F401
 
     try:
         Base.metadata.create_all(_engine)

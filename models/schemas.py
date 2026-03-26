@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Dict, List, Optional, Any
+from datetime import datetime
 
 class RegimeComponents(BaseModel):
     """_calculate_all_regime_components() 결과 — 순수 계산값, I/O 없음."""
@@ -884,3 +885,30 @@ class TickTradingSettingsRequest(BaseModel):
     take_profit_pct: Optional[float] = None
     stop_loss_pct: Optional[float] = None
     close_minutes: Optional[int] = None
+
+
+# ── Watchlist ──────────────────────────────────────────────────────────────
+
+class WatchlistItem(BaseModel):
+    ticker: str
+    added_at: datetime
+
+
+class WatchlistResponse(BaseModel):
+    user_id: str
+    tickers: list[WatchlistItem]
+
+
+class WatchlistUpdateResponse(BaseModel):
+    status: str   # "added" | "removed" | "already_exists" | "not_found"
+    ticker: str
+
+
+class StrategyModeResponse(BaseModel):
+    kr_strategy_mode: str  # "top100" | "watchlist"
+    us_strategy_mode: str
+
+
+class StrategyModeRequest(BaseModel):
+    market: str  # "kr" | "us"
+    mode: str    # "top100" | "watchlist"

@@ -396,8 +396,15 @@ class SignalService:
         kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float,
         usd_cash: float = 0.0, exchange_rate: float = 1350.0,
+        watchlist_kr: set[str] | None = None,
+        watchlist_us: set[str] | None = None,
     ) -> list[SignalSchema]:
-        """분석 시장 결정 → 하드게이트 → 스코어 계산 → 신호 수집."""
+        """분석 시장 결정 → 하드게이트 → 스코어 계산 → 신호 수집.
+
+        watchlist_kr/watchlist_us 가 None 이면 Top100 모드 (기존 동작).
+        set 이면 Watchlist 모드 — 보유 종목이 아닌 경우 watchlist에 없는 티커는
+        점수 계산 및 신호 생성을 건너뜀.
+        """
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
         analyze_kr, analyze_us = cls._determine_analysis_markets(allow_extended)
 
@@ -411,6 +418,13 @@ class SignalService:
             if not getattr(ticker_state, 'is_ready', False):
                 continue
             holding = holdings_map.get(ticker)
+
+            # Watchlist 모드 필터: 미보유 + watchlist 미포함 → BUY 신호·점수 계산 생략
+            if holding is None:
+                wl = watchlist_kr if is_kr_ticker else watchlist_us
+                if wl is not None and ticker not in wl:
+                    continue
+
             if cls._apply_hard_gates(ticker, ticker_state, holding, cash_balance, usd_cash, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us, macro=macro_data):
                 continue
             market_total = kr_total if is_kr_ticker else us_total_krw
