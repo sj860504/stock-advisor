@@ -441,12 +441,20 @@ class PositionService:
         high = trailing_high.get(ticker, 0.0)
         if high <= 0:
             return None
-        drawdown = (current_price - high) / high * 100
-        threshold = cls._get_trailing_stop_pct(macro_data)
-        if drawdown > threshold:
-            return None
         buy_price = float(holding.buy_price or 0)
         profit_pct = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+        max_profit_pct = (high - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+        
+        drawdown = (current_price - high) / high * 100
+        
+        # [수익 보존(Tight Stop) 로직] 최고점이 +1.5% 이상 도달했다면, 방어막을 거두고 -1.0%로 매우 조임
+        if max_profit_pct >= 1.5:
+            threshold = -1.0
+        else:
+            threshold = cls._get_trailing_stop_pct(macro_data)
+            
+        if drawdown > threshold:
+            return None
         logger.info(f"🔻 {ticker} Trailing stop: high={high:,.2f} current={current_price:,.2f} drawdown={drawdown:.1f}% (threshold={threshold:.1f}%)")
         return cls._handle_forced_sell(
             ticker, holding, profit_pct, current_price, market_total,
