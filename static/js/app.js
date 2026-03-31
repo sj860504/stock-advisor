@@ -342,8 +342,8 @@ function renderPortfolioTable(data) {
                 </select>
             </td>
             <td class="text-center">
-                ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수</button>` : ''}
-                ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도</button>` : ''}
+                ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
+                ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
                 ${!d.has_buy_cooldown && !d.has_sell_cooldown ? '-' : ''}
             </td>
             <td style="white-space:nowrap">
@@ -1440,3 +1440,23 @@ async function initApp() {
         initApp();
     } catch (e) { showLogin(); }
 })();
+
+async function resetAllCooldowns() {
+    if (!confirm('모든 종목의 매수/매도 쿨다운을 초기화하시겠습니까?')) return;
+    try {
+        await apiFetch('/trading/cooldown/reset', { method: 'POST', body: {} });
+        showToast('전체 쿨다운 초기화됨');
+        fetchPortfolioFull();
+    } catch (e) { showToast(e.message, false); }
+}
+
+async function resetTickerCooldown(ticker, action) {
+    try {
+        await apiFetch('/trading/cooldown/reset', { 
+            method: 'POST', 
+            body: { ticker: ticker, action: action } 
+        });
+        showToast(`${ticker} ${action === 'buy' ? '매수' : '매도'} 쿨다운 해제`);
+        fetchPortfolioFull();
+    } catch (e) { showToast(e.message, false); }
+}
