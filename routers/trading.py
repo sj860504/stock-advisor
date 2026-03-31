@@ -12,7 +12,7 @@ from models.schemas import (
     OrderRequest, TickTradingSettingsRequest,
     StatusMessageResponse, SettingUpdateResponse,
     TickSettingsResponse, TickSettingsUpdateResponse, SellAllRebuResponse,
-    TradeRecordDto,
+    TradeRecordDto, ResetCooldownRequest,
 )
 
 logger = get_logger("trading_router")
@@ -263,14 +263,13 @@ async def sell_all_and_rebuy() -> SellAllRebuResponse:
 
 @router.post("/cooldown/reset", response_model=StatusMessageResponse)
 async def reset_cooldown(
-    ticker: Optional[str] = Body(None, embed=True),
-    action: Optional[str] = Body(None, embed=True),
+    req: ResetCooldownRequest = Body(...),
 ) -> StatusMessageResponse:
-    """Reset trading cooldowns. If ticker is None, resets all."""
+    """Reset trading cooldowns. If req.ticker is None, resets all."""
     try:
-        success = TradingStrategyService.reset_cooldown("sean", ticker=ticker, action=action)
+        success = TradingStrategyService.reset_cooldown("sean", ticker=req.ticker, action=req.action)
         if success:
-            msg = f"Cooldown reset for {ticker or 'ALL'}"
+            msg = f"Cooldown reset for {req.ticker or 'ALL'}"
             return StatusMessageResponse(status="success", message=msg)
         raise HTTPException(status_code=400, detail="Failed to reset cooldown")
     except Exception as e:

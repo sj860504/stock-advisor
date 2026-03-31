@@ -648,6 +648,11 @@ class UserState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+class ResetCooldownRequest(BaseModel):
+    ticker: Optional[str] = None
+    action: Optional[str] = None
+
+
 class SignalSchema(BaseModel):
     """Trading signal for a single ticker (output of _collect_trading_signals)."""
     ticker: str

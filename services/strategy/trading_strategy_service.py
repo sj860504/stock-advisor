@@ -81,22 +81,34 @@ class TradingStrategyService:
     def reset_cooldown(cls, user_id: str = "sean", ticker: Optional[str] = None, action: Optional[str] = None) -> bool:
         """Reset cooldown for a specific ticker/action or all cooldowns if not specified."""
         try:
+            logger.info(f"🔄 reset_cooldown request: user={user_id}, ticker={ticker}, action={action}")
             state = cls._load_state(user_id)
             user_state = state.get(user_id)
             if not user_state:
+                logger.warning(f"⚠️ No user state found for {user_id}")
                 return False
 
-            if ticker:
-                ticker = ticker.upper()
+            if ticker and ticker.strip():
+                ticker = ticker.strip().upper()
                 if action == "buy" or not action:
-                    user_state.add_buy_cooldown.pop(ticker, None)
+                    removed = user_state.add_buy_cooldown.pop(ticker, None)
+                    if removed: logger.info(f"🔓 Buy cooldown removed for {ticker}")
                 if action == "sell" or not action:
-                    user_state.sell_cooldown.pop(ticker, None)
-                logger.info(f"🔓 Cooldown reset for {ticker} ({action or 'all'})")
+                    removed = user_state.sell_cooldown.pop(ticker, None)
+                    if removed: logger.info(f"🔓 Sell cooldown removed for {ticker}")
+                logger.info(f"🔓 Cooldown reset for {ticker} ({action or 'all'}) complete.")
             else:
-                user_state.add_buy_cooldown = {}
-                user_state.sell_cooldown = {}
-                logger.info(f"🔓 All cooldowns reset for user {user_id}")
+                # If ticker is None, it means reset ALL for the specified action (or all actions)
+                if action == "buy":
+                    user_state.add_buy_cooldown = {}
+                    logger.info(f"🔓 All BUY cooldowns reset for user {user_id}")
+                elif action == "sell":
+                    user_state.sell_cooldown = {}
+                    logger.info(f"🔓 All SELL cooldowns reset for user {user_id}")
+                else:
+                    user_state.add_buy_cooldown = {}
+                    user_state.sell_cooldown = {}
+                    logger.info(f"🔓 ALL (BUY+SELL) cooldowns reset for user {user_id}")
 
             cls._save_state(state)
             return True
