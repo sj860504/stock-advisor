@@ -88,7 +88,9 @@ async function apiFetch(path, opts = {}) {
     if (r.status === 401) { showLogin('세션이 만료되었습니다. 다시 로그인해 주세요.'); throw new Error('unauthorized'); }
     if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || r.statusText);
+        let msg = err.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(m => m.msg || JSON.stringify(m)).join(', ');
+        throw new Error(msg);
     }
     return r.json();
 }
@@ -1444,7 +1446,11 @@ async function initApp() {
 async function resetAllCooldowns() {
     if (!confirm('모든 종목의 매수/매도 쿨다운을 초기화하시겠습니까?')) return;
     try {
-        await apiFetch('/trading/cooldown/reset', { method: 'POST', body: {} });
+        await apiFetch('/trading/cooldown/reset', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}) 
+        });
         showToast('전체 쿨다운 초기화됨');
         fetchPortfolioFull();
     } catch (e) { showToast(e.message, false); }
@@ -1454,7 +1460,8 @@ async function resetTickerCooldown(ticker, action) {
     try {
         await apiFetch('/trading/cooldown/reset', { 
             method: 'POST', 
-            body: { ticker: ticker, action: action } 
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker, action: action }) 
         });
         showToast(`${ticker} ${action === 'buy' ? '매수' : '매도'} 쿨다운 해제`);
         fetchPortfolioFull();
