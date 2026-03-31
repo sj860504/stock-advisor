@@ -77,6 +77,33 @@ class TradingStrategyService:
             elif isinstance(user_state, dict):
                 StrategyStateRepo.save(user_id, user_state)
 
+    @classmethod
+    def reset_cooldown(cls, user_id: str = "sean", ticker: Optional[str] = None, action: Optional[str] = None) -> bool:
+        """Reset cooldown for a specific ticker/action or all cooldowns if not specified."""
+        try:
+            state = cls._load_state(user_id)
+            user_state = state.get(user_id)
+            if not user_state:
+                return False
+
+            if ticker:
+                ticker = ticker.upper()
+                if action == "buy" or not action:
+                    user_state.add_buy_cooldown.pop(ticker, None)
+                if action == "sell" or not action:
+                    user_state.sell_cooldown.pop(ticker, None)
+                logger.info(f"🔓 Cooldown reset for {ticker} ({action or 'all'})")
+            else:
+                user_state.add_buy_cooldown = {}
+                user_state.sell_cooldown = {}
+                logger.info(f"🔓 All cooldowns reset for user {user_id}")
+
+            cls._save_state(state)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to reset cooldown: {e}")
+            return False
+
     # ── Public API Delegation Wrappers ───────────────────────────────────────────────────
 
     @classmethod

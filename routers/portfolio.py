@@ -64,9 +64,20 @@ def get_full_portfolio_report(user_id: str = "default") -> Dict[str, Any]:
     from services.market.macro_service import MacroService
     price_cache = SchedulerService.get_all_cached_prices()
     holdings = PortfolioService.build_full_report(user_id, price_cache)
+    from services.strategy.trading_strategy_service import TradingStrategyService
+    user_state_dict = TradingStrategyService._load_state(user_id if user_id != "default" else "sean")
+    user_state = user_state_dict.get(user_id if user_id != "default" else "sean")
+    
+    sell_cd = user_state.sell_cooldown if user_state else {}
+    buy_cd = user_state.add_buy_cooldown if user_state else {}
+
     return {
         "holdings": holdings,
         "exchange_rate": MacroService.get_exchange_rate(),
+        "cooldown": {
+            "sell": sell_cd,
+            "buy": {k: (v.model_dump() if hasattr(v, "model_dump") else v) for k, v in buy_cd.items()}
+        },
     }
 
 

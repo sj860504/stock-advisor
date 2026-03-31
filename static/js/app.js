@@ -255,6 +255,14 @@ async function fetchPortfolioFull() {
         const resp   = await apiFetch('/portfolio/' + USER + '/full-report');
         const data   = resp.holdings || resp;
         const exRate = resp.exchange_rate || 1350;
+        const cooldown = resp.cooldown || { buy: {}, sell: {} };
+        
+        // Inject cooldown data into each holding for easier rendering
+        data.forEach(h => {
+            h.has_buy_cooldown = !!cooldown.buy[h.ticker];
+            h.has_sell_cooldown = !!cooldown.sell[h.ticker];
+        });
+
         _portfolioDataCache = data;
 
         let valKr = 0, valUsUsd = 0;
@@ -332,6 +340,11 @@ function renderPortfolioTable(data) {
                     onchange="updateSector('${d.ticker}', this.value)">
                     ${SECTOR_OPTIONS.map(o => `<option value="${o.value}"${o.value === (d.sector || 'other') ? ' selected' : ''}>${o.label}</option>`).join('')}
                 </select>
+            </td>
+            <td class="text-center">
+                ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수</button>` : ''}
+                ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도</button>` : ''}
+                ${!d.has_buy_cooldown && !d.has_sell_cooldown ? '-' : ''}
             </td>
             <td style="white-space:nowrap">
                 <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}','${s}')">DCF</button>

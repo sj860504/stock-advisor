@@ -97,6 +97,13 @@ async def get_balance() -> Dict[str, Any]:
                 "timestamp": t.timestamp.strftime("%H:%M:%S") if t.timestamp else "",
             })
 
+        states = MarketDataService.get_all_states()
+        user_state_dict = TradingStrategyService._load_state("sean")
+        user_state = user_state_dict.get("sean")
+        
+        sell_cd = user_state.sell_cooldown if user_state else {}
+        buy_cd = user_state.add_buy_cooldown if user_state else {}
+
         return {
             "total_eval": total_eval,
             "cash_kr": analysis.get("kr", {}).get("cash", 0),
@@ -105,6 +112,10 @@ async def get_balance() -> Dict[str, Any]:
             "holdings": analysis.get("holdings", []),
             "analysis": analysis,
             "summary": kis_balance.get("summary", []),
+            "cooldown": {
+                "sell": sell_cd,
+                "buy": {k: (v.model_dump() if hasattr(v, "model_dump") else v) for k, v in buy_cd.items()}
+            },
             "pending": {
                 "orders": pending_list,
                 "buy_krw": pending_buy_krw,
@@ -246,4 +257,21 @@ async def sell_all_and_rebuy() -> SellAllRebuResponse:
         return SellAllRebuResponse(**result)
     except Exception as e:
         logger.error(f"❌ sell_all_and_rebuy error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cooldown/reset", response_model=StatusMessageResponse)
+async def reset_cooldown(
+    ticker: Optional[str] = Body(None, embed=True),
+    action: Optional[str] = Body(None, embed=True),
+) -> StatusMessageResponse:
+    """Reset trading cooldowns. If ticker is None, resets all."""
+    try:
+        success = TradingStrategyService.reset_cooldown("sean", ticker=ticker, action=action)
+        if success:
+            msg = f"Cooldown reset for {ticker or 'ALL'}"
+            return StatusMessageResponse(status="success", message=msg)
+        raise HTTPException(status_code=400, detail="Failed to reset cooldown")
+    except Exception as e:
+        logger.error(f"Cooldown reset error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
