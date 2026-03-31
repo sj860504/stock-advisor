@@ -595,6 +595,7 @@ class TradeExecutorService:
         if executed:
             spent_krw = quantity * final_price if is_kr_flag else 0.0
             spent_usd = quantity * current_price if not is_kr_flag else 0.0
+            cls._last_buy_spent_krw = spent_krw if is_kr_flag else (spent_usd * (exchange_rate or 1350.0))
             logger.info(f"💰 {ticker} Buy spent ≈ {spent_krw:,.0f}KRW / ${spent_usd:,.2f} (qty={quantity})")
             return TradeResult(executed=True, spent_krw=spent_krw, spent_usd=spent_usd)
         return TradeResult.no_op()

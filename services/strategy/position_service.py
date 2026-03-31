@@ -155,6 +155,15 @@ class PositionService:
         if cls._is_buy_cooldown_active(ticker, today, current_price_val, add_buy_cooldown):
             logger.info(f"⏭️ {ticker} Add-buy cooldown active (already added today). Re-evaluate tomorrow.")
             return TradeResult.no_op()
+        
+        # [Manual Fix] Subtract committed cash for existing split orders
+        market = 'KR' if is_kr(ticker) else 'US'
+        committed = cls._calculate_committed_cash(split_orders, market)
+        effective_cash = max(0.0, cash_balance - committed) if market == 'KR' else cash_balance
+        if committed > 0 and market == 'KR':
+            logger.info(f"💰 {ticker} Add-buy: committed={committed:,.0f}KRW, effective_cash={effective_cash:,.0f}KRW")
+            cash_balance = effective_cash
+
         result = TradeExecutorService._execute_trade_v2(
             ticker, "buy", f"add_position({profit_pct:.2f}%)", profit_pct, True, score,
             current_price_val, market_total, cash_balance, exchange_rate,
@@ -175,10 +184,19 @@ class PositionService:
             logger.info(f"⏭️ {ticker} ETF/Other sector new buy blocked (sector={sector}). Skip.")
             return False
         is_kr_flag = is_kr(ticker)
+        
+        # [Manual Fix] Subtract committed cash for existing split orders
+        market = 'KR' if is_kr_flag else 'US'
+        committed = cls._calculate_committed_cash(split_orders, market)
+        
         usd_cash_krw = 0.0
         if not is_kr_flag:
             from services.trading.portfolio_service import PortfolioService as _PS
             usd_cash_krw = (_PS.get_usd_cash_balance() or 0) * exchange_rate
+            usd_cash_krw = max(0.0, usd_cash_krw - (committed * exchange_rate if market == 'US' else 0)) # committed is in USD for US stocks
+        else:
+            cash_balance = max(0.0, cash_balance - committed)
+
         total_qty, _, _ = TradeExecutorService._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total, usd_cash_krw=usd_cash_krw)
         if total_qty <= 0:
             logger.warning(f"⚠️ {ticker} Insufficient balance or qty 0. Cannot buy.")
@@ -261,11 +279,16 @@ class PositionService:
         """Score-based sell logic with split sell tracking. Caller must ensure score/holding condition gates."""
         if sell_split_orders is None:
             sell_split_orders = {}
-        if sell_cooldown.get(ticker) == today:
-            logger.info(f"⏭️ {ticker} Partial sell cooldown active (already score-sold today). Re-evaluate tomorrow.")
-            return False
-        split_orders.pop(ticker, None)  # Cancel remaining buy split orders
         holding_qty = int(holding.quantity) if holding else 0
+        if score >= sell_min and holding_qty > 0:
+            if sell_cooldown.get(ticker) == today:
+                # [Manual Fix] High score bypass for sell cooldown
+                if score >= 90:
+                    logger.info(f"🔓 {ticker} Sell cooldown unlocked: Score {score} is >= 90.")
+                else:
+                    logger.info(f"⏭️ {ticker} Partial sell cooldown active (already score-sold today). Re-evaluate tomorrow.")
+                    return False
+        split_orders.pop(ticker, None)  # Cancel remaining buy split orders
         if holding_qty <= 0:
             return False
         sell_qty = cls._get_sell_split_qty(ticker, holding_qty, sell_split_orders, today)
@@ -382,6 +405,8 @@ class PositionService:
         user_state: UserState = None,
     ) -> tuple:
         """강제매도/트레일링/익절/추매/점수매매 분기 라우터. (executed, ticker_or_None, spent_krw, spent_usd) 반환."""
+        # [Manual Fix] Reset buy-spent tracker for v1 compatibility before handling each signal
+        TradeExecutorService._last_buy_spent_krw = 0.0
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
         if u.forced_sell and u.holding:
             (split_orders or {}).pop(u.ticker, None)
