@@ -5,6 +5,7 @@ from services.strategy.backtest_service import BacktestService
 from services.trading.order_service import OrderService
 from services.trading.portfolio_service import PortfolioService
 from services.config.settings_service import SettingsService
+from services.market.market_data_service import MarketDataService
 from typing import Dict, List, Any, Optional
 from utils.logger import get_logger
 from models.schemas import (
