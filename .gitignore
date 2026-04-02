@@ -10,3 +10,5 @@ fetch_toss.py
 dcf_calculator.py
 *.log
 output.log
+.venv/
+
