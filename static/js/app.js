@@ -41,6 +41,7 @@ async function doLogin() {
 
 async function logout() {
     await fetch(API + '/auth/logout', { method: 'POST', credentials: 'include' });
+    if (_priceStream) { _priceStream.close(); _priceStream = null; }
     showLogin();
 }
 
@@ -1417,6 +1418,66 @@ function setDashFilter(market) {
     if (_portfolioDataCache) renderPortfolioTable(_portfolioDataCache);
 }
 
+// ─── SSE 실시간 가격 스트림 ───────────────────────────────────────────────────
+let _priceStream = null;
+let _portfolioRenderTimer = null;
+
+function connectPriceStream() {
+    if (_priceStream) _priceStream.close();
+    _priceStream = new EventSource(API + '/market/stream');
+
+    _priceStream.onmessage = (e) => {
+        let changes;
+        try { changes = JSON.parse(e.data); } catch { return; }
+
+        // ─ top20Cache 업데이트
+        if (top20Cache) {
+            for (const [ticker, info] of Object.entries(changes)) {
+                if (top20Cache[ticker]) {
+                    top20Cache[ticker].price      = info.price;
+                    top20Cache[ticker].change_pct = info.change_pct;
+                    top20Cache[ticker].change     = info.change;
+                    top20Cache[ticker].rsi        = info.rsi;
+                }
+            }
+            const active = document.querySelector('.nav-item.active')?.dataset?.tab;
+            if (active === 'market') renderTop20Filtered();
+        }
+
+        // ─ 포트폴리오 캐시 업데이트 (debounce 300ms)
+        if (_portfolioDataCache) {
+            let updated = false;
+            for (const holding of _portfolioDataCache) {
+                const upd = changes[holding.ticker];
+                if (!upd) continue;
+                holding.price         = upd.price;
+                holding.current_price = upd.price;
+                holding.change_pct    = upd.change_pct;
+                const qty = holding.quantity || 0;
+                holding.current_value = upd.price * qty;
+                holding.profit_loss   = holding.current_value - (holding.buy_price || 0) * qty;
+                holding.return_pct    = holding.buy_price > 0
+                    ? ((upd.price - holding.buy_price) / holding.buy_price * 100)
+                    : 0;
+                updated = true;
+            }
+            if (updated) {
+                clearTimeout(_portfolioRenderTimer);
+                _portfolioRenderTimer = setTimeout(() => {
+                    const active = document.querySelector('.nav-item.active')?.dataset?.tab;
+                    if (active === 'dashboard') renderPortfolioTable(_portfolioDataCache);
+                }, 300);
+            }
+        }
+
+        setUpdated();
+    };
+
+    _priceStream.onerror = () => {
+        // EventSource가 자동 재연결 처리 (3초 후)
+    };
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 async function initApp() {
     if (typeof lucide !== 'undefined') lucide.createIcons();
@@ -1427,10 +1488,12 @@ async function initApp() {
         fetchSectorWeightsMini(),
         fetchPortfolioFull(),
     ]);
+    connectPriceStream();
     setInterval(() => {
         const active = document.querySelector('.nav-item.active')?.dataset?.tab;
-        if (active === 'dashboard') { fetchBalance(); fetchMacroBar(); fetchPortfolioFull(); }
-        if (active === 'market')    { fetchTop20(); fetchSignals(); }
+        // SSE가 실시간 가격을 처리하므로 풀 refresh만 주기적으로 수행
+        if (active === 'dashboard') { fetchBalance(); }
+        if (active === 'market')    { fetchSignals(); }
     }, 120000);
 }
 

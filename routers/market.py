@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+import asyncio
+import json
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any
 from services.base.scheduler_service import SchedulerService
 from services.market.news_service import NewsService
@@ -21,6 +24,43 @@ def get_monitored_stocks() -> Dict[str, Any]:
     if not data:
         return {"message": "Data collection is starting... please wait a moment."}
     return data
+
+
+@router.get("/stream")
+async def stream_market_prices(request: Request):
+    """SSE - KIS WebSocket 가격을 브라우저로 실시간 push.
+    변경된 ticker만 diff해서 전송 (1초 간격).
+    """
+    async def event_generator():
+        prev_snapshot: dict = {}
+        # 연결 시 전체 스냅샷 첫 전송
+        full = MarketDataService.get_price_snapshots()
+        if full:
+            prev_snapshot = {t: info["price"] for t, info in full.items()}
+            yield f"data: {json.dumps(full)}\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                break
+            snapshot = MarketDataService.get_price_snapshots()
+            changes = {}
+            for ticker, info in snapshot.items():
+                if prev_snapshot.get(ticker) != info["price"]:
+                    changes[ticker] = info
+                    prev_snapshot[ticker] = info["price"]
+            if changes:
+                yield f"data: {json.dumps(changes)}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # nginx 버퍼링 비활성화
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/top20", response_model=Dict[str, Any])

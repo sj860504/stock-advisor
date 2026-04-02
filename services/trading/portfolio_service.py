@@ -417,7 +417,8 @@ class PortfolioService:
     @classmethod
     def build_holding_report_row(cls, holding: dict, cached: dict) -> dict:
         """Build a single holding's analysis report row."""
-        price = cached.get("price") or holding.get("buy_price")
+        cached_price = cached.get("price")
+        price = cached_price if (cached_price is not None and cached_price > 0) else holding.get("buy_price", 0)
         buy_price = holding.get("buy_price") or 0
         profit_pct = ((price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
         dcf = cached.get("fair_value_dcf")
@@ -495,12 +496,21 @@ class PortfolioService:
             return cls.apply_sell(holdings, ticker, quantity)
         raise ValueError(f"Invalid action: {action}. Use 'buy' or 'sell'.")
 
+    @staticmethod
+    def _normalize_ticker_for_cache(ticker: str) -> str:
+        """KR 티커 zero-padding 정규화 (price_cache 키 매칭용)."""
+        t = str(ticker or "").strip()
+        return t.zfill(6) if t.isdigit() and len(t) < 6 else t
+
     @classmethod
     def build_full_report(cls, user_id: str, price_cache: dict) -> list:
         """Return detailed analysis data for all holdings (sorted by return descending)."""
         holdings = cls.load_portfolio(user_id)
         report = [
-            cls.build_holding_report_row(h.model_dump(), price_cache.get(h.ticker, {}))
+            cls.build_holding_report_row(
+                h.model_dump(),
+                price_cache.get(cls._normalize_ticker_for_cache(h.ticker), {})
+            )
             for h in holdings if h.ticker
         ]
         report.sort(key=lambda row: row["return_pct"], reverse=True)

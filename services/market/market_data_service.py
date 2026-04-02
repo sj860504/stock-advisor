@@ -416,3 +416,18 @@ class MarketDataService:
         result = [cls.build_watch_item(t, s) for t, s in cls._states.items()]
         result.sort(key=lambda x: x["ticker"])
         return result
+
+    @classmethod
+    def get_price_snapshots(cls) -> dict:
+        """SSE 스트리밍용 경량 가격 스냅샷. 점수 계산 없이 price/_states만 반환."""
+        result = {}
+        for ticker, state in cls._states.items():
+            if state.current_price > 0:
+                result[ticker] = {
+                    "price":      state.current_price,
+                    "change_pct": state.change_rate,
+                    "change":     state.current_price - state.prev_close if state.prev_close > 0 else 0,
+                    "rsi":        state.rsi,
+                    "last_updated": state.last_updated.isoformat() if state.last_updated else None,
+                }
+        return result
