@@ -13,17 +13,18 @@ class Config:
     KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO")
     KIS_IS_VTS = os.getenv("KIS_IS_VTS", "true").lower() == "true"
 
-    # Korea Investment & Securities — Live account (quotes/WebSocket only, optional)
-    # When configured: real-time WebSocket + REST quotes use live server; orders/balance stay on VTS
+    # Korea Investment & Securities — Live account (orders + quotes + WebSocket)
+    # When KIS_IS_VTS=false: orders/balance/history use KIS_REAL_* credentials and KIS_REAL_ACCOUNT_NO
     KIS_REAL_APP_KEY = os.getenv("KIS_REAL_APP_KEY", "")
     KIS_REAL_APP_SECRET = os.getenv("KIS_REAL_APP_SECRET", "")
     KIS_REAL_BASE_URL = os.getenv("KIS_REAL_BASE_URL", "https://openapi.koreainvestment.com:9443")
     KIS_REAL_WS_URL = os.getenv("KIS_REAL_WS_URL", "ws://ops.koreainvestment.com:21000")
+    KIS_REAL_ACCOUNT_NO = os.getenv("KIS_REAL_ACCOUNT_NO", "")
 
     @classmethod
     def has_real_credentials(cls) -> bool:
-        """Return True if live market data credentials are configured."""
-        return bool(cls.KIS_REAL_APP_KEY and cls.KIS_REAL_APP_SECRET)
+        """Return True if live account credentials are fully configured."""
+        return bool(cls.KIS_REAL_APP_KEY and cls.KIS_REAL_APP_SECRET and cls.KIS_REAL_ACCOUNT_NO)
     # Enable after-hours order method only in live trading environment
     KIS_ENABLE_AFTER_HOURS_ORDER = os.getenv("KIS_ENABLE_AFTER_HOURS_ORDER", "false").lower() == "true"
     # After-hours order type code (default: post-market extended hours)

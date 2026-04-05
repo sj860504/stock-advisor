@@ -59,17 +59,41 @@ class KisService:
     @classmethod
     def _get_account_parts(cls) -> tuple[str, str]:
         """Split account number into KIS parameter format.
+        - 실전(KIS_IS_VTS=false): KIS_REAL_ACCOUNT_NO 사용
+        - 모의(KIS_IS_VTS=true):  KIS_ACCOUNT_NO 사용
         - Accepts: 50162391-01 / 5016239101 / 50162391
         - Returns: (CANO(8), ACNT_PRDT_CD(2))
         """
-        raw = (Config.KIS_ACCOUNT_NO or "").strip()
+        if not Config.KIS_IS_VTS and Config.KIS_REAL_ACCOUNT_NO:
+            raw = Config.KIS_REAL_ACCOUNT_NO.strip()
+        else:
+            raw = (Config.KIS_ACCOUNT_NO or "").strip()
         digits = "".join(ch for ch in raw if ch.isdigit())
         if len(digits) >= 10:
             return digits[:8], digits[8:10]
         if len(digits) == 8:
             return digits, "01"
-        logger.error(f"❌ Invalid KIS_ACCOUNT_NO format: '{raw}'")
+        account_key = "KIS_REAL_ACCOUNT_NO" if (not Config.KIS_IS_VTS and Config.KIS_REAL_ACCOUNT_NO) else "KIS_ACCOUNT_NO"
+        logger.error(f"❌ Invalid {account_key} format: '{raw}'")
         return "", "01"
+
+    @classmethod
+    def _get_trading_base_url(cls) -> str:
+        """주문/잔고/체결조회 기본 URL.
+        - 실전(KIS_IS_VTS=false): KIS_REAL_BASE_URL
+        - 모의(KIS_IS_VTS=true):  KIS_BASE_URL
+        """
+        return Config.KIS_REAL_BASE_URL if not Config.KIS_IS_VTS else Config.KIS_BASE_URL
+
+    @classmethod
+    def _get_trading_headers(cls, tr_id: str) -> dict:
+        """주문/잔고/체결조회 API 헤더.
+        - 실전(KIS_IS_VTS=false): KIS_REAL_APP_KEY/SECRET + 실전 토큰
+        - 모의(KIS_IS_VTS=true):  KIS_APP_KEY/SECRET + VTS 토큰
+        """
+        if not Config.KIS_IS_VTS:
+            return cls.get_real_headers(tr_id)
+        return cls.get_headers(tr_id)
     
     @classmethod
     def _load_cached_token(cls) -> Optional[str]:
@@ -273,8 +297,8 @@ class KisService:
 
         from services.market.stock_meta_service import StockMetaService
         tr_id, _ = StockMetaService.get_api_info("주식잔고조회")
-        url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
-        headers = cls.get_headers(tr_id)
+        url = f"{cls._get_trading_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
+        headers = cls._get_trading_headers(tr_id)
         params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "AFHR_FLPR_YN": "N", "OFL_YN": "N", "INQR_DVSN": "02",
@@ -323,7 +347,7 @@ class KisService:
     @classmethod
     def _fetch_one_overseas_page(cls, tr_id: str, url: str, params: dict, page_num: int) -> Optional[dict]:
         """Single HTTP GET for one page of overseas balance. Returns parsed page dict or None on error/business-fail."""
-        headers = cls.get_headers(tr_id)
+        headers = cls._get_trading_headers(tr_id)
         if page_num > 0:
             headers["tr_cont"] = "N"
         response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
@@ -373,7 +397,7 @@ class KisService:
         if not tr_ids:
             logger.error("❌ 해외 잔고조회 TR ID를 DB에서 가져올 수 없습니다.")
             return None
-        url = f"{Config.KIS_BASE_URL}{url_path}"
+        url = f"{cls._get_trading_base_url()}{url_path}"
         base_params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": "", "TR_CRCY_CD": "USD",
@@ -400,13 +424,13 @@ class KisService:
     @classmethod
     def _fetch_overseas_available_cash_raw(cls, tr_id: str, cano: str, acnt_prdt_cd: str, item_cd: str, excg_cd: str = "NASD") -> Optional[dict]:
         """Call overseas available cash API and return output dict. Returns None on error."""
-        url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        url = f"{cls._get_trading_base_url()}/uapi/overseas-stock/v1/trading/inquire-psamount"
         params = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": excg_cd, "OVRS_CRCY_CD": "USD",
             "OVRS_ORD_UNPR": "0", "ITEM_CD": item_cd
         }
-        headers = cls.get_headers(tr_id)
+        headers = cls._get_trading_headers(tr_id)
         response = requests.get(url, headers=headers, params=params, timeout=BALANCE_REQUEST_TIMEOUT)
         if response.status_code >= 500:
             logger.warning(f"⚠️ Overseas available cash API HTTP {response.status_code}")
@@ -523,13 +547,13 @@ class KisService:
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return {"status": "error", "msg": "Invalid KIS_ACCOUNT_NO format"}
-        url = f"{Config.KIS_BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
+        url = f"{cls._get_trading_base_url()}/uapi/domestic-stock/v1/trading/order-cash"
         body = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "PDNO": ticker, "ORD_DVSN": ord_dvsn,
             "ORD_QTY": str(quantity), "ORD_UNPR": ord_price,
         }
-        result = cls._post_order_with_retry(url, cls.get_headers(tr_id), body, log_tag)
+        result = cls._post_order_with_retry(url, cls._get_trading_headers(tr_id), body, log_tag)
         if result.get("status") == "success":
             logger.info(f"✅ {log_tag} success! {ticker} {quantity}qty")
         return result
@@ -611,7 +635,7 @@ class KisService:
         from services.market.stock_meta_service import StockMetaService
         api_name = "해외주식_미국매수" if order_type == "buy" else "해외주식_미국매도"
         tr_id, _ = StockMetaService.get_api_info(api_name)
-        url = f"{Config.KIS_BASE_URL}/uapi/overseas-stock/v1/trading/order"
+        url = f"{cls._get_trading_base_url()}/uapi/overseas-stock/v1/trading/order"
         body = {
             "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": market, "PDNO": ticker,
@@ -619,7 +643,7 @@ class KisService:
             "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": "00",
         }
         log_tag = f"Overseas Order [{order_type.upper()}]"
-        result = cls._post_order_with_retry(url, cls.get_headers(tr_id), body, log_tag)
+        result = cls._post_order_with_retry(url, cls._get_trading_headers(tr_id), body, log_tag)
         if result.get("status") == "success":
             logger.info(f"✅ Overseas Order Success! [{order_type.upper()}] {ticker} {quantity}qty @ ${price}")
         return result
@@ -658,7 +682,7 @@ class KisService:
         all_records = []
         try:
             for page in range(10):
-                headers = cls.get_headers(tr_id)
+                headers = cls._get_trading_headers(tr_id)
                 if page > 0:
                     headers["tr_cont"] = "N"
                 cls._throttle_request()
@@ -686,7 +710,7 @@ class KisService:
         """Fetch domestic trade history from KIS API (dates in YYYYMMDD format)."""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("국내주식_체결조회")
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_trading_base_url()}{path}"
         account_prefix, account_suffix = cls._get_account_parts()
         params = {
             "CANO": account_prefix,
@@ -711,7 +735,7 @@ class KisService:
         """Fetch overseas trade history from KIS API (dates in YYYYMMDD format)."""
         from services.market.stock_meta_service import StockMetaService
         tr_id, path = StockMetaService.get_api_info("해외주식_체결조회")
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_trading_base_url()}{path}"
         account_prefix, account_suffix = cls._get_account_parts()
         params = {
             "CANO": account_prefix,
@@ -743,7 +767,7 @@ class KisService:
         if not tr_id or not path:
             return UnfilledOrdersResult(error="국내주식_미체결조회 TR 정보 없음")
 
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_trading_base_url()}{path}"
         cano, acnt_prdt_cd = cls._get_account_parts()
         today = datetime.now().strftime("%Y%m%d")
         params = {
@@ -768,7 +792,7 @@ class KisService:
         if not tr_id or not path:
             return UnfilledOrdersResult(error="해외주식_미체결조회 TR 정보 없음")
 
-        url = f"{Config.KIS_BASE_URL}{path}"
+        url = f"{cls._get_trading_base_url()}{path}"
         cano, acnt_prdt_cd = cls._get_account_parts()
         today = datetime.now().strftime("%Y%m%d")
         params = {
