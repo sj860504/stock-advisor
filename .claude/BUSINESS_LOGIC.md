@@ -759,7 +759,8 @@ FRED 14개 지표를 **ThreadPoolExecutor(max_workers=8)** 병렬 조회.
 
 ### [5] Other / 복합자산 (0~20점)
 
-yfinance + FRED(DGS2) 기반. 최대 합산 ±28점 → 0~20 정규화.
+yfinance + FRED(DGS2) 기반. 최대 합산 ±34점 → 0~20 정규화.
+(`forward_pe_raw` ±6 추가로 max_val 28→34으로 확장, 2026-04-05)
 
 | 항목 | 조건 | 점수 |
 |------|------|------|
@@ -789,6 +790,16 @@ yfinance + FRED(DGS2) 기반. 최대 합산 ±28점 → 0~20 정규화.
 | | > +5% | -1 |
 | | < -5% | +1 |
 | | < -15% | +2 |
+| **S&P 500 Forward P/E** | deviation ≤ -20% (매우 저평가) | **+6** |
+| (5Y 평균 대비 편차) | deviation ≤ -10% | **+4** |
+| deviation = (현재 - 5Y평균) / 5Y평균 | deviation ≤ -5% | **+2** |
+| 5Y평균 fallback = 18.5 (DB <30건) | -5% < deviation < +5% | **0** |
+| | deviation < +10% | **-2** |
+| | deviation < +20% | **-4** |
+| | deviation ≥ +20% (매우 고평가) | **-6** |
+
+> `forward_pe` 원시값과 `avg_5y_pe`는 DB `market_regime_history.forward_pe` 컬럼에 저장.
+> `yf.Ticker("SPY").info.get("forwardPE")` 로 실시간 조회; 조회 실패 시 forward_pe_raw=0.
 
 ---
 
@@ -1165,4 +1176,4 @@ US:
 
 ---
 
-**Last Updated**: 2026-03-19 (에셋 확보 매도 score 기반 정렬, 레짐별 익절, 트리거 정보 추가, Slack 포맷 리뉴얼, 쿨다운 영속 버그 수정, 에셋 확보 최소 수익률)
+**Last Updated**: 2026-04-05 (Forward P/E 레짐 편입: other_20 max_val 28→34, 5Y 평균 대비 편차 ±6점; 쿨다운 만료 정리 _cleanup_expired_cooldowns 추가; KIS 실전계좌 라우팅 _get_trading_base_url/_get_trading_headers)

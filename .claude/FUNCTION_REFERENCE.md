@@ -105,6 +105,8 @@
 | `get_real_access_token()` | - | str | live 계정 토큰 반환. has_real_credentials()=False 시 VTS 폴백 | 메모리+DB |
 | `get_headers(tr_id)` | str | dict | Authorization/appkey/appsecret/tr_id 헤더 구성 | 없음 |
 | `get_real_headers(tr_id)` | str | dict | 시세 조회용 헤더 (live credentials 우선) | 없음 |
+| `_get_trading_base_url()` | - | str | `KIS_IS_VTS=false` → `KIS_REAL_BASE_URL`, 그 외 → `KIS_BASE_URL`. @classmethod | 없음 |
+| `_get_trading_headers(tr_id)` | str | dict | `KIS_IS_VTS=false` → `get_real_headers(tr_id)`, 그 외 → `get_headers(tr_id)`. @classmethod | 없음 |
 | `_throttle_request()` | - | None | 마지막 요청 후 0.55초 대기 (TPS 제한) | 없음 |
 | `_is_rate_limited_response(response)` | Response | bool | HTTP429/500 + EGW00201 코드 감지 | 없음 |
 | `get_balance()` | - | Optional[dict] | 국내 잔고조회, 재시도3회+1.2배 백오프, 마지막성공 폴백 | 메모리(폴백) |
@@ -200,11 +202,15 @@
 | `_get_fear_greed_index()` | - | int | CNN Fear&Greed API (0~100) | 없음 |
 | `_get_economic_indicators()` | - | EconomicIndicatorsSnapshot | FRED 14개 지표 병렬조회 (ThreadPoolExecutor) | 없음 |
 | `_get_market_regime(vix, fear_greed, economic_indicators, us_10y_yield, historical_avg_score)` | float\|None=None, int\|None=None, dict\|None=None, float\|None=None, float\|None=None | MarketRegimeSchema | `_calculate_all_regime_components` → `_assemble_regime_result` 위임 | 없음 |
-| `_assemble_regime_result(close, ema_map, technical_20, ...)` | 다수 | MarketRegimeSchema | `_compute_weighted_score` → `_blend_regime_score` → `_build_regime_schema` 위임. @staticmethod | 없음 |
+| `_assemble_regime_result(close, ema_map, technical_20, ..., forward_pe, avg_5y_pe)` | 다수 | MarketRegimeSchema | `_compute_weighted_score` → `_blend_regime_score` → `_build_regime_schema` 위임. @staticmethod | 없음 |
 | `_compute_weighted_score(technical_20, vix_20, fng_20, econ_20, other_20, phase_modifier)` | int×6 | int | 5컴포넌트 합산+phase_modifier, 0~100 클리핑. @staticmethod, 순수 함수 | 없음 |
 | `_blend_regime_score(regime_score, historical_avg_score)` | int, float\|None | int | 현재60%+과거40% blending. historical_avg_score=None이면 현재 그대로. @staticmethod | 없음 |
-| `_build_regime_schema(blended_score, regime_score, bear_threshold, extreme_fear, close, ema_map, ...)` | 다수 | MarketRegimeSchema | blended_score 기준 Bull/Bear/Neutral 판정 + ma200/diff_pct + 전체 컴포넌트 스키마 구성. @staticmethod | 없음 |
-| `_calculate_all_regime_components(close, vix, vix_1m_chg, fear_greed, economic_indicators, us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret, ndx_1m_hist)` | Series, float, float\|None, int, EconomicIndicatorsSnapshot, float, float\|None, float\|None, float\|None, float\|None, float\|None, DataFrame=None | RegimeComponents | 5개 점수 + extreme_fear + 경제 국면 계산. 순수 함수 | 없음 |
+| `_build_regime_schema(blended_score, regime_score, bear_threshold, extreme_fear, close, ema_map, ..., forward_pe, avg_5y_pe)` | 다수 | MarketRegimeSchema | blended_score 기준 Bull/Bear/Neutral 판정 + ma200/diff_pct + 전체 컴포넌트 스키마 구성 (OtherDetailScores에 forward_pe/avg_5y_pe/deviation/raw 포함). @staticmethod | 없음 |
+| `_calculate_all_regime_components(close, vix, vix_1m_chg, fear_greed, economic_indicators, us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret, ndx_1m_hist)` | Series, float, float\|None, int, EconomicIndicatorsSnapshot, float, float\|None, float\|None, float\|None, float\|None, float\|None, DataFrame=None | RegimeComponents | 5개 점수 + extreme_fear + 경제 국면 계산 + forward_pe/avg_5y_pe 조회. 순수 함수 | 없음 |
+| `_get_forward_pe()` | - | Optional[float] | `yf.Ticker("SPY").info.get("forwardPE")`. @classmethod | 없음 |
+| `_get_avg_5y_forward_pe()` | - | float | `StockMetaRepo.get_avg_forward_pe_5y()` 호출; DB 30건 미만이면 18.5 반환. @classmethod | DB |
+| `_calc_forward_pe_raw(forward_pe, avg_5y_pe)` | float, float | int | deviation = (pe - avg) / avg; 편차 구간별 -6~+6. @staticmethod | 없음 |
+| `_calc_composite_20(yield_score, spread_score, dxy_score, btc_score, gold_score, oil_score, forward_pe, avg_5y_pe)` | int×6, float\|None, float | tuple[int, int] | forward_pe_raw 계산 후 other_raw에 합산 → `_to_20(other_raw, 34)`. max_val 34 (기존 28→+6). @classmethod | 없음 |
 | `_calc_fng_20(fear_greed)` | int | tuple[int, bool] | (score: 0~20, extreme_fear: bool). @staticmethod | 없음 |
 | `_calc_technical_20(close, ndx_1m_hist)` | pd.Series, ndx_1m_hist=None | tuple[int, dict, dict] | (technical_20, tech_detail, ema_map) 반환. EMA alignment + SPX/NDX/2W momentum | 없음 |
 | `_determine_economic_phase(inflation_pressure, growth_signal)` | int, int | tuple[str, int] | ECONOMIC_PHASES modifier 범위 확대: Stagflation→-12, Goldilocks→+8 | 없음 |
@@ -428,6 +434,7 @@
 | `_load_execution_config(macro_data)` | MacroDataSnapshot=None | ExecutionConfig | SettingsService 설정 일괄 조회 + 레짐별 take_profit_pct → ExecutionConfig 반환 |
 | `_sort_signals_by_priority(signals, split_orders)` | list[SignalSchema], dict | list[SignalSchema] | 신규미보유(0)>기존보유(1)>split tranche(2). 순수 함수 |
 | `_expire_split_orders(split_orders)` | dict | None | STRATEGY_SPLIT_EXPIRE_DAYS(기본5) 초과 항목 제거. `pop(t, None)` 사용 (KeyError 방지) |
+| `_cleanup_expired_cooldowns(sell_cooldown, add_buy_cooldown, today)` | dict, dict, str | None | `sell_cooldown[t] != today` 또는 `add_buy_cooldown[t].date != today` 인 항목 제거. `_expire_split_orders` 직후 호출. 메모리 누수 방지 |
 | `_deduct_loop_cash(ticker, spent_krw, spent_usd, cash_balance, usd_cash)` | str, float, float, float, float | tuple[float, float] | KR 매수 시 cash_balance 차감, US 매수 시 usd_cash 차감. 순수 함수 |
 | `_unpack_signal(sig, kr_total, us_total_krw)` | SignalSchema, float, float | UnpackedSignal | sig 정형화. forced_sell=stop_loss_hit, profit_pct, market_total 계산. 순수 함수 |
 | `_set_panic_lock(ticker, user_state)` | str, UserState | None | 손절 종목 panic_locks에 등록 (당일 날짜). 재매수 3일 차단 ★ |
@@ -657,6 +664,7 @@
 | `get_market_regime_history(days)` | SELECT ORDER BY date DESC LIMIT | int=30 | list[dict] |
 | `get_regime_for_date(date_str)` | SELECT WHERE date= | str | Optional[dict] |
 | `get_30d_avg_regime_score()` | get_market_regime_history(30) → regime_score 평균 | - | Optional[float] |
+| `get_avg_forward_pe_5y()` | SELECT AVG(forward_pe) WHERE date >= 5년전, NOT NULL | - | Optional[float] (30건 미만 시 None) |
 
 ---
 
@@ -845,14 +853,22 @@
 ### KIS API
 | 키 | 기본값 | 설명 |
 |----|--------|------|
-| KIS_APP_KEY | 필수 | API Key |
-| KIS_APP_SECRET | 필수 | API Secret |
-| KIS_BASE_URL | https://openapivts.koreainvestment.com:29443 | KIS 기본 URL |
+| KIS_APP_KEY | 필수 | VTS API Key |
+| KIS_APP_SECRET | 필수 | VTS API Secret |
+| KIS_BASE_URL | https://openapivts.koreainvestment.com:29443 | VTS 기본 URL |
 | KIS_WS_URL | ws://ops.koreainvestment.com:21000 | WebSocket URL |
-| KIS_ACCOUNT_NO | 필수 | 계좌번호 |
-| KIS_IS_VTS | true | 모의투자 여부 |
+| KIS_ACCOUNT_NO | 필수 | VTS 계좌번호 |
+| KIS_IS_VTS | true | 모의투자 여부. false=실전계좌 사용 |
+| KIS_REAL_APP_KEY | "" | 실전계좌 API Key |
+| KIS_REAL_APP_SECRET | "" | 실전계좌 API Secret |
+| KIS_REAL_BASE_URL | https://openapi.koreainvestment.com:9443 | 실전계좌 기본 URL |
+| KIS_REAL_ACCOUNT_NO | "" | 실전계좌 계좌번호 |
+| KIS_REAL_WS_URL | ws://ops.koreainvestment.com:21000 | 실전계좌 WebSocket URL |
 | KIS_ENABLE_AFTER_HOURS_ORDER | false | 사후장 주문 활성화 |
 | KIS_AFTER_HOURS_ORD_DVSN | 81 | 사후장 주문 구분값 |
+
+> `KIS_IS_VTS=false` 설정 시, `_get_trading_base_url()` / `_get_trading_headers()` 가 모든 주문·잔고·체결 API 호출을 실전계좌로 라우팅.
+> `_request_new_token()` (VTS 토큰 발급) 은 항상 VTS URL 사용.
 
 ### 외부 API
 | 키 | 기본값 | 설명 |
@@ -897,4 +913,4 @@
 
 ---
 
-**Last Updated**: 2026-03-15
+**Last Updated**: 2026-04-05 (Forward P/E 신규 함수 추가: _get_forward_pe/_get_avg_5y_forward_pe/_calc_forward_pe_raw/_calc_composite_20 @macro_service; _cleanup_expired_cooldowns @position_service; _get_trading_base_url/_get_trading_headers @kis_service; KIS_REAL_ACCOUNT_NO 설정값 추가; get_avg_forward_pe_5y @stock_meta_repo)
