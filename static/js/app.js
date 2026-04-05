@@ -710,6 +710,7 @@ function renderMacroBar(data) {
     const gold   = (data.commodities || {}).Gold;
     const oil    = (data.commodities || {}).Oil;
     const fg     = data.fear_greed;
+    const od     = (r.components?.other_detail) || {};
 
     const chips = [
         { label: 'Regime',      val: (r.status||'-') + ' ' + (r.regime_score != null ? r.regime_score + '점' : ''), cls: r.status==='Bull'?'up':r.status==='Bear'?'down':'' },
@@ -717,6 +718,7 @@ function renderMacroBar(data) {
         { label: 'US 10Y',      val: yield10y ? yield10y + '%' : '-', cls: '' },
         { label: 'VIX',         val: vix ?? '-', cls: vix>25?'down':vix<15?'up':'' },
         { label: 'Fear&Greed',  val: fg != null ? fg + '/100' : '-', cls: fg>60?'up':fg<40?'down':'' },
+        { label: 'Fwd P/E',     val: od.forward_pe != null ? od.forward_pe.toFixed(1)+'x' : '-', sub: od.avg_5y_pe != null ? 'avg '+od.avg_5y_pe.toFixed(1)+'x' : null, cls: od.forward_pe_raw > 0 ? 'up' : od.forward_pe_raw < 0 ? 'down' : '' },
         { label: 'BTC',         val: btc?.price ? '$'+Number(btc.price).toLocaleString() : '-', sub: btc?.change!=null?fmtPct(btc.change,true):null, cls: cls(btc?.change||0) },
         { label: 'Gold',        val: gold?.price ? '$'+fmt(gold.price) : '-', sub: gold?.change!=null?fmtPct(gold.change,true):null, cls: cls(gold?.change||0) },
         { label: 'Oil (WTI)',   val: oil?.price  ? '$'+fmt(oil.price)  : '-', sub: oil?.change!=null?fmtPct(oil.change,true):null,  cls: cls(oil?.change||0)  },
@@ -752,12 +754,13 @@ function renderRegimeScore(r) {
         { name:'VIX',         key:'vix',       detail: od.vix_1m_chg!=null?`1M ${fmtPct(od.vix_1m_chg)}`:'' },
         { name:'Fear&Greed',  key:'fear_greed',detail: '' },
         { name:'경제지표',    key:'economic',  detail: '' },
-        { name:'기타 (금리·BTC·DXY·Gold)', key:'other', detail: [
+        { name:'기타 (금리·BTC·DXY·Gold·P/E)', key:'other', detail: [
             od.us_10y_yield!=null?`10Y ${od.us_10y_yield}%`:'',
             od.yield_spread_10y2y!=null?`스프레드 ${fmtPct(od.yield_spread_10y2y)}`:'',
             od.btc_1m_ret!=null?`BTC ${fmtPct(od.btc_1m_ret)}`:'',
             od.dxy_1m_ret!=null?`DXY ${fmtPct(od.dxy_1m_ret)}`:'',
             od.gold_1m_ret!=null?`Gold ${fmtPct(od.gold_1m_ret)}`:'',
+            od.forward_pe!=null?`P/E ${od.forward_pe.toFixed(1)}x`:'',
         ].filter(Boolean).join(' | ')},
     ];
 
@@ -848,6 +851,11 @@ function renderMacroDetail(data) {
             ${od.btc_1m_ret!=null?`<div class="score-row"><span style="color:var(--sub)">BTC 1개월</span><b class="mono ${cls(od.btc_1m_ret)}">${fmtPct(od.btc_1m_ret)}</b></div>`:''}
             ${od.dxy_1m_ret!=null?`<div class="score-row"><span style="color:var(--sub)">DXY 1개월</span><b class="mono ${cls(-od.dxy_1m_ret)}">${fmtPct(od.dxy_1m_ret)}</b></div>`:''}
             ${od.gold_1m_ret!=null?`<div class="score-row"><span style="color:var(--sub)">Gold 1개월</span><b class="mono ${cls(-od.gold_1m_ret)}">${fmtPct(od.gold_1m_ret)}</b></div>`:''}
+            ${od.forward_pe!=null?`
+            <hr style="border:none;border-top:1px solid var(--divider);margin:6px 0">
+            <div class="score-row"><span style="color:var(--sub)">S&P500 Forward P/E</span><b class="mono">${od.forward_pe.toFixed(1)}x</b></div>
+            <div class="score-row"><span style="color:var(--sub)">5Y 평균 P/E</span><b class="mono">${(od.avg_5y_pe??18.5).toFixed(1)}x</b></div>
+            <div class="score-row"><span style="color:var(--sub)">밸류에이션 편차</span><b class="mono ${od.forward_pe_raw>0?'up':od.forward_pe_raw<0?'down':''}">${od.forward_pe_deviation!=null?fmtPct(od.forward_pe_deviation*100):'-'} (${od.forward_pe_raw>0?'+':''}${od.forward_pe_raw??0}점)</b></div>`:''}
         </div>`;
 
     document.getElementById('macro-indicators').innerHTML = `

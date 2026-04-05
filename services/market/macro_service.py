@@ -294,6 +294,40 @@ class MacroService:
     # ── Score calculation helpers (shared for current/historical) ──────────────
 
     @staticmethod
+    def _get_forward_pe() -> float | None:
+        """SPY forward P/E 조회 (yfinance). 실패 시 None 반환."""
+        try:
+            import yfinance as yf
+            val = yf.Ticker("SPY").info.get("forwardPE")
+            return float(val) if val and float(val) > 0 else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _get_avg_5y_forward_pe(cls) -> float:
+        """DB 5년 평균 forward_pe. 데이터 30개 미만 시 18.5(역사적 평균) 반환."""
+        from repositories.stock_meta_repo import StockMetaRepo
+        avg = StockMetaRepo.get_avg_forward_pe_5y()
+        return avg if avg is not None else 18.5
+
+    @staticmethod
+    def _calc_forward_pe_raw(
+        forward_pe: float | None,
+        avg_5y_pe: float | None,
+    ) -> int:
+        """S&P 500 Forward P/E vs 5Y average → raw score (-6 ~ +6). other_raw에 합산됨."""
+        if forward_pe is None or avg_5y_pe is None or avg_5y_pe <= 0:
+            return 0
+        deviation = (forward_pe - avg_5y_pe) / avg_5y_pe
+        if   deviation <= -0.20: return +6
+        elif deviation <= -0.10: return +4
+        elif deviation <= -0.05: return +2
+        elif deviation <  +0.05: return  0
+        elif deviation <  +0.10: return -2
+        elif deviation <  +0.20: return -4
+        else:                    return -6
+
+    @staticmethod
     def _to_20(raw: int | float, max_val: int | float) -> int:
         """Normalize raw score in ±max_val range to 0~20 (neutral=10)."""
         return max(0, min(20, round((raw + max_val) / (2 * max_val) * 20)))
@@ -568,28 +602,35 @@ class MacroService:
         if oil_ret < -5: return 1
         return 0
 
-    @staticmethod
+    @classmethod
     def _calc_composite_20(
+        cls,
         us_10y_yield: float,
         yield_spread: float | None,
         btc_ret: float | None,
         dxy_ret: float | None,
         gold_ret: float | None,
         oil_ret: float | None = None,
+        forward_pe: float | None = None,
+        avg_5y_pe: float | None = None,
     ) -> tuple:
-        """Yield level(±8)+curve(±6)+DXY(±4)+BTC(±3)+Gold(±4)+Oil(±5) -> (other_20: 0~20, score_detail)."""
+        """Yield(±8)+curve(±6)+DXY(±4)+BTC(±3)+Gold(±4)+Oil(±5)+ForwardPE(±6) -> (other_20: 0~20, score_detail).
+        max_val: 28(기존) + 6(forward_pe) = 34
+        """
         yield_score = MacroService._score_yield(us_10y_yield)
         curve_score = MacroService._score_curve(yield_spread)
         btc_score = MacroService._score_btc(btc_ret)
         dxy_score = MacroService._score_dxy(dxy_ret)
         gold_score = MacroService._score_gold(gold_ret)
         oil_score = MacroService._score_oil(oil_ret)
-        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score + oil_score
-        other_20 = MacroService._to_20(other_raw, 28)
+        forward_pe_raw = cls._calc_forward_pe_raw(forward_pe, avg_5y_pe)
+        other_raw = yield_score + curve_score + dxy_score + btc_score + gold_score + oil_score + forward_pe_raw
+        other_20 = MacroService._to_20(other_raw, 34)
         return other_20, {
             "yield_score": yield_score, "curve_score": curve_score,
             "dxy_score": dxy_score, "btc_score": btc_score,
             "gold_score": gold_score, "oil_score": oil_score,
+            "forward_pe_raw": forward_pe_raw,
         }
 
     @classmethod
@@ -703,6 +744,8 @@ class MacroService:
         economic_phase: str, phase_modifier: int,
         inflation_pressure: int, growth_signal: int,
         inflation_detail: dict | None,
+        forward_pe: float | None = None,
+        avg_5y_pe: float | None = None,
     ) -> MarketRegimeSchema:
         """blended_score 기준 레짐 판정 후 MarketRegimeSchema 구성."""
         if extreme_fear:
@@ -736,6 +779,12 @@ class MacroService:
                     vix_1m_chg=vix_1m_chg,
                     btc_1m_ret=btc_ret, dxy_1m_ret=dxy_ret,
                     gold_1m_ret=gold_ret, oil_1m_ret=oil_ret,
+                    forward_pe=forward_pe,
+                    avg_5y_pe=avg_5y_pe,
+                    forward_pe_deviation=(
+                        round((forward_pe - avg_5y_pe) / avg_5y_pe, 4)
+                        if forward_pe and avg_5y_pe and avg_5y_pe > 0 else None
+                    ),
                     **other_scores,
                 ),
                 economic_phase_detail=EconomicPhaseDetail(
@@ -765,6 +814,8 @@ class MacroService:
         oil_ret: float | None = None,
         extreme_fear: bool = False,
         historical_avg_score: float | None = None,
+        forward_pe: float | None = None,
+        avg_5y_pe: float | None = None,
     ) -> MarketRegimeSchema:
         """Aggregate component scores and return market regime result."""
         regime_score = MacroService._compute_weighted_score(
@@ -780,6 +831,7 @@ class MacroService:
             yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
             economic_phase, phase_modifier,
             inflation_pressure, growth_signal, inflation_detail,
+            forward_pe=forward_pe, avg_5y_pe=avg_5y_pe,
         )
 
     @classmethod
@@ -797,6 +849,8 @@ class MacroService:
         gold_ret: float | None,
         oil_ret: float | None,
         ndx_1m_hist=None,
+        forward_pe: float | None = None,
+        avg_5y_pe: float | None = None,
     ) -> RegimeComponents:
         """5개 점수 컴포넌트 + 경제 국면 계산. 순수 계산 함수, I/O 없음."""
         technical_20, tech_detail, ema_map = cls._calc_technical_20(close, ndx_1m_hist)
@@ -805,6 +859,7 @@ class MacroService:
         econ_20 = cls._calc_econ_20(economic_indicators)
         other_20, other_scores = cls._calc_composite_20(
             us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret,
+            forward_pe=forward_pe, avg_5y_pe=avg_5y_pe,
         )
         inflation_pressure, inflation_detail = cls._calc_inflation_pressure(oil_ret, economic_indicators)
         growth_signal, _ = cls._calc_growth_signal(tech_detail, vix, fear_greed, econ_20)
@@ -815,6 +870,7 @@ class MacroService:
             ema_map=ema_map, tech_detail=tech_detail, other_scores=other_scores,
             inflation_pressure=inflation_pressure, inflation_detail=inflation_detail,
             growth_signal=growth_signal, economic_phase=economic_phase, phase_modifier=phase_modifier,
+            forward_pe=forward_pe, avg_5y_pe=avg_5y_pe,
         )
 
     @classmethod
@@ -841,10 +897,13 @@ class MacroService:
         if us_10y_yield is None:
             us_10y_yield = cls._get_us_10y_yield()
         yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret = cls._fetch_composite_assets(us_10y_yield)
+        forward_pe = cls._get_forward_pe()
+        avg_5y_pe  = cls._get_avg_5y_forward_pe()
 
         c = cls._calculate_all_regime_components(
             close, vix, vix_1m_chg, fear_greed, economic_indicators,
             us_10y_yield, yield_spread, btc_ret, dxy_ret, gold_ret, oil_ret, ndx_1m_hist,
+            forward_pe=forward_pe, avg_5y_pe=avg_5y_pe,
         )
         bear_threshold = cls._get_bear_threshold()
         return cls._assemble_regime_result(
@@ -856,6 +915,7 @@ class MacroService:
             inflation_detail=c.inflation_detail, oil_ret=oil_ret,
             extreme_fear=c.extreme_fear,
             historical_avg_score=historical_avg_score,
+            forward_pe=c.forward_pe, avg_5y_pe=c.avg_5y_pe,
         )
 
     _CNN_HEADERS = {

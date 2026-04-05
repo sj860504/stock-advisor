@@ -129,6 +129,7 @@ class MarketRegimeHistory(Base):
     spx_price    = Column(Float)
     spx_ma200    = Column(Float)
     spx_diff_pct = Column(Float)
+    forward_pe   = Column(Float)                # S&P 500 Forward P/E (현재값)
     components_json = Column(String)            # JSON: {technical, vix, fear_greed, economic, other, other_detail}
     created_at   = Column(DateTime, default=datetime.now)
 

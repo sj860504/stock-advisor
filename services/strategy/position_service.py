@@ -613,6 +613,22 @@ class PositionService:
             split_orders.pop(t, None)
             logger.info(f"⏰ {t} split_order TTL {expire_days}일 만료 → 제거")
 
+    @staticmethod
+    def _cleanup_expired_cooldowns(sell_cooldown: dict, add_buy_cooldown: dict, today: str) -> None:
+        """오늘 날짜가 아닌 만료된 쿨다운 항목 제거. dict 무한 누적 방지."""
+        expired_sell = [t for t, d in sell_cooldown.items() if d != today]
+        for t in expired_sell:
+            sell_cooldown.pop(t)
+            logger.debug(f"🧹 {t} sell_cooldown 만료 항목 제거")
+
+        expired_buy = [
+            t for t, cd in add_buy_cooldown.items()
+            if (cd if isinstance(cd, str) else cd.date) != today
+        ]
+        for t in expired_buy:
+            add_buy_cooldown.pop(t)
+            logger.debug(f"🧹 {t} add_buy_cooldown 만료 항목 제거")
+
     @classmethod
     def _get_take_profit_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
         """레짐별 익절 기준 반환. BULL 7%, NEUTRAL 5%, BEAR 3%."""
@@ -684,6 +700,7 @@ class PositionService:
         executed_tickers = set()
 
         cls._expire_split_orders(split_orders)
+        cls._cleanup_expired_cooldowns(sell_cooldown, add_buy_cooldown, cfg.today)
         cls._clear_expired_panic_locks(user_state)
         
         # 미보유 종목의 과거 고점(trailing_high) 찌꺼기 일괄 정리

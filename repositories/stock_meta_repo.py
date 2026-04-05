@@ -455,6 +455,9 @@ class StockMetaRepo:
         record.spx_price = regime_data.get("current")
         record.spx_ma200 = regime_data.get("ma200")
         record.spx_diff_pct = regime_data.get("diff_pct")
+        record.forward_pe = (
+            ((regime_data.get("components") or {}).get("other_detail") or {}).get("forward_pe")
+        )
         record.components_json = json.dumps(
             regime_data.get("components", {}), ensure_ascii=False
         )
@@ -521,6 +524,29 @@ class StockMetaRepo:
             return round(sum(scores) / len(scores), 1) if scores else None
         except Exception as e:
             logger.error(f"get_30d_avg_regime_score error: {e}")
+            return None
+
+    @classmethod
+    def get_avg_forward_pe_5y(cls) -> Optional[float]:
+        """최근 5년간 forward_pe 평균. 30개 미만이면 None 반환 (→ 서비스에서 18.5 fallback 처리)."""
+        from datetime import timedelta
+        MIN_COUNT = 30
+        cutoff = (datetime.now() - timedelta(days=5 * 365)).strftime("%Y-%m-%d")
+        try:
+            with session_ro() as session:
+                row = session.execute(
+                    text("""
+                        SELECT AVG(forward_pe), COUNT(*)
+                        FROM market_regime_history
+                        WHERE date >= :cutoff AND forward_pe IS NOT NULL
+                    """),
+                    {"cutoff": cutoff},
+                ).fetchone()
+                if row and row[1] >= MIN_COUNT:
+                    return float(row[0])
+                return None
+        except Exception as e:
+            logger.error(f"get_avg_forward_pe_5y error: {e}")
             return None
 
     @classmethod

@@ -18,6 +18,8 @@ class RegimeComponents(BaseModel):
     growth_signal: int = 0
     economic_phase: str = "unknown"
     phase_modifier: int = 0
+    forward_pe: Optional[float] = None
+    avg_5y_pe: Optional[float] = None
 
 
 class PortfolioContext(BaseModel):
@@ -510,6 +512,10 @@ class OtherDetailScores(BaseModel):
     btc_score: int = 0
     gold_score: int = 0
     oil_score: int = 0
+    forward_pe: Optional[float] = None
+    avg_5y_pe: Optional[float] = None
+    forward_pe_deviation: Optional[float] = None
+    forward_pe_raw: int = 0
 
     model_config = ConfigDict(extra="allow")
 
