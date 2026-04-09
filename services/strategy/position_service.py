@@ -631,13 +631,38 @@ class PositionService:
 
     @classmethod
     def _get_take_profit_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
-        """레짐별 익절 기준 반환. BULL 7%, NEUTRAL 5%, BEAR 3%."""
+        """레짐 점수(regime_score) 기반 익절 기준 반환.
+        - Deep Bear (0~35):  익절  3% - 민첩하게 수익 실현
+        - Weak Bear (36~45): 익절  5% - 전환 신호 구간
+        - Neutral (46~55):  익절  7% - 상승 추세 홀딩
+        - Bull (56+):       익절 10% - 수익 극대화
+        """
         regime = (macro_data.market_regime.status if macro_data and macro_data.market_regime else "Neutral").upper()
+        score = (macro_data.market_regime.regime_score if macro_data and macro_data.market_regime else -1)
         if regime == "BULL":
-            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BULL", 7.0)
+            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BULL", 10.0)
         elif regime == "BEAR":
+            # Weak Bear (36~45): Bear 판정이지만 회복 신호 구간
+            if score >= 36:
+                return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_WEAK_BEAR", 5.0)
+            # Deep Bear (0~35): 민첩하게 수익 실현
             return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BEAR", 3.0)
-        return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_NEUTRAL", 5.0)
+        return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_NEUTRAL", 7.0)
+
+    @classmethod
+    def _get_stop_loss_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
+        """레짐 점수(regime_score) 기반 손절 기준 반환.
+        - Deep Bear (0~35):  -5%  - 민첩하게 손절
+        - Weak Bear (36~45): -3%  - 회복 구간, 빠른 컷
+        - Neutral/Bull:      -5%  - 추세 유지, 여유 있게
+        """
+        regime = (macro_data.market_regime.status if macro_data and macro_data.market_regime else "Neutral").upper()
+        score = (macro_data.market_regime.regime_score if macro_data and macro_data.market_regime else -1)
+        if regime == "BEAR":
+            if score >= 36:  # Weak Bear
+                return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_WEAK_BEAR", -3.0)
+            return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_BEAR", -5.0)  # Deep Bear
+        return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_NEUTRAL", -5.0)  # Neutral / Bull
 
     @classmethod
     def _load_execution_config(cls, macro_data: MacroDataSnapshot = None) -> ExecutionConfig:
@@ -646,7 +671,7 @@ class PositionService:
             buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30),
             sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70),
             take_profit_pct=cls._get_take_profit_pct_by_regime(macro_data),
-            stop_loss_pct=SettingsService.get_float("STRATEGY_STOP_LOSS_PCT", -8.0),
+            stop_loss_pct=cls._get_stop_loss_pct_by_regime(macro_data),
             add_rsi_limit=SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0),
             add_score_limit=SettingsService.get_int("STRATEGY_ADD_BUY_SCORE_LIMIT", 55),
             exchange_rate=MacroService.get_exchange_rate(),
@@ -805,8 +830,8 @@ class PositionService:
             buy_price = float(holding.buy_price or 0)
             profit_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0.0
             
-            if profit_pct < 1.0:
-                logger.info(f"⏭️ [SellForCash] {ticker} 수익률({profit_pct:.2f}%) 1.0% 미만 → 스킵")
+            if profit_pct < 2.0:
+                logger.info(f"⏭️ [SellForCash] {ticker} 수익률({profit_pct:.2f}%) 2.0% 미만 → 스킵")
                 continue
 
             is_kr_ticker = is_kr(ticker)
