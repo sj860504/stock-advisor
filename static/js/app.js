@@ -116,31 +116,82 @@ function setUpdated() {
 }
 
 // ─── Strategy Status ──────────────────────────────────────────────────────
+// ─── Strategy Status ──────────────────────────────────────────────────────
 async function fetchStrategyStatus() {
     try {
-        const data = await apiFetch('/trading/waiting-list');
-        const enabled = data?.enabled ?? data?.strategy_enabled ?? false;
-        updateStrategyChip(enabled);
-    } catch (e) {}
+        const data = await apiFetch('/trading/status');
+        updateStrategyStatusUI(data);
+    } catch (e) {
+        console.error('Failed to fetch strategy status:', e);
+    }
 }
 
-function updateStrategyChip(enabled) {
+function updateStrategyStatusUI(data) {
+    if (!data) return;
+    const { master, kr, us } = data;
+
+    // 1. Master Status
     const chip = document.getElementById('strategy-chip');
     const dot  = document.getElementById('strategy-dot');
     const big  = document.getElementById('strategy-status-big');
-    chip.textContent = enabled ? '전략 ON' : '전략 OFF';
-    chip.className   = 'status-chip ' + (enabled ? 'chip-on' : 'chip-off');
-    if (dot) { dot.className = 'status-dot ' + (enabled ? 'on' : 'off'); }
-    if (big) { big.textContent = enabled ? '▶ 실행 중' : '⏹ 중지됨'; big.style.color = enabled ? 'var(--bull)' : 'var(--bear)'; }
+    
+    if (chip) {
+        chip.textContent = master ? '전략 ON' : '전략 OFF';
+        chip.className = 'status-chip ' + (master ? 'chip-on' : 'chip-off');
+    }
+    if (dot) {
+        dot.className = 'status-dot ' + (master ? 'on' : 'off');
+    }
+    if (big) {
+        big.textContent = master ? '▶ 실행 중' : '⏹ 중지됨';
+        big.style.color = master ? 'var(--bull)' : 'var(--bear)';
+    }
+
+    // 2. KR Market Status
+    const krChip = document.getElementById('kr-status-chip');
+    const krText = document.getElementById('kr-status-text');
+    if (krChip) {
+        krChip.textContent = `KR ${kr ? 'ON' : 'OFF'}`;
+        krChip.className = 'status-chip mini ' + (kr ? 'chip-on' : 'chip-off');
+    }
+    if (krText) {
+        krText.textContent = kr ? '활성 (Active)' : '차단 (Disabled)';
+        krText.style.color = kr ? 'var(--bull)' : 'var(--sub)';
+    }
+
+    // 3. US Market Status
+    const usChip = document.getElementById('us-status-chip');
+    const usText = document.getElementById('us-status-text');
+    if (usChip) {
+        usChip.textContent = `US ${us ? 'ON' : 'OFF'}`;
+        usChip.className = 'status-chip mini ' + (us ? 'chip-on' : 'chip-off');
+    }
+    if (usText) {
+        usText.textContent = us ? '활성 (Active)' : '차단 (Disabled)';
+        usText.style.color = us ? 'var(--bull)' : 'var(--sub)';
+    }
 }
 
-async function startStrategy() {
-    try { await apiFetch('/trading/start'); updateStrategyChip(true);  showToast('전략이 시작되었습니다'); }
-    catch (e) { showToast(e.message, false); }
+async function startStrategy(market) {
+    try {
+        const url = market ? `/trading/start?market=${market}` : '/trading/start';
+        await apiFetch(url);
+        await fetchStrategyStatus();
+        showToast((market ? market.toUpperCase() + ' ' : '') + '전략이 시작되었습니다');
+    } catch (e) {
+        showToast(e.message, false);
+    }
 }
-async function stopStrategy() {
-    try { await apiFetch('/trading/stop');  updateStrategyChip(false); showToast('전략이 중지되었습니다'); }
-    catch (e) { showToast(e.message, false); }
+
+async function stopStrategy(market) {
+    try {
+        const url = market ? `/trading/stop?market=${market}` : '/trading/stop';
+        await apiFetch(url);
+        await fetchStrategyStatus();
+        showToast((market ? market.toUpperCase() + ' ' : '') + '전략이 중지되었습니다');
+    } catch (e) {
+        showToast(e.message, false);
+    }
 }
 
 // ─── Sort / Search Infrastructure ─────────────────────────────────────────

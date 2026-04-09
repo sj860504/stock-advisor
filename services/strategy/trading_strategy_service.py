@@ -379,6 +379,7 @@ class TradingStrategyService:
         kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float,
         usd_cash: float = 0.0, exchange_rate: float = 1350.0,
+        run_kr: bool = True, run_us: bool = True,
     ) -> tuple[bool, set]:
         """Collect signals and execute trades via PositionService.
         Returns (trade_executed: bool, executed_tickers: set)."""
@@ -395,6 +396,7 @@ class TradingStrategyService:
             target_cash_kr, target_cash_us, usd_cash=usd_cash, exchange_rate=exchange_rate,
             watchlist_kr=watchlist_set if kr_mode == "watchlist" else None,
             watchlist_us=watchlist_set if us_mode == "watchlist" else None,
+            run_kr=run_kr, run_us=run_us,  # 필트링 플래그 전달
         )
         return PositionService._execute_collected_signals(
             user_id, prepared_signals, holdings, kr_total, us_total_krw, cash_balance,
@@ -407,12 +409,22 @@ class TradingStrategyService:
         can_run, is_kr_open, is_us_open = cls._validate_preconditions(user_id)
         if not can_run:
             return
+        is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
+        is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+        
+        # 활성화된 시장만 실행 대상
+        run_kr = is_kr_open and is_kr_strategy_enabled
+        run_us = is_us_open and is_us_strategy_enabled
 
-        markets = (["KR"] if is_kr_open else []) + (["US"] if is_us_open else [])
+        if not run_kr and not run_us:
+            logger.info("⏸️ All active market strategies are disabled or markets closed.")
+            return
+
+        markets = (["KR"] if run_kr else []) + (["US"] if run_us else [])
         logger.info(f"🚀 Running Trading Strategy for {user_id} (markets: {', '.join(markets)})...")
 
         cls._verify_pending_orders()
-        cls._update_target_universe(user_id, run_kr=is_kr_open, run_us=is_us_open)
+        cls._update_target_universe(user_id, run_kr=run_kr, run_us=run_us)
 
         holdings, kr_cash, usd_cash, before_snapshot = cls._load_and_sync_portfolio(user_id)
         macro_snapshot, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us = cls._load_macro_and_assets(holdings, kr_cash)
@@ -423,6 +435,7 @@ class TradingStrategyService:
         trade_executed, executed_tickers = cls._run_signals_and_execute(
             user_id, holdings, macro_snapshot, user_state, kr_total, us_total_krw,
             kr_cash, target_cash_kr, target_cash_us, usd_cash=usd_cash, exchange_rate=exchange_rate,
+            run_kr=run_kr, run_us=run_us,  # 필터링 플래그 전달
         )
         cls._save_state(state)
         logger.info("Strategy execution and trade decisions complete.")

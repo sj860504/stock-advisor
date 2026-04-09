@@ -107,6 +107,18 @@ class SettingsService:
             return default
 
     @classmethod
+    def get_bool(cls, key: str, default: bool = False) -> bool:
+        try:
+            val = str(cls.get_setting(key)).lower()
+            if val in ("true", "1", "yes", "on"):
+                return True
+            if val in ("false", "0", "no", "off"):
+                return False
+            return default
+        except (ValueError, TypeError):
+            return default
+
+    @classmethod
     def set_setting(cls, key: str, value: str):
         """Update setting value."""
         desc = cls.DEFAULT_SETTINGS.get(key, ("", ""))[1]

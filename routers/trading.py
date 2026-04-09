@@ -138,6 +138,8 @@ async def get_waiting_list() -> Dict[str, Any]:
         items = TradingStrategyService.get_waiting_list()
         return {
             "enabled": TradingStrategyService.is_enabled(),
+            "kr_enabled": SettingsService.get_bool("STRATEGY_ENABLED_KR", True),
+            "us_enabled": SettingsService.get_bool("STRATEGY_ENABLED_US", True),
             "buy_list": [i for i in items if i.get("action") == "BUY"],
             "sell_list": [i for i in items if i.get("action") == "SELL"],
         }
@@ -195,22 +197,45 @@ async def update_setting(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/start", response_model=StatusMessageResponse)
-async def start_trading() -> StatusMessageResponse:
-    """Start auto-trading (enable strategy)."""
+@router.get("/status", response_model=Dict[str, Any])
+async def get_trading_status() -> Dict[str, Any]:
+    """Get auto-trading status (Master + KR + US)."""
     try:
-        TradingStrategyService.set_enabled(True)
-        return StatusMessageResponse(status="success", message="Trading Strategy Started")
+        return {
+            "master": TradingStrategyService.is_enabled(),
+            "kr": SettingsService.get_bool("STRATEGY_ENABLED_KR", True),
+            "us": SettingsService.get_bool("STRATEGY_ENABLED_US", True),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/start", response_model=StatusMessageResponse)
+async def start_trading(market: Optional[str] = None) -> StatusMessageResponse:
+    """Start auto-trading (enable strategy). If market is set (kr/us), enable that market."""
+    try:
+        if market:
+            m = market.upper()
+            SettingsService.set_setting(f"STRATEGY_ENABLED_{m}", "true")
+            return StatusMessageResponse(status="success", message=f"{m} Strategy Started")
+        else:
+            TradingStrategyService.set_enabled(True)
+            return StatusMessageResponse(status="success", message="Trading Strategy Started (Master)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/stop", response_model=StatusMessageResponse)
-async def stop_trading() -> StatusMessageResponse:
-    """Stop auto-trading (disable strategy)."""
+async def stop_trading(market: Optional[str] = None) -> StatusMessageResponse:
+    """Stop auto-trading (disable strategy). If market is set (kr/us), disable that market."""
     try:
-        TradingStrategyService.set_enabled(False)
-        return StatusMessageResponse(status="success", message="Trading Strategy Stopped")
+        if market:
+            m = market.upper()
+            SettingsService.set_setting(f"STRATEGY_ENABLED_{m}", "false")
+            return StatusMessageResponse(status="success", message=f"{m} Strategy Stopped")
+        else:
+            TradingStrategyService.set_enabled(False)
+            return StatusMessageResponse(status="success", message="Trading Strategy Stopped (Master)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

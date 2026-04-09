@@ -398,6 +398,8 @@ class SignalService:
         usd_cash: float = 0.0, exchange_rate: float = 1350.0,
         watchlist_kr: set[str] | None = None,
         watchlist_us: set[str] | None = None,
+        run_kr: bool = True,
+        run_us: bool = True,
     ) -> list[SignalSchema]:
         """분석 시장 결정 → 하드게이트 → 스코어 계산 → 신호 수집.
 
@@ -406,7 +408,11 @@ class SignalService:
         점수 계산 및 신호 생성을 건너뜀.
         """
         allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        analyze_kr, analyze_us = cls._determine_analysis_markets(allow_extended)
+        analyze_kr_base, analyze_us_base = cls._determine_analysis_markets(allow_extended)
+        
+        # 외부에서 주입된 활성화 여부(run_kr, run_us)와 개장 여부 조합
+        analyze_kr = analyze_kr_base and run_kr
+        analyze_us = analyze_us_base and run_us
 
         holdings_map = {h.ticker: h for h in holdings}
         prepared_signals: list[SignalSchema] = []

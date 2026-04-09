@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 from models.schemas import HoldingSchema, MacroDataSnapshot, MarketRegimeSchema, UserState
+from services.config.settings_service import SettingsService
 from utils.logger import get_logger
 from utils.market import is_kr, filter_kr, filter_us
 
@@ -41,10 +42,19 @@ class AssetManagementService:
             f"kr_stock={kr_stock_total:,.0f} us_stock=${us_stock_total_usd:,.2f}"
         )
 
-        if is_kr_open:
+        # 시장별 전략 활성화 여부 확인
+        is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
+        is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+
+        if is_kr_open and is_kr_strategy_enabled:
             cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings, user_state)
-        if is_us_open:
+        elif is_kr_open:
+            logger.info("[AssetMgmt] KR Strategy is disabled. Skipping KR rebalance.")
+
+        if is_us_open and is_us_strategy_enabled:
             cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings, user_state)
+        elif is_us_open:
+            logger.info("[AssetMgmt] US Strategy is disabled. Skipping US rebalance.")
 
     @classmethod
     def _rebalance_market(

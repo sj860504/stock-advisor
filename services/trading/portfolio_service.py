@@ -223,8 +223,18 @@ class PortfolioService:
         }
 
         holdings, us_by_ticker = cls._parse_balance_holdings(balance_data, existing_sector_map)
-        overseas_balance = KisService.get_overseas_balance()
-        holdings.extend(cls._resolve_us_holdings(overseas_balance, us_by_ticker, existing_us_map, existing_sector_map))
+        
+        # 미국 시장 전략 활성화 여부 확인
+        is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+        overseas_balance = None
+        
+        if is_us_strategy_enabled:
+            overseas_balance = KisService.get_overseas_balance()
+            holdings.extend(cls._resolve_us_holdings(overseas_balance, us_by_ticker, existing_us_map, existing_sector_map))
+        else:
+            logger.info("🇺🇸 US Strategy disabled. Skipping overseas balance sync.")
+            # 이미 가지고 있는 미국 종목은 유지
+            holdings.extend(list(existing_us_map.values()))
 
         summary, cash = cls._extract_kr_cash_from_summary(balance_data)
 

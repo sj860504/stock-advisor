@@ -215,10 +215,15 @@ class SchedulerService:
             allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
             is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-            watch_kr = not is_us_open
-            watch_us = not is_kr_open
+
+            is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
+            is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+
+            watch_kr = not is_us_open and is_kr_strategy_enabled
+            watch_us = not is_kr_open and is_us_strategy_enabled
+
             logger.info(
-                f"📺 KR open={is_kr_open}, US open={is_us_open} | "
+                f"📺 KR open={is_kr_open}({is_kr_strategy_enabled}), US open={is_us_open}({is_us_strategy_enabled}) | "
                 f"HIGH {len(high_set)} tickers (WebSocket), LOW {len(low_set)} tickers (5min polling)"
             )
             MarketDataService.register_batch(all_kr + all_us)  # Register all for UI display
@@ -404,10 +409,17 @@ class SchedulerService:
             return
         high_tickers = MarketDataService.get_high_tier_tickers()
         low_tickers = MarketDataService.get_low_tier_tickers()
-        all_poll_tickers = high_tickers + low_tickers
-        if not all_poll_tickers:
-            return
+        is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
+        is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+        
         active_tickers = cls._filter_active_low_tickers(all_poll_tickers, is_kr_open, is_us_open)
+        
+        # 시장별 활성화 여부로 최종 필터링
+        active_tickers = [
+            t for t in active_tickers 
+            if (is_kr(t) and is_kr_strategy_enabled) or (not is_kr(t) and is_us_strategy_enabled)
+        ]
+
         if not active_tickers:
             return
         high_active = len([t for t in high_tickers if t in set(active_tickers)])
