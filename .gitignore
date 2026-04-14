@@ -12,3 +12,4 @@ dcf_calculator.py
 output.log
 .venv/
 
+logs/
