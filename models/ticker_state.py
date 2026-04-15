@@ -32,6 +32,8 @@ class TickerState:
 
     # Price last-updated timestamp
     last_updated: Optional[datetime] = None
+    # RSI last-calculated timestamp (warm-up or periodic refresh)
+    rsi_updated_at: Optional[datetime] = None
 
     # Data buffer (recent N closing prices for real-time EMA calculation)
     # In practice, after loading daily candle data, the current price is treated as today's close
@@ -108,6 +110,7 @@ class TickerState:
             self.dcf_value = dcf
         if rsi is not None:
             self.rsi = rsi
+            self.rsi_updated_at = datetime.now()
 
     @property
     def is_undervalued(self) -> bool:

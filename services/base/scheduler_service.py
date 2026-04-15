@@ -402,6 +402,29 @@ class SchedulerService:
         return False
 
     @classmethod
+    def _refresh_stale_rsi(cls, active_tickers: list) -> None:
+        """Background: re-warm-up tickers whose RSI hasn't been updated for > 2 hours."""
+        import threading
+        stale = []
+        for ticker in active_tickers:
+            state = MarketDataService.get_state(ticker)
+            if state is None:
+                continue
+            rsi_updated_at = getattr(state, 'rsi_updated_at', None)
+            if rsi_updated_at is None or (datetime.now() - rsi_updated_at) > timedelta(hours=2):
+                stale.append(ticker)
+        if not stale:
+            return
+        logger.info(f"🔄 RSI stale refresh: {stale}")
+        def _run():
+            for ticker in stale:
+                try:
+                    MarketDataService._warm_up_data(ticker, _force=True)
+                except Exception as e:
+                    logger.debug(f"RSI refresh failed {ticker}: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+
+    @classmethod
     def _poll_active_tickers(cls, active_tickers: list) -> None:
         """Poll active_tickers list via KIS REST API to refresh prices."""
         from services.kis.kis_service import KisService
@@ -420,6 +443,7 @@ class SchedulerService:
                 logger.debug(f"LOW tier poll failed {ticker}: {e}")
                 fail += 1
         logger.info(f"✅ Tier LOW price refresh complete: success {success}, fail {fail}")
+        cls._refresh_stale_rsi(active_tickers)
 
     @classmethod
     def _refresh_low_tier_prices(cls) -> None:
