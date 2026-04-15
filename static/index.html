@@ -43,7 +43,6 @@
             <div class="nav-item" data-tab="market" onclick="switchTab(this,'market')">Market</div>
             <div class="nav-item" data-tab="trading" onclick="switchTab(this,'trading')">Trading</div>
             <div class="nav-item" data-tab="macro" onclick="switchTab(this,'macro')">Macro</div>
-            <div class="nav-item" data-tab="watchlist" onclick="switchTab(this,'watchlist')">Watchlist</div>
             <div class="nav-item" data-tab="settings" onclick="switchTab(this,'settings')">Settings</div>
             <div class="nav-item" data-tab="logs" onclick="switchTab(this,'logs')">Logs</div>
         </div>
@@ -363,44 +362,119 @@
                 </div>
             </div>
 
-            <!-- Ticker Score Calculator -->
-            <div class="card">
-                <div class="card-title">📊 종목 점수 계산</div>
-                <div style="display:flex;gap:8px;align-items:end">
-                    <div style="flex:1">
-                        <label>티커 / 종목명</label>
-                        <input type="text" id="score-ticker" placeholder="예: AAPL, 005930, 삼성전자" onkeydown="if(event.key==='Enter')calcTickerScore()">
+            <!-- Score Calculator + Manual Order -->
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-title">📊 종목 점수 계산 / 수동 주문</div>
+                <div class="grid-2" style="gap:24px">
+                    <div>
+                        <div style="font-size:.8rem;color:var(--sub);margin-bottom:8px">점수 조회</div>
+                        <div style="display:flex;gap:8px;align-items:end">
+                            <div style="flex:1">
+                                <input type="text" id="score-ticker" placeholder="예: AAPL, 005930, 삼성전자" onkeydown="if(event.key==='Enter')calcTickerScore()">
+                            </div>
+                            <button class="btn btn-primary" onclick="calcTickerScore()">조회</button>
+                        </div>
+                        <div id="score-result" style="margin-top:12px"></div>
                     </div>
-                    <button class="btn btn-primary" onclick="calcTickerScore()">조회</button>
+                    <div>
+                        <div style="font-size:.8rem;color:var(--sub);margin-bottom:8px">수동 주문</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                            <div>
+                                <label>티커</label>
+                                <input type="text" id="order-ticker" placeholder="예: AAPL">
+                            </div>
+                            <div>
+                                <label>구분</label>
+                                <select id="order-type">
+                                    <option value="buy">매수 (BUY)</option>
+                                    <option value="sell">매도 (SELL)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label>수량</label>
+                                <input type="number" id="order-qty" value="1" min="1">
+                            </div>
+                            <div>
+                                <label>가격 (0=시장가)</label>
+                                <input type="number" id="order-price" value="0" step="0.01" min="0">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" style="width:100%" onclick="placeOrder()">주문 제출</button>
+                    </div>
                 </div>
-                <div id="score-result" style="margin-top:12px"></div>
             </div>
 
-            <!-- Manual Order -->
-            <div class="card">
-                <div class="card-title">📝 수동 주문</div>
-                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:end">
+            <!-- ── 전략 관리 (구 Watchlist) ──────────────────────── -->
+            <!-- 전략 모드 + 시장 제어 -->
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-title">⚙️ 전략 모드 / 시장 제어</div>
+                <div style="display:flex;gap:32px;flex-wrap:wrap">
                     <div>
-                        <label>티커</label>
-                        <input type="text" id="order-ticker" placeholder="예: AAPL">
+                        <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇰🇷 한국 — 전략 모드</div>
+                        <div style="display:flex;gap:8px">
+                            <button id="kr-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('kr','universe')">유니버스</button>
+                            <button id="kr-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('kr','custom')">커스텀</button>
+                        </div>
+                        <div id="kr-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
                     </div>
                     <div>
-                        <label>구분</label>
-                        <select id="order-type">
-                            <option value="buy">매수 (BUY)</option>
-                            <option value="sell">매도 (SELL)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label>수량</label>
-                        <input type="number" id="order-qty" value="1" min="1">
-                    </div>
-                    <div>
-                        <label>가격 (0=시장가)</label>
-                        <input type="number" id="order-price" value="0" step="0.01" min="0">
+                        <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇺🇸 미국 — 전략 모드</div>
+                        <div style="display:flex;gap:8px">
+                            <button id="us-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('us','universe')">유니버스</button>
+                            <button id="us-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('us','custom')">커스텀</button>
+                        </div>
+                        <div id="us-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
                     </div>
                 </div>
-                <button class="btn btn-primary" style="margin-top:12px" onclick="placeOrder()">주문 제출</button>
+            </div>
+
+            <!-- 종목 추가 -->
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-title">
+                    <span>➕ 종목 추가</span>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <input type="text" id="wl-ticker-input" placeholder="예: AAPL, 005930"
+                           style="flex:1" onkeydown="if(event.key==='Enter')addWatchlistTicker()">
+                    <button class="btn btn-primary" onclick="addWatchlistTicker()">추가</button>
+                </div>
+                <div style="font-size:0.8rem;color:var(--sub);margin-top:8px">
+                    ⚡ 커스텀 모드에서는 추가된 종목만 자동매매됩니다.
+                </div>
+            </div>
+
+            <!-- Watchlist 목록 -->
+            <div class="card">
+                <div class="card-title">
+                    <span>📋 매매 종목 관리</span>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-outline btn-sm" onclick="fetchWatchlist()">🔄 새로고침</button>
+                        <button class="btn btn-primary btn-sm" id="run-strategy-btn" onclick="runStrategyNow()">⚡ 전략 즉시 실행</button>
+                    </div>
+                </div>
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>티커</th>
+                                <th class="text-end">현재가</th>
+                                <th class="text-end">등락</th>
+                                <th class="text-end">RSI</th>
+                                <th class="text-end">점수</th>
+                                <th class="text-end">추천</th>
+                                <th class="text-end">목표매수</th>
+                                <th class="text-end">목표매도</th>
+                                <th>메모</th>
+                                <th>관리</th>
+                            </tr>
+                        </thead>
+                        <tbody id="watchlist-tbody">
+                            <tr>
+                                <td colspan="10" class="empty">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -459,83 +533,6 @@
                     <div id="econ-calendar-content">
                         <div class="empty">Loading...</div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ═══════════════════════════════════════════════════════
-     7. WATCHLIST
-═══════════════════════════════════════════════════════ -->
-        <div id="watchlist" class="page-section">
-            <!-- 전략 모드 선택 -->
-            <div class="card" style="margin-bottom:16px">
-                <div class="card-title">⚙️ 전략 모드</div>
-                <div style="display:flex;gap:32px;padding:4px 0">
-                    <div>
-                        <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇰🇷 한국</div>
-                        <div style="display:flex;gap:8px">
-                            <button id="kr-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('kr','universe')">유니버스 모드</button>
-                            <button id="kr-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('kr','custom')">커스텀 모드</button>
-                        </div>
-                        <div id="kr-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
-                    </div>
-                    <div>
-                        <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇺🇸 미국</div>
-                        <div style="display:flex;gap:8px">
-                            <button id="us-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('us','universe')">유니버스 모드</button>
-                            <button id="us-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('us','custom')">커스텀 모드</button>
-                        </div>
-                        <div id="us-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 종목 추가 -->
-            <div class="card" style="margin-bottom:16px">
-                <div class="card-title">
-                    <span>➕ 종목 추가</span>
-                </div>
-                <div style="display:flex;gap:8px">
-                    <input type="text" id="wl-ticker-input" placeholder="예: AAPL, 005930"
-                           style="flex:1" onkeydown="if(event.key==='Enter')addWatchlistTicker()">
-                    <button class="btn btn-primary" onclick="addWatchlistTicker()">추가</button>
-                </div>
-                <div style="font-size:0.8rem;color:var(--sub);margin-top:8px">
-                    ⚡ 추가된 종목만 자동매매됩니다. Top100은 분석 전용.
-                </div>
-            </div>
-
-            <!-- Watchlist 목록 -->
-            <div class="card">
-                <div class="card-title">
-                    <span>📋 내 Watchlist</span>
-                    <div style="display:flex;gap:8px">
-                        <button class="btn btn-outline btn-sm" onclick="fetchWatchlist()">🔄 새로고침</button>
-                        <button class="btn btn-primary btn-sm" id="run-strategy-btn" onclick="runStrategyNow()">⚡ 전략 즉시 실행</button>
-                    </div>
-                </div>
-                <div class="tbl-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>티커</th>
-                                <th class="text-end">현재가</th>
-                                <th class="text-end">등락</th>
-                                <th class="text-end">RSI</th>
-                                <th class="text-end">점수</th>
-                                <th class="text-end">추천</th>
-                                <th class="text-end">목표매수</th>
-                                <th class="text-end">목표매도</th>
-                                <th>메모</th>
-                                <th>관리</th>
-                            </tr>
-                        </thead>
-                        <tbody id="watchlist-tbody">
-                            <tr>
-                                <td colspan="10" class="empty">Loading...</td>
-                            </tr>
-                        </tbody>
-                    </table>
                 </div>
             </div>
         </div>
@@ -781,6 +778,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260415"></script>
+    <script src="/static/js/app.js?v=20260415b"></script>
 </body>
 </html>

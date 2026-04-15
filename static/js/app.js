@@ -55,11 +55,10 @@ function switchTab(el, tabId) {
         dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchSectorWeightsMini(); fetchPortfolioFull(); },
         history:   () => { fetchHistory(); },
         market:    () => { fetchTop20(); fetchSignals(); },
-        trading:   () => { fetchWaitingList(); fetchStrategyStatus(); },
+        trading:   () => { fetchWaitingList(); fetchStrategyStatus(); fetchWatchlist(); fetchStrategyMode(); },
         macro:     () => { fetchMacro(); fetchEconCalendar(); },
         settings:  () => { fetchSettings(); fetchAlerts(); },
         logs:      () => { fetchLogs(); },
-        watchlist: () => { fetchWatchlist(); fetchStrategyMode(); },
     };
     loaders[tabId]?.();
 }
