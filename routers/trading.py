@@ -173,6 +173,20 @@ async def execute_sell(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/run-now", response_model=Dict[str, Any])
+async def run_strategy_now(user_id: str = Body("sean", embed=True)) -> Dict[str, Any]:
+    """Trigger strategy execution immediately (bypasses scheduler interval)."""
+    try:
+        import threading
+        def _run():
+            TradingStrategyService.run_strategy(user_id)
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return {"status": "triggered", "message": "전략 분석이 시작되었습니다. 로그를 확인하세요."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/settings", response_model=List[Dict[str, Any]])
 async def get_settings() -> List[Dict[str, Any]]:
     """Get settings."""

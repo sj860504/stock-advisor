@@ -173,6 +173,27 @@ class KisWsService:
             self.connected = False
             self.websocket = None
 
+    async def unsubscribe(self, ticker: str, market: str = "KRX"):
+        """Unsubscribe real-time price for a ticker (tr_type='2')."""
+        if ticker not in self.subscribed_tickers:
+            return
+        market = (market or "KRX").upper()
+        tr_id  = "H0STCNT0" if market == "KRX" else "HDFSUSP0"
+        tr_key = ticker if market == "KRX" else f"D{market}{ticker}"
+        body = {
+            "header": {"approval_key": self.approval_key, "custtype": "P",
+                       "tr_type": "2", "content-type": "utf-8"},
+            "body":   {"input": {"tr_id": tr_id, "tr_key": tr_key}},
+        }
+        try:
+            if self.connected and self.websocket:
+                await self.websocket.send(json.dumps(body))
+            self.subscribed_tickers.discard(ticker)
+            self.subscribed_markets.pop(ticker, None)
+            logger.info(f"➖ Unsubscribed {ticker} ({market})")
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} unsubscribe failed: {e}")
+
     async def handle_message(self, msg):
         """Handle and parse incoming messages."""
         if msg[0] not in ('0', '1'):

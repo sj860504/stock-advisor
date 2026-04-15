@@ -19,8 +19,8 @@ from utils.market import is_kr
 
 logger = get_logger("scheduler")
 
-# WebSocket real-time subscription limit (KIS live/paper both capped at 40 tickers, 20 per market)
-WS_HIGH_TIER_COUNT = 20
+# WebSocket real-time subscription limit (KIS live/paper both capped at total 40 per session)
+WS_HIGH_TIER_COUNT = 40
 # Tier LOW polling interval (minutes)
 LOW_TIER_POLL_MINUTES = 5
 
@@ -138,6 +138,8 @@ class SchedulerService:
 
         Returns: (all_kr, all_us, kr_holdings, us_holdings, target_universe, holdings_raw)
         """
+        from repositories.watchlist_repo import WatchlistRepo
+        
         def _norm_ticker(t: str) -> str:
             """Normalize ticker string (strip whitespace, uppercase, zero-pad KR 6 digits)."""
             t = str(t or "").strip().upper()
@@ -147,18 +149,35 @@ class SchedulerService:
                 t = t.zfill(6)
             return t
 
-        kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
-        us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
+        # Helper explicitly used over API due to layered architecture
+        def _norm_mode(raw: str) -> str:
+            val = str(raw or "universe")
+            return "custom" if val == "watchlist" else val
+
+        kr_mode = _norm_mode(SettingsService.get_setting("kr_strategy_mode"))
+        us_mode = _norm_mode(SettingsService.get_setting("us_strategy_mode"))
+
         portfolio = PortfolioService.load_portfolio('sean')
         holdings_raw = [_norm_ticker(h.ticker) for h in portfolio]
         kr_holdings = {t for t in holdings_raw if t and is_kr(t) and len(t) == 6}
         us_holdings = {t for t in holdings_raw if t and t.isalpha()}
-        all_kr = list(dict.fromkeys(
-            [t for t in kr_tickers if t and is_kr(t) and len(t) == 6] + list(kr_holdings)
-        ))
-        all_us = list(dict.fromkeys(
-            [t for t in us_tickers if t and t.isalpha()] + list(us_holdings)
-        ))
+
+        wl_raw = WatchlistRepo.get_tickers("sean")
+        wl_kr  = [_norm_ticker(t) for t in wl_raw if is_kr(_norm_ticker(t)) and len(_norm_ticker(t)) == 6]
+        wl_us  = [_norm_ticker(t) for t in wl_raw if not is_kr(_norm_ticker(t)) and _norm_ticker(t).isalpha()]
+
+        if kr_mode == "universe":
+            kr_top = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)]
+            all_kr = list(dict.fromkeys(kr_top + list(kr_holdings) + wl_kr))
+        else:
+            all_kr = list(dict.fromkeys(wl_kr + list(kr_holdings)))
+
+        if us_mode == "universe":
+            us_top = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)]
+            all_us = list(dict.fromkeys(us_top + list(us_holdings) + wl_us))
+        else:
+            all_us = list(dict.fromkeys(wl_us + list(us_holdings)))
+
         target_universe = set(all_kr + all_us)
         return all_kr, all_us, kr_holdings, us_holdings, target_universe, holdings_raw
 
@@ -211,6 +230,12 @@ class SchedulerService:
             kr_high_set, us_high_set, high_set, low_set = cls._classify_tiers(
                 all_kr, all_us, kr_holdings, us_holdings, target_universe
             )
+            # 기존 구독 중 새 universe에 없는 종목 해제
+            stale = kis_ws_service.subscribed_tickers - target_universe
+            for ticker in stale:
+                market = kis_ws_service.subscribed_markets.get(ticker, "KRX" if is_kr(ticker) else "NAS")
+                await kis_ws_service.unsubscribe(ticker, market=market)
+
             MarketDataService.prune_states(target_universe)
             allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
             is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
@@ -411,7 +436,8 @@ class SchedulerService:
         low_tickers = MarketDataService.get_low_tier_tickers()
         is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
         is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
-        
+
+        all_poll_tickers = high_tickers + low_tickers
         active_tickers = cls._filter_active_low_tickers(all_poll_tickers, is_kr_open, is_us_open)
         
         # 시장별 활성화 여부로 최종 필터링
@@ -593,6 +619,9 @@ class SchedulerService:
         cash_balance = PortfolioService.load_cash("sean")
         usd_cash = 0.0 # simplified for cache response
         
+        from repositories.watchlist_repo import WatchlistRepo
+        watchlist_set = set(WatchlistRepo.get_tickers("sean"))
+
         for ticker, ticker_state in list(all_states.items())[:limit]:
             # Calculate Score
             is_kr_t = is_kr(ticker)
@@ -626,6 +655,7 @@ class SchedulerService:
                 "ema120": ticker_state.ema.get(120),
                 "ema200": ticker_state.ema.get(200),
                 "tier": tiers.get(ticker, "low"),
+                "is_custom": ticker in watchlist_set,
                 "last_updated": ticker_state.last_updated.isoformat() if ticker_state.last_updated else None,
             }
         return result

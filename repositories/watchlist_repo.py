@@ -56,3 +56,29 @@ class WatchlistRepo:
         except Exception as e:
             logger.error(f"❌ Watchlist remove error {user_id}/{ticker}: {e}")
             return False
+
+    @classmethod
+    def get_item(cls, user_id: str, ticker: str) -> UserWatchlist | None:
+        """특정 사용자의 특정 종목 정보 반환 (목표가/메모 포함)."""
+        with session_ro() as session:
+            return session.query(UserWatchlist).filter_by(user_id=user_id, ticker=ticker).first()
+
+    @classmethod
+    def update_item(cls, user_id: str, ticker: str, **kwargs) -> bool:
+        """목표매수가, 목표매도가, 메모 등 업데이트"""
+        try:
+            with session_scope() as session:
+                row = session.query(UserWatchlist).filter_by(user_id=user_id, ticker=ticker).first()
+                if not row:
+                    return False
+                # kwargs 처리
+                if "target_buy_price" in kwargs:
+                    row.target_buy_price = kwargs["target_buy_price"]
+                if "target_sell_price" in kwargs:
+                    row.target_sell_price = kwargs["target_sell_price"]
+                if "memo" in kwargs:
+                    row.memo = kwargs["memo"]
+            return True
+        except Exception as e:
+            logger.error(f"❌ Watchlist update error {user_id}/{ticker}: {e}")
+            return False

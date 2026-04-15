@@ -396,15 +396,25 @@ class DataService:
 
     @classmethod
     def sync_daily_market_data(cls, limit: int = 100) -> None:
-        """Daily sync: collect top tickers + 보유종목 -> calculate indicators -> save to DB."""
-        logger.info(f"Starting daily market data sync (Top {limit} + holdings)...")
+        """Daily sync: collect top tickers + 보유종목 + 관심종목 -> calculate indicators -> save to DB."""
+        logger.info(f"Starting daily market data sync (Top {limit} + holdings + watchlist)...")
         kr_tickers = cls.get_top_krx_tickers(limit=limit)
         us_tickers = cls.get_top_us_tickers(limit=limit)
         base_tickers = [(t, "KR") for t in kr_tickers] + [(t, "US") for t in us_tickers]
         base_set = {t for t, _ in base_tickers}
         holding_pairs = [(t, m) for t, m in cls._get_holding_tickers() if t not in base_set]
-        all_tickers = base_tickers + holding_pairs
-        logger.info(f"  Top {limit} KR/US + {len(holding_pairs)} holding tickers = {len(all_tickers)} total")
+        
+        from repositories.watchlist_repo import WatchlistRepo
+        watchlist_raw = WatchlistRepo.get_tickers("sean")
+        wl_pairs = [
+            (t.strip().upper().zfill(6) if t.strip().isdigit() else t.strip().upper(), "KR" if is_kr(t) else "US")
+            for t in watchlist_raw
+        ]
+        already_added = base_set.union({t for t, _ in holding_pairs})
+        wl_filtered_pairs = [(t, m) for t, m in wl_pairs if t not in already_added]
+
+        all_tickers = base_tickers + holding_pairs + wl_filtered_pairs
+        logger.info(f"  Top {limit} KR/US + {len(holding_pairs)} holding + {len(wl_filtered_pairs)} watchlist tickers = {len(all_tickers)} total")
         token = KisService.get_access_token()  # Fetch once outside the loop
         markets = {market for _, market in all_tickers}
         open_markets = {m for m in markets if MarketHourService.should_fetch(m)}

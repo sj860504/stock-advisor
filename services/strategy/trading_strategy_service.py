@@ -182,6 +182,13 @@ class TradingStrategyService:
         from repositories.watchlist_repo import WatchlistRepo
         from repositories.settings_repo import SettingsRepo
 
+        def _norm_mode(raw: str) -> str:
+            val = str(raw or "universe")
+            return "custom" if val == "watchlist" else val
+
+        kr_mode = _norm_mode(SettingsRepo.get("kr_strategy_mode"))
+        us_mode = _norm_mode(SettingsRepo.get("us_strategy_mode"))
+
         kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)] if run_kr else []
         us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)] if run_us else []
         portfolio = PortfolioService.load_portfolio(user_id)
@@ -190,19 +197,24 @@ class TradingStrategyService:
         kr_holdings = [t for t in holdings if t and is_kr(t) and len(t) == 6]
         us_holdings = [t for t in holdings if t and t.isalpha()]
 
-        # Watchlist 티커 추가: 모드 무관하게 가격 데이터 수집 보장
         watchlist_raw = WatchlistRepo.get_tickers(user_id)
         watchlist_norm = [_norm_ticker(t) for t in watchlist_raw]
         wl_kr = [t for t in watchlist_norm if t and is_kr(t) and len(t) == 6]
         wl_us = [t for t in watchlist_norm if t and t.isalpha()]
 
-        all_kr = list(set([t for t in kr_tickers if t and is_kr(t) and len(t) == 6] + kr_holdings + wl_kr))
-        all_us = list(set([t for t in us_tickers if t and t.isalpha()] + us_holdings + wl_us))
+        if kr_mode == "universe":
+            all_kr = list(set([t for t in kr_tickers if t and is_kr(t) and len(t) == 6] + kr_holdings + wl_kr))
+        else:
+            all_kr = list(set(kr_holdings + wl_kr))
+
+        if us_mode == "universe":
+            all_us = list(set([t for t in us_tickers if t and t.isalpha()] + us_holdings + wl_us))
+        else:
+            all_us = list(set(us_holdings + wl_us))
+
         target_universe = set(all_kr + all_us)
 
         MarketDataService.prune_states(target_universe)
-        kr_mode = SettingsRepo.get("kr_strategy_mode") or "top100"
-        us_mode = SettingsRepo.get("us_strategy_mode") or "top100"
         logger.info(
             f"Universe updated: {len(target_universe)} tickers "
             f"(KR={len(all_kr)} [{kr_mode}], US={len(all_us)} [{us_mode}])"
@@ -386,21 +398,25 @@ class TradingStrategyService:
         from repositories.watchlist_repo import WatchlistRepo
         from repositories.settings_repo import SettingsRepo
 
-        kr_mode = SettingsRepo.get("kr_strategy_mode") or "top100"
-        us_mode = SettingsRepo.get("us_strategy_mode") or "top100"
+        kr_mode = SettingsRepo.get("kr_strategy_mode")
+        kr_mode = "custom" if kr_mode == "watchlist" else (kr_mode or "universe")
+        us_mode = SettingsRepo.get("us_strategy_mode")
+        us_mode = "custom" if us_mode == "watchlist" else (us_mode or "universe")
+
         watchlist_raw = WatchlistRepo.get_tickers(user_id)
         watchlist_set = {t.strip().upper().zfill(6) if t.strip().isdigit() else t.strip().upper() for t in watchlist_raw}
 
         prepared_signals = SignalService._collect_trading_signals(
             holdings, macro_snapshot, user_state, kr_total, us_total_krw, cash_balance,
             target_cash_kr, target_cash_us, usd_cash=usd_cash, exchange_rate=exchange_rate,
-            watchlist_kr=watchlist_set if kr_mode == "watchlist" else None,
-            watchlist_us=watchlist_set if us_mode == "watchlist" else None,
+            watchlist_kr=watchlist_set if kr_mode == "custom" else None,
+            watchlist_us=watchlist_set if us_mode == "custom" else None,
             run_kr=run_kr, run_us=run_us,  # 필트링 플래그 전달
         )
         return PositionService._execute_collected_signals(
             user_id, prepared_signals, holdings, kr_total, us_total_krw, cash_balance,
             target_cash_kr, target_cash_us, macro_snapshot, user_state, usd_cash=usd_cash,
+            run_kr=run_kr, run_us=run_us,
         )
 
     @classmethod

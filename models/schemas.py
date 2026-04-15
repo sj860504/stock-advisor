@@ -903,6 +903,15 @@ class TickTradingSettingsRequest(BaseModel):
 class WatchlistItem(BaseModel):
     ticker: str
     added_at: datetime
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    memo: Optional[str] = None
+
+
+class WatchlistItemUpdateRequest(BaseModel):
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    memo: Optional[str] = None
 
 
 class WatchlistResponse(BaseModel):
@@ -916,10 +925,10 @@ class WatchlistUpdateResponse(BaseModel):
 
 
 class StrategyModeResponse(BaseModel):
-    kr_strategy_mode: str  # "top100" | "watchlist"
+    kr_strategy_mode: str  # "universe" | "custom"
     us_strategy_mode: str
 
 
 class StrategyModeRequest(BaseModel):
     market: str  # "kr" | "us"
-    mode: str    # "top100" | "watchlist"
+    mode: str    # "universe" | "custom"

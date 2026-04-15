@@ -246,6 +246,7 @@ class MarketDataService:
         cls, new_tickers: list, financials_map: dict, analyze_kr: bool, analyze_us: bool
     ) -> list:
         """Register each ticker in states and return list needing warm-up."""
+        from repositories.watchlist_repo import WatchlistRepo
         tickers_needing_warmup = []
         for ticker in new_tickers:
             state = TickerState(ticker=ticker)
@@ -259,6 +260,14 @@ class MarketDataService:
                     if financials:
                         logger.info(f"🔄 DB data incomplete for {ticker}, scheduling warm-up.")
                     tickers_needing_warmup.append(ticker)
+            
+            # Watchlist 편집값(자체 목표가/메모) 덮어쓰기
+            wl_item = WatchlistRepo.get_item("sean", ticker)
+            if wl_item:
+                if wl_item.target_buy_price is not None:
+                    state.target_buy_price = wl_item.target_buy_price
+                if wl_item.target_sell_price is not None:
+                    state.target_sell_price = wl_item.target_sell_price
         return tickers_needing_warmup
 
     @classmethod
@@ -292,6 +301,15 @@ class MarketDataService:
             logger.info(f"🔄 DB incomplete for {ticker}. Starting full API warm-up...")
             with cls._get_semaphore():
                 cls._full_api_warmup(ticker, state)
+
+            # Watchlist 편집값(자체 목표가/메모) 덮어쓰기 (warmup 타겟가격 오버라이드)
+            from repositories.watchlist_repo import WatchlistRepo
+            wl_item = WatchlistRepo.get_item("sean", ticker)
+            if wl_item:
+                if wl_item.target_buy_price is not None:
+                    state.target_buy_price = wl_item.target_buy_price
+                if wl_item.target_sell_price is not None:
+                    state.target_sell_price = wl_item.target_sell_price
 
         except Exception as e:
             logger.error(f"❌ Warm-up failed for {ticker}: {e}", exc_info=True)

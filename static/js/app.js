@@ -984,8 +984,9 @@ function renderTop20Filtered() {
             : '-';
         const score = info.score ?? 0;
         const scoreCls = score<=30?'b-up':score>=70?'b-down':'b-gray';
+        const customBadge = info.is_custom ? '<span class="badge b-warn" style="margin-left:4px">★커스텀</span>' : '';
         return `<tr>
-            <td class="ticker-cell">${ticker}</td>
+            <td class="ticker-cell">${ticker}${customBadge}</td>
             <td style="font-size:.8rem;color:var(--sub)">${info.name||''}</td>
             <td class="mono">${priceStr}</td>
             <td class="mono ${cls(info.change_pct||0)}">${fmtPct(info.change_pct)}</td>
@@ -1368,33 +1369,108 @@ let _watchlistCache = [];
 
 async function fetchWatchlist() {
     const tbody = document.getElementById('watchlist-tbody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty">불러오는 중...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="empty">불러오는 중...</td></tr>';
     try {
-        const data = await apiFetch(`/watchlist/${USER}`);
-        _watchlistCache = data.tickers || [];
-        renderWatchlistTable(_watchlistCache);
+        const [wlData, monData] = await Promise.all([
+            apiFetch(`/watchlist/${USER}`),
+            apiFetch('/market/monitored').catch(() => ({})),
+        ]);
+        _watchlistCache = wlData.tickers || [];
+        renderWatchlistTable(_watchlistCache, monData);
     } catch (e) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="4" class="empty" style="color:var(--bear)">오류: ${e.message}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="empty" style="color:var(--bear)">오류: ${e.message}</td></tr>`;
     }
 }
 
-function renderWatchlistTable(tickers) {
+function renderWatchlistTable(tickers, monData) {
     const tbody = document.getElementById('watchlist-tbody');
     if (!tbody) return;
-    if (!tickers?.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">Watchlist가 비어있습니다.<br>종목을 추가하면 자동매매가 시작됩니다.</td></tr>'; return; }
+    if (!tickers?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">Watchlist가 비어있습니다.<br>종목을 추가하면 자동매매가 시작됩니다.</td></tr>'; return; }
     tbody.innerHTML = tickers.map(item => {
-        const ticker  = typeof item === 'string' ? item : item.ticker;
-        const addedAt = typeof item === 'object' && item.added_at ? item.added_at.slice(0,10) : '-';
-        const isKrT   = /^\d{6}$/.test(ticker);
+        const ticker   = typeof item === 'string' ? item : item.ticker;
+        const buyPrice = item.target_buy_price;
+        const sellPrice = item.target_sell_price;
+        const memo     = item.memo || '';
+        const isKrT    = /^\d{6}$/.test(ticker);
+        const mkt      = monData?.[ticker] || {};
+
+        // 현재가
+        const price    = mkt.price;
+        const priceStr = price ? (isKrT ? '₩'+Math.round(price).toLocaleString() : '$'+price.toFixed(2)) : '<span style="color:var(--sub)">-</span>';
+
+        // 등락
+        const chgPct   = mkt.change_pct;
+        const chgStr   = chgPct != null
+            ? `<span style="color:${chgPct>=0?'var(--bull)':'var(--bear)'}">${chgPct>=0?'+':''}${chgPct.toFixed(2)}%</span>`
+            : '<span style="color:var(--sub)">-</span>';
+
+        // RSI
+        const rsi      = mkt.rsi;
+        const rsiCls   = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
+        const rsiStr   = rsi != null ? `<span class="badge ${rsiCls}">${rsi.toFixed(1)}</span>` : '<span style="color:var(--sub)">-</span>';
+
+        // 점수
+        const score    = mkt.score;
+        const scoreCls = score <= 30 ? 'b-up' : score >= 70 ? 'b-down' : 'b-warn';
+        const scoreStr = score != null ? `<span class="badge ${scoreCls}">${score}</span>` : '<span style="color:var(--sub)">-</span>';
+
+        // 추천
+        let recStr = '<span style="color:var(--sub)">-</span>';
+        if (score != null) {
+            if (score <= 30)      recStr = '<span class="badge b-up">BUY</span>';
+            else if (score >= 70) recStr = '<span class="badge b-down">SELL</span>';
+            else                  recStr = '<span class="badge b-gray">WAIT</span>';
+        }
+
+        const buyStr  = buyPrice  ? (isKrT ? '₩'+Math.round(buyPrice).toLocaleString()  : '$'+buyPrice.toFixed(2))  : '<span style="color:var(--sub)">자동</span>';
+        const sellStr = sellPrice ? (isKrT ? '₩'+Math.round(sellPrice).toLocaleString() : '$'+sellPrice.toFixed(2)) : '<span style="color:var(--sub)">자동</span>';
+
         return `<tr>
-            <td class="ticker-cell">${ticker}</td>
-            <td><span class="badge ${isKrT ? 'b-warn' : 'b-up'}">${isKrT ? '🇰🇷 KR' : '🇺🇸 US'}</span></td>
-            <td class="mono sub-text">${addedAt}</td>
-            <td>
+            <td><span class="ticker-cell">${ticker}</span> <span class="badge ${isKrT ? 'b-warn' : 'b-up'}">${isKrT ? 'KR' : 'US'}</span></td>
+            <td class="mono text-end">${priceStr}</td>
+            <td class="mono text-end">${chgStr}</td>
+            <td class="text-end">${rsiStr}</td>
+            <td class="text-end">${scoreStr}</td>
+            <td class="text-end">${recStr}</td>
+            <td class="mono text-end">${buyStr}</td>
+            <td class="mono text-end">${sellStr}</td>
+            <td class="sub-text" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${memo}">${memo||'-'}</td>
+            <td style="white-space:nowrap">
+                <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="analyzeWatchlistTicker('${ticker}')">분석</button>
+                <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openWatchlistEdit('${ticker}', ${buyPrice||null}, ${sellPrice||null}, '${(memo||'').replace(/'/g, "\\'")}')">편집</button>
                 <button class="btn btn-danger btn-sm" onclick="removeWatchlistTicker('${ticker}')">제거</button>
             </td>
         </tr>`;
     }).join('');
+}
+
+function openWatchlistEdit(ticker, buyP, sellP, memo) {
+    document.getElementById('wl-edit-ticker').value = ticker;
+    document.getElementById('wl-edit-ticker-label').textContent = ticker;
+    document.getElementById('wl-edit-buy').value = buyP || '';
+    document.getElementById('wl-edit-sell').value = sellP || '';
+    document.getElementById('wl-edit-memo').value = memo || '';
+    openModal('watchlistEditModal');
+}
+
+async function saveWatchlistItem() {
+    const ticker = document.getElementById('wl-edit-ticker').value;
+    const buyP = parseFloat(document.getElementById('wl-edit-buy').value) || null;
+    const sellP = parseFloat(document.getElementById('wl-edit-sell').value) || null;
+    const memo = document.getElementById('wl-edit-memo').value.trim() || null;
+    
+    try {
+        await apiFetch(`/watchlist/${USER}/${ticker}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_buy_price: buyP, target_sell_price: sellP, memo: memo })
+        });
+        showToast(`${ticker} 저장됨`);
+        closeModal('watchlistEditModal');
+        fetchWatchlist();
+    } catch (e) {
+        showToast(e.message, false);
+    }
 }
 
 async function addWatchlistTicker() {
@@ -1421,6 +1497,59 @@ async function removeWatchlistTicker(ticker) {
     } catch (e) { showToast(e.message, false); }
 }
 
+async function runStrategyNow() {
+    const btn = document.getElementById('run-strategy-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '실행 중...'; }
+    try {
+        const res = await apiFetch('/trading/run-now', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: USER }),
+        });
+        showToast(res.message || '전략 실행 트리거됨');
+        setTimeout(() => fetchWatchlist(), 3000);
+    } catch (e) {
+        showToast(e.message, false);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ 전략 즉시 실행'; }
+    }
+}
+
+async function analyzeWatchlistTicker(ticker) {
+    showToast(`${ticker} 분석 중...`);
+    try {
+        const data = await apiFetch(`/analysis/score/${ticker}?user_id=${USER}`);
+        const rec = data.recommendation || 'WAIT';
+        const recColor = rec === 'BUY' ? 'var(--bull)' : rec === 'SELL' ? 'var(--bear)' : 'var(--sub)';
+        const reasons = (data.reasons || []).join(', ') || '-';
+        const breakdown = data.score_breakdown || {};
+        const bdLines = Object.entries(breakdown).map(([k,v]) => `<div style="display:flex;justify-content:space-between;gap:16px"><span style="color:var(--sub)">${k}</span><b>${typeof v==='number'?v.toFixed(1):v}</b></div>`).join('');
+        const html = `
+            <div style="font-size:.85rem;line-height:1.7">
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                    <b style="font-size:1rem">${ticker}</b>
+                    <span style="color:${recColor};font-weight:700;font-size:1rem">${rec}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                    <span style="color:var(--sub)">점수</span><b>${data.score ?? '-'}</b>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                    <span style="color:var(--sub)">현재가</span><b>${data.current_price != null ? data.current_price.toLocaleString() : '-'}</b>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+                    <span style="color:var(--sub)">RSI</span><b>${data.rsi != null ? data.rsi.toFixed(1) : '-'}</b>
+                </div>
+                ${bdLines ? `<div style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:8px">${bdLines}</div>` : ''}
+                <div style="border-top:1px solid var(--border);padding-top:8px;font-size:.78rem;color:var(--sub)">사유: ${reasons}</div>
+            </div>`;
+        document.getElementById('wl-analyze-ticker').textContent = ticker;
+        document.getElementById('wl-analyze-body').innerHTML = html;
+        openModal('watchlistAnalyzeModal');
+    } catch (e) {
+        showToast(`분석 실패: ${e.message}`, false);
+    }
+}
+
 // ─── Strategy Mode ─────────────────────────────────────────────────────────
 async function fetchStrategyMode() {
     try {
@@ -1439,20 +1568,20 @@ async function setStrategyMode(market, mode) {
         });
         _updateModeBtns('kr', data.kr_strategy_mode);
         _updateModeBtns('us', data.us_strategy_mode);
-        const label = mode === 'watchlist' ? '내 Watchlist 종목만 자동매매' : 'Top100 전체 자동매매';
+        const label = mode === 'custom' ? '내 Watchlist 종목만 자동매매 (커스텀)' : '유니버스 전체 자동매매 (유니버스)';
         showToast(`${market.toUpperCase()} 전략: ${label}`);
     } catch (e) { showToast(e.message, false); }
 }
 
 function _updateModeBtns(market, mode) {
-    const t = document.getElementById(`${market}-mode-top100`);
-    const w = document.getElementById(`${market}-mode-watchlist`);
+    const t = document.getElementById(`${market}-mode-universe`);
+    const w = document.getElementById(`${market}-mode-custom`);
     if (!t || !w) return;
-    t.className = mode === 'top100'    ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
-    w.className = mode === 'watchlist' ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+    t.className = mode === 'universe' ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+    w.className = mode === 'custom'   ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
     const hints = {
-        top100:    'Top100 전체가 자동매매 대상입니다',
-        watchlist: '내 Watchlist 종목만 자동매매됩니다 (Top100은 점수 계산 생략)',
+        universe: '유니버스(Top100) 전체가 자동매매 대상입니다',
+        custom:   '내 Watchlist 종목만 자동매매됩니다 (나머지 종목은 점수 계산 생략)',
     };
     const hint = document.getElementById(`${market}-mode-hint`);
     if (hint) hint.textContent = hints[mode] || '';

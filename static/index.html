@@ -474,16 +474,16 @@
                     <div>
                         <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇰🇷 한국</div>
                         <div style="display:flex;gap:8px">
-                            <button id="kr-mode-top100"    class="btn btn-primary btn-sm"  onclick="setStrategyMode('kr','top100')">Top 100</button>
-                            <button id="kr-mode-watchlist" class="btn btn-outline btn-sm"  onclick="setStrategyMode('kr','watchlist')">내 Watchlist</button>
+                            <button id="kr-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('kr','universe')">유니버스 모드</button>
+                            <button id="kr-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('kr','custom')">커스텀 모드</button>
                         </div>
                         <div id="kr-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
                     </div>
                     <div>
                         <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇺🇸 미국</div>
                         <div style="display:flex;gap:8px">
-                            <button id="us-mode-top100"    class="btn btn-primary btn-sm"  onclick="setStrategyMode('us','top100')">Top 100</button>
-                            <button id="us-mode-watchlist" class="btn btn-outline btn-sm"  onclick="setStrategyMode('us','watchlist')">내 Watchlist</button>
+                            <button id="us-mode-universe" class="btn btn-primary btn-sm" onclick="setStrategyMode('us','universe')">유니버스 모드</button>
+                            <button id="us-mode-custom"   class="btn btn-outline btn-sm" onclick="setStrategyMode('us','custom')">커스텀 모드</button>
                         </div>
                         <div id="us-mode-hint" style="font-size:.76rem;color:var(--sub);margin-top:6px"></div>
                     </div>
@@ -509,20 +509,30 @@
             <div class="card">
                 <div class="card-title">
                     <span>📋 내 Watchlist</span>
-                    <button class="btn btn-outline btn-sm" onclick="fetchWatchlist()">🔄</button>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-outline btn-sm" onclick="fetchWatchlist()">🔄 새로고침</button>
+                        <button class="btn btn-primary btn-sm" id="run-strategy-btn" onclick="runStrategyNow()">⚡ 전략 즉시 실행</button>
+                    </div>
                 </div>
                 <div class="tbl-wrap">
                     <table>
                         <thead>
                             <tr>
                                 <th>티커</th>
-                                <th>추가일</th>
+                                <th class="text-end">현재가</th>
+                                <th class="text-end">등락</th>
+                                <th class="text-end">RSI</th>
+                                <th class="text-end">점수</th>
+                                <th class="text-end">추천</th>
+                                <th class="text-end">목표매수</th>
+                                <th class="text-end">목표매도</th>
+                                <th>메모</th>
                                 <th>관리</th>
                             </tr>
                         </thead>
                         <tbody id="watchlist-tbody">
                             <tr>
-                                <td colspan="3" class="empty">Loading...</td>
+                                <td colspan="10" class="empty">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -715,6 +725,46 @@
         </div>
     </div>
 
+    <!-- Watchlist Edit Modal -->
+    <div id="watchlistEditModal" class="modal-backdrop">
+        <div class="modal-box">
+            <div class="modal-title">관심종목 편집</div>
+            <input type="hidden" id="wl-edit-ticker">
+            <div class="form-group">
+                <label id="wl-edit-ticker-label">티커</label>
+            </div>
+            <div class="row">
+                <div class="col">
+                    <label>목표 매수가</label>
+                    <input type="number" id="wl-edit-buy" step="any" placeholder="비워두면 자동 연산">
+                </div>
+                <div class="col">
+                    <label>목표 매도가</label>
+                    <input type="number" id="wl-edit-sell" step="any" placeholder="비워두면 자동 연산">
+                </div>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label>메모</label>
+                <input type="text" id="wl-edit-memo" placeholder="간단한 투자 아이디어 등">
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeModal('watchlistEditModal')">취소</button>
+                <button class="btn btn-primary" onclick="saveWatchlistItem()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Watchlist Analyze Modal -->
+    <div id="watchlistAnalyzeModal" class="modal-backdrop">
+        <div class="modal-box">
+            <div class="modal-title">종목 분석: <span id="wl-analyze-ticker"></span></div>
+            <div id="wl-analyze-body" style="min-height:80px"></div>
+            <div style="display:flex;justify-content:flex-end;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeModal('watchlistAnalyzeModal')">닫기</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Setting Edit Modal -->
     <div id="settingModal" class="modal-backdrop">
         <div class="modal-box">
@@ -731,6 +781,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=20260415"></script>
 </body>
 </html>

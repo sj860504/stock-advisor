@@ -381,7 +381,7 @@ class KisService:
                 break
             params["CTX_AREA_FK200"] = page_data["ctx_fk"]
             params["CTX_AREA_NK200"] = page_data["ctx_nk"]
-        return {"holdings": all_holdings, "summary": summary} if all_holdings else None
+        return {"holdings": all_holdings, "summary": summary}
 
     @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
@@ -407,7 +407,7 @@ class KisService:
         for tr_id in tr_ids:
             try:
                 result = cls._fetch_all_pages_for_tr_id(tr_id, url, base_params)
-                if result:
+                if result is not None:
                     cls._last_overseas_balance_data = result
                     return result
             except Exception as e:

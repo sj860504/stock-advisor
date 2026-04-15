@@ -538,6 +538,7 @@ class PositionService:
         cfg: ExecutionConfig, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
         sell_cooldown: dict, sell_split_orders: dict,
+        run_kr: bool = True, run_us: bool = True,
     ) -> tuple:
         """Stop-loss/profit-taking check for holdings outside monitoring universe (ETFs, etc.).
         Returns (trade_executed: bool, executed_tickers: set)."""
@@ -548,6 +549,11 @@ class PositionService:
             if not h.ticker or h.ticker in monitored_tickers:
                 continue
             if not h.quantity or h.quantity <= 0:
+                continue
+            # 닫힌 시장 종목은 체크하지 않음
+            if is_kr(h.ticker) and not run_kr:
+                continue
+            if not is_kr(h.ticker) and not run_us:
                 continue
             executed, ticker = cls._process_unmonitored_holding(
                 h, kr_total, us_total_krw, cash_balance, cfg, macro_data,
@@ -710,6 +716,7 @@ class PositionService:
         kr_total: float, us_total_krw: float, cash_balance: float,
         target_cash_kr: float, target_cash_us: float, macro_data: MacroDataSnapshot,
         user_state: UserState = None, usd_cash: float = 0.0,
+        run_kr: bool = True, run_us: bool = True,
     ) -> tuple:
         """Execute actual orders based on collected signals.
         Returns (trade_executed: bool, executed_tickers: set)."""
@@ -752,6 +759,7 @@ class PositionService:
         unmon_executed, unmon_tickers = cls._check_unmonitored_holdings(
             prepared_signals, holdings, user_id, kr_total, us_total_krw, cash_balance,
             cfg, macro_data, target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders,
+            run_kr=run_kr, run_us=run_us,
         )
         trade_executed = unmon_executed or trade_executed
         executed_tickers |= unmon_tickers

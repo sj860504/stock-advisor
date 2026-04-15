@@ -6,7 +6,7 @@ through get_session(), session_scope(), and session_ro() in this module.
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Generator
+from typing import Generator, Optional
 from sqlalchemy import create_engine, Engine
 from sqlalchemy.orm import sessionmaker, scoped_session, Session
 from sqlalchemy.exc import OperationalError
@@ -19,8 +19,8 @@ DB_PATH = os.path.join(
     "data", "stock_advisor.db",
 )
 
-_engine: Engine | None = None
-_Session: scoped_session | None = None
+_engine: Optional[Engine] = None
+_Session: Optional[scoped_session] = None
 
 
 def _create_engine_and_session() -> None:

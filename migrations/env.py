@@ -19,6 +19,7 @@ from models.portfolio import Portfolio, PortfolioHolding  # noqa: F401, E402
 from models.trade_history import TradeHistory  # noqa: F401, E402
 from models.settings import Settings  # noqa: F401, E402
 from models.strategy_state import StrategyState  # noqa: F401, E402
+from models.watchlist import UserWatchlist  # noqa: F401, E402
 
 target_metadata = Base.metadata
 

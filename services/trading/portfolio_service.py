@@ -184,12 +184,14 @@ class PortfolioService:
         existing_sector_map: dict,
     ) -> List[HoldingSchema]:
         """해외 잔고 stale 여부에 따라 US holdings 결정. Returns list to extend main holdings."""
-        if not overseas_balance or overseas_balance.get("_stale", False):
+        if overseas_balance is None or overseas_balance.get("_stale", False):
             if overseas_balance and overseas_balance.get("_stale", False):
                 logger.warning("⚠️ Overseas balance is stale (cached fallback). Keeping existing DB US holdings instead.")
             return list(existing_us_map.values())
+        
+        # API 성공 사례 (비어있더라도 갱신함)
         cls._apply_overseas_balance_override(overseas_balance, us_by_ticker, existing_sector_map)
-        return list(us_by_ticker.values()) if us_by_ticker else list(existing_us_map.values())
+        return list(us_by_ticker.values())
 
     @classmethod
     def _enrich_summary_with_overseas(cls, summary: dict, overseas_balance: Optional[dict]) -> None:
