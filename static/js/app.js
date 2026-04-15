@@ -1435,6 +1435,8 @@ function renderWatchlistTable(tickers, monData) {
             <td class="mono text-end">${sellStr}</td>
             <td class="sub-text" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${memo}">${memo||'-'}</td>
             <td style="white-space:nowrap">
+                <button class="btn btn-success btn-sm" style="margin-right:4px" onclick="openWlOrder('${ticker}','buy',${price||0})">매수</button>
+                <button class="btn btn-danger btn-sm" style="margin-right:4px" onclick="openWlOrder('${ticker}','sell',${price||0})">매도</button>
                 <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="analyzeWatchlistTicker('${ticker}')">분석</button>
                 <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openWatchlistEdit('${ticker}', ${buyPrice||null}, ${sellPrice||null}, '${(memo||'').replace(/'/g, "\\'")}')">편집</button>
                 <button class="btn btn-danger btn-sm" onclick="removeWatchlistTicker('${ticker}')">제거</button>
@@ -1484,6 +1486,37 @@ async function addWatchlistTicker() {
         showToast(`${ticker} 추가됨`);
         if (input) input.value = '';
         fetchWatchlist();
+    } catch (e) { showToast(e.message, false); }
+}
+
+function openWlOrder(ticker, side, currentPrice) {
+    document.getElementById('wl-order-ticker').value = ticker;
+    document.getElementById('wl-order-side').value = side;
+    document.getElementById('wl-order-ticker-label').textContent = ticker;
+    document.getElementById('wl-order-side-label').textContent = side === 'buy' ? '매수' : '매도';
+    document.getElementById('wl-order-side-label').style.color = side === 'buy' ? 'var(--bull)' : 'var(--bear)';
+    const isKr = /^\d{6}$/.test(ticker);
+    document.getElementById('wl-order-price').value = currentPrice > 0 ? (isKr ? Math.round(currentPrice) : currentPrice.toFixed(2)) : 0;
+    document.getElementById('wl-order-qty').value = 1;
+    openModal('wlOrderModal');
+}
+
+async function submitWlOrder() {
+    const ticker = document.getElementById('wl-order-ticker').value;
+    const side   = document.getElementById('wl-order-side').value;
+    const qty    = parseInt(document.getElementById('wl-order-qty').value);
+    const price  = parseFloat(document.getElementById('wl-order-price').value) || 0;
+    if (!qty || qty < 1) { showToast('수량을 입력하세요', false); return; }
+    const label = side === 'buy' ? '매수' : '매도';
+    if (!confirm(`${ticker} ${qty}주 ${label} (${price || '시장가'}) 주문하시겠습니까?`)) return;
+    try {
+        await apiFetch('/trading/order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker, quantity: qty, price, order_type: side }),
+        });
+        showToast(`${ticker} ${label} 주문 완료`);
+        closeModal('wlOrderModal');
     } catch (e) { showToast(e.message, false); }
 }
 
