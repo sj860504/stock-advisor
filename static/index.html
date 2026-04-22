@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Stock Advisor Pro — AI 기반 주식 포트폴리오 관리 및 매매 자동화 대시보드">
     <title>Stock Advisor Pro</title>
     <link rel="stylesheet" href="/static/css/app.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
@@ -26,7 +27,7 @@
                 <input type="password" id="login-pw" placeholder="Password" autocomplete="current-password"
                     onkeydown="if(event.key==='Enter') doLogin()">
             </div>
-            <div class="login-error" id="login-error"></div>
+            <div class="login-error" id="login-error" role="alert" aria-live="polite" aria-atomic="true"></div>
             <button class="login-btn" id="login-btn" onclick="doLogin()">로그인</button>
         </div>
     </div>
@@ -37,14 +38,14 @@
             <span class="status-dot off" id="strategy-dot"></span>
             Stock Advisor Pro
         </div>
-        <div class="nav-links">
-            <div class="nav-item active" data-tab="dashboard" onclick="switchTab(this,'dashboard')">Dashboard</div>
-            <div class="nav-item" data-tab="history" onclick="switchTab(this,'history')">History</div>
-            <div class="nav-item" data-tab="market" onclick="switchTab(this,'market')">Market</div>
-            <div class="nav-item" data-tab="trading" onclick="switchTab(this,'trading')">Trading</div>
-            <div class="nav-item" data-tab="macro" onclick="switchTab(this,'macro')">Macro</div>
-            <div class="nav-item" data-tab="settings" onclick="switchTab(this,'settings')">Settings</div>
-            <div class="nav-item" data-tab="logs" onclick="switchTab(this,'logs')">Logs</div>
+        <div class="nav-links" role="tablist">
+            <button class="nav-item active" type="button" data-tab="dashboard" onclick="switchTab(this,'dashboard')" aria-selected="true" role="tab">Dashboard</button>
+            <button class="nav-item" type="button" data-tab="history" onclick="switchTab(this,'history')" aria-selected="false" role="tab">History</button>
+            <button class="nav-item" type="button" data-tab="market" onclick="switchTab(this,'market')" aria-selected="false" role="tab">Market</button>
+            <button class="nav-item" type="button" data-tab="trading" onclick="switchTab(this,'trading')" aria-selected="false" role="tab">Trading</button>
+            <button class="nav-item" type="button" data-tab="macro" onclick="switchTab(this,'macro')" aria-selected="false" role="tab">Macro</button>
+            <button class="nav-item" type="button" data-tab="settings" onclick="switchTab(this,'settings')" aria-selected="false" role="tab">Settings</button>
+            <button class="nav-item" type="button" data-tab="logs" onclick="switchTab(this,'logs')" aria-selected="false" role="tab">Logs</button>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
@@ -86,8 +87,8 @@
 
             <!-- Single Full-Width Balance Card -->
             <div class="card" id="balance-card" style="margin-bottom: 20px;">
-                <div class="card-title">
-                    <span>💰 잔고</span>
+                <div class="card-title" onclick="if(!event.target.closest('button,select,input')) toggleSection('balance-content', this)" style="cursor:pointer">
+                    <span><i data-lucide="wallet" class="ico-sm"></i> 잔고 <i data-lucide="chevron-up" class="ico-sm toggle-icon"></i></span>
                     <div style="display:flex;gap:6px;align-items:center">
                         <button class="btn btn-outline btn-sm" onclick="fetchBalance()">🔄 조회</button>
                         <button class="btn btn-outline btn-sm" onclick="syncPortfolio()">🔄 KIS 동기화</button>
@@ -101,9 +102,9 @@
 
             <!-- Portfolio Table (integrated from Portfolio tab) -->
             <div class="card" style="margin-bottom:16px">
-                <div class="card-title">
-                    <span>💼 보유 종목</span>
-                    <div style="display:flex;gap:6px;align-items:center">
+                <div class="card-title flex-row gap-6">
+                    <span><i data-lucide="briefcase" class="ico-sm"></i> 보유 종목</span>
+                    <div class="flex-row gap-6">
                         <input type="file" id="excelInput" accept=".xlsx,.xls" style="display:none"
                             onchange="uploadExcel()">
                         <button class="btn btn-outline btn-sm"
@@ -143,7 +144,7 @@
             <div class="grid-main" style="grid-template-columns: 1fr;">
                 <!-- Regime Score Card -->
                 <div class="card mt" id="regime-card" style="display:none;">
-                    <div class="card-title"><span>🌍 Regime Score</span></div>
+                    <div class="card-title"><span><i data-lucide="globe" class="ico-sm"></i> Regime Score</span></div>
                     <div class="gauge-wrap">
                         <div class="gauge-score" id="regime-score-val" style="color:var(--sub)">-</div>
                         <div class="gauge-label" style="margin-top:4px">/ 100점</div>
@@ -153,7 +154,10 @@
                 </div>
                 <!-- Sector Mini Card -->
                     <div class="card mt" id="sector-mini-card">
-                        <div class="card-title" style="margin-bottom:10px"><span>🏗️ 섹터 비중</span></div>
+                        <div class="card-title" onclick="toggleSection('sector-mini-content', this)" style="cursor:pointer;margin-bottom:10px">
+                            <span><i data-lucide="pie-chart" class="ico-sm"></i> 섹터 비중</span>
+                            <i data-lucide="chevron-up" class="ico-sm toggle-icon"></i>
+                        </div>
                         <div id="sector-mini-content">
                             <div class="empty" style="font-size:.8rem;padding:10px 0">-</div>
                         </div>
@@ -169,7 +173,7 @@
         <div id="history" class="page-section">
             <div class="card">
                 <div class="card-title">
-                    <span>📜 매매 내역</span>
+                    <span><i data-lucide="history" class="ico-sm"></i> 매매 내역</span>
                     <div style="display:flex;gap:8px;align-items:center">
                         <select id="hist-type" style="width:90px;padding:5px 8px;font-size:0.82rem">
                             <option value="">전체 (구분)</option>
@@ -200,7 +204,7 @@
                                 <th class="sortable" onclick="handleSort('history-tbody',6,renderHistoryTable)">수익률</th>
                             </tr>
                         </thead>
-                        <tbody id="history-tbody">
+                        <tbody id="history-tbody" aria-live="polite">
                             <tr>
                                 <td colspan="7" class="empty">조회 버튼을 누르세요</td>
                             </tr>
@@ -225,7 +229,7 @@
             </div>
             <div class="grid-market" style="margin-bottom:16px">
                 <div class="card">
-                    <div class="card-title">📈 Top 100 실시간
+                    <div class="card-title"><i data-lucide="trending-up" class="ico-sm"></i> Top 100 실시간
                         <button class="btn btn-outline btn-sm" onclick="fetchTop20()">🔄</button>
                     </div>
                     <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
@@ -244,15 +248,16 @@
                                     <th class="text-center">삭제</th>
                                 </tr>
                             </thead>
-                            <tbody id="top20-tbody">
+                            <tbody id="top20-tbody" aria-live="polite">
                                 <tr>
                                     <td colspan="6" class="empty">Loading...</td>
                                 </tr>
                             </tbody>
+                        </table>
                     </div>
                 </div>
                 <div class="card" style="overflow:hidden">
-                    <div class="card-title">⚡ 매매 신호
+                    <div class="card-title"><i data-lucide="zap" class="ico-sm"></i> 매매 신호
                         <button class="btn btn-outline btn-sm" onclick="fetchSignals()">🔄</button>
                     </div>
                     <div class="tbl-wrap" style="max-height:520px;overflow-y:auto">
@@ -267,7 +272,7 @@
                                     <th>현재가</th>
                                 </tr>
                             </thead>
-                            <tbody id="signals-tbody">
+                            <tbody id="signals-tbody" aria-live="polite">
                                 <tr>
                                     <td colspan="6" class="empty">Loading...</td>
                                 </tr>
@@ -277,7 +282,7 @@
                 </div>
             </div>
             <div class="card">
-                <div class="card-title">📰 뉴스 검색
+                <div class="card-title"><i data-lucide="newspaper" class="ico-sm"></i> 뉴스 검색
                 </div>
                 <div style="display:flex;gap:10px;margin-bottom:14px">
                     <input type="text" id="news-ticker" placeholder="티커 입력 (예: TSLA, 삼성전자)" style="flex:1">
@@ -295,7 +300,7 @@
             <div class="grid-2" style="margin-bottom:16px">
                 <!-- Strategy Control -->
                 <div class="card">
-                    <div class="card-title">⚙️ 자동 매매 제어</div>
+                    <div class="card-title"><i data-lucide="settings" class="ico-sm"></i> 자동 매매 제어</div>
                     <div style="display:flex;flex-direction:column;gap:14px">
                         <div style="background:var(--bg-base, #080b10);border-radius:8px;padding:16px;text-align:center">
                             <div style="font-size:0.82rem;color:var(--sub);margin-bottom:8px">현재 상태</div>
@@ -338,19 +343,21 @@
                         <button class="btn btn-danger" style="width:100%;margin-top:4px" onclick="executeSell()">매도
                             실행</button>
                         <hr class="divider">
-                        <div>
-                            <button class="btn btn-danger" style="width:100%;padding:12px" onclick="confirmSellAll()">
+                        <div class="mt" style="border: 1px solid rgba(255,82,82,0.3); border-radius: 8px; padding: 12px; background: rgba(255,82,82,0.05);">
+                            <div style="font-size: 0.75rem; color: var(--bear); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em;">
+                                <i data-lucide="alert-triangle" class="ico-sm"></i> Danger Zone
+                            </div>
+                            <button class="btn btn-danger" style="width:100%;padding:10px" onclick="confirmSellAll()">
                                 ⚠️ 전량 매도 후 전략 재매수
                             </button>
-                            <div style="font-size:0.75rem;color:var(--sub);margin-top:6px;text-align:center">주의: 모든 보유
-                                종목을 매도합니다</div>
+                            <div style="font-size:0.72rem;color:var(--sub);margin-top:6px;text-align:center">주의: 모든 보유 종목을 즉시 매도합니다</div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Waiting List -->
                 <div class="card">
-                    <div class="card-title">📋 매매 대기 목록
+                    <div class="card-title"><i data-lucide="list" class="ico-sm"></i> 매매 대기 목록
                         <button class="btn btn-outline btn-sm" onclick="fetchWaitingList()">🔄</button>
                     </div>
                     <div id="waiting-list-content">
@@ -364,7 +371,7 @@
 
             <!-- Score Calculator + Manual Order -->
             <div class="card" style="margin-bottom:16px">
-                <div class="card-title">📊 종목 점수 계산 / 수동 주문</div>
+                <div class="card-title"><i data-lucide="calculator" class="ico-sm"></i> 종목 점수 계산 / 수동 주문</div>
                 <div class="grid-2" style="gap:24px">
                     <div>
                         <div style="font-size:.8rem;color:var(--sub);margin-bottom:8px">점수 조회</div>
@@ -407,7 +414,7 @@
             <!-- ── 전략 관리 (구 Watchlist) ──────────────────────── -->
             <!-- 전략 모드 + 시장 제어 -->
             <div class="card" style="margin-bottom:16px">
-                <div class="card-title">⚙️ 전략 모드 / 시장 제어</div>
+                <div class="card-title"><i data-lucide="sliders" class="ico-sm"></i> 전략 모드 / 시장 제어</div>
                 <div style="display:flex;gap:32px;flex-wrap:wrap">
                     <div>
                         <div style="font-size:.82rem;color:var(--sub);margin-bottom:8px">🇰🇷 한국 — 전략 모드</div>
@@ -431,7 +438,7 @@
             <!-- 종목 추가 -->
             <div class="card" style="margin-bottom:16px">
                 <div class="card-title">
-                    <span>➕ 종목 추가</span>
+                    <span><i data-lucide="plus-circle" class="ico-sm"></i> 종목 추가</span>
                 </div>
                 <div style="display:flex;gap:8px">
                     <input type="text" id="wl-ticker-input" placeholder="예: AAPL, 005930"
@@ -446,7 +453,7 @@
             <!-- Watchlist 목록 -->
             <div class="card">
                 <div class="card-title">
-                    <span>📋 매매 종목 관리</span>
+                    <span><i data-lucide="clipboard-list" class="ico-sm"></i> 매매 종목 관리</span>
                     <div style="display:flex;gap:8px">
                         <button class="btn btn-outline btn-sm" onclick="fetchWatchlist()">🔄 새로고침</button>
                         <button class="btn btn-primary btn-sm" id="run-strategy-btn" onclick="runStrategyNow()">⚡ 전략 즉시 실행</button>
@@ -485,7 +492,7 @@
             <div class="grid-2" style="margin-bottom:16px">
                 <!-- Regime Score -->
                 <div class="card">
-                    <div class="card-title">🌍 시장 국면 (Regime Score)
+                    <div class="card-title"><i data-lucide="activity" class="ico-sm"></i> 시장 국면 (Regime Score)
                         <button class="btn btn-outline btn-sm" onclick="fetchMacro()">🔄</button>
                     </div>
                     <div id="macro-regime-detail">
@@ -494,7 +501,7 @@
                 </div>
                 <!-- Other Indicators -->
                 <div class="card">
-                    <div class="card-title">📊 주요 지표</div>
+                    <div class="card-title"><i data-lucide="line-chart" class="ico-sm"></i> 주요 지표</div>
                     <div id="macro-indicators">
                         <div class="empty">Loading...</div>
                     </div>
@@ -503,7 +510,7 @@
             <div class="grid-2" style="margin-bottom:16px">
                 <!-- Economic Indicators (FRED) -->
                 <div class="card">
-                    <div class="card-title">📈 FRED 경제 지표 (14개)</div>
+                    <div class="card-title"><i data-lucide="bar-chart-2" class="ico-sm"></i> FRED 경제 지표 (14개)</div>
                     <div class="tbl-wrap" style="max-height:440px;overflow-y:auto">
                         <table>
                             <thead>
@@ -527,7 +534,7 @@
                 </div>
                 <!-- Economic Calendar -->
                 <div class="card">
-                    <div class="card-title">📅 경제지표 발표 일정 (7일)
+                    <div class="card-title"><i data-lucide="calendar" class="ico-sm"></i> 경제지표 발표 일정 (7일)
                         <button class="btn btn-outline btn-sm" onclick="fetchEconCalendar()">🔄</button>
                     </div>
                     <div id="econ-calendar-content">
@@ -544,7 +551,7 @@
             <div class="grid-2" style="margin-bottom:16px">
                 <!-- Strategy Settings -->
                 <div class="card">
-                    <div class="card-title">⚙️ 전략 설정
+                    <div class="card-title"><i data-lucide="settings" class="ico-sm"></i> 전략 설정
                         <button class="btn btn-outline btn-sm" onclick="fetchSettings()">🔄</button>
                     </div>
                     <div class="tbl-wrap" style="max-height:500px;overflow-y:auto">
@@ -566,7 +573,7 @@
                 </div>
                 <!-- Price Alerts -->
                 <div class="card">
-                    <div class="card-title">🔔 가격 알림</div>
+                    <div class="card-title"><i data-lucide="bell" class="ico-sm"></i> 가격 알림</div>
                     <div class="form-group">
                         <label>티커</label>
                         <input type="text" id="alert-ticker" placeholder="예: NVDA">
@@ -592,24 +599,24 @@
             </div>
             <!-- DCF Simulator -->
             <div class="card">
-                <div class="card-title">🧬 DCF 시뮬레이터</div>
+                <div class="card-title"><i data-lucide="test-tube" class="ico-sm"></i> DCF 시뮬레이터</div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:16px;align-items:end">
                     <div>
                         <label>티커</label>
                         <input type="text" id="dcf-ticker" placeholder="예: AAPL">
                     </div>
                     <div>
-                        <label>1단계 성장률: <span id="dcf-growth-val">10</span>%</label>
+                        <label for="dcf-growth">1단계 성장률: <span id="dcf-growth-val">10</span>%</label>
                         <input type="range" id="dcf-growth" min="-0.1" max="0.5" step="0.01" value="0.10"
                             oninput="updateDcfLabel()">
                     </div>
                     <div>
-                        <label>할인율 (WACC): <span id="dcf-discount-val">9.0</span>%</label>
+                        <label for="dcf-discount">할인율 (WACC): <span id="dcf-discount-val">9.0</span>%</label>
                         <input type="range" id="dcf-discount" min="0.04" max="0.20" step="0.005" value="0.09"
                             oninput="updateDcfLabel()">
                     </div>
                     <div>
-                        <label>터미널 성장: <span id="dcf-terminal-val">3.0</span>%</label>
+                        <label for="dcf-terminal">터미널 성장: <span id="dcf-terminal-val">3.0</span>%</label>
                         <input type="range" id="dcf-terminal" min="0" max="0.05" step="0.005" value="0.03"
                             oninput="updateDcfLabel()">
                     </div>
@@ -628,7 +635,7 @@
         <!-- Logs Section -->
         <div id="logs" class="page-section">
             <div class="card">
-                <div class="card-title">📋 서버 로그
+                <div class="card-title"><i data-lucide="terminal" class="ico-sm"></i> 서버 로그
                     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                         <input id="log-search" type="text" placeholder="검색..."
                             style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:#fff;font-size:.85rem;width:160px"
@@ -666,12 +673,12 @@
     </div><!-- /main-container -->
 
     <!-- Toast Container -->
-    <div id="toast-container" class="toast-container"></div>
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Trade Modal -->
-    <div id="tradeModal" class="modal-backdrop">
+    <div id="tradeModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="trade-modal-title">
         <div class="modal-box">
-            <div class="modal-title">매매 기록 추가</div>
+            <div class="modal-title" id="trade-modal-title">매매 기록 추가</div>
             <div style="display:flex;gap:8px;margin-bottom:16px">
                 <button id="btn-buy-mode" class="btn btn-success" style="flex:1"
                     onclick="setTradeMode('buy')">BUY</button>
@@ -700,9 +707,9 @@
     </div>
 
     <!-- DCF Override Modal -->
-    <div id="dcfOverrideModal" class="modal-backdrop">
+    <div id="dcfOverrideModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="dcf-modal-title">
         <div class="modal-box">
-            <div class="modal-title">DCF 적정가 수동 설정</div>
+            <div class="modal-title" id="dcf-modal-title">DCF 적정가 수동 설정</div>
             <input type="hidden" id="dcf-override-ticker">
             <div class="form-group">
                 <label id="dcf-override-ticker-label">티커</label>
@@ -723,9 +730,9 @@
     </div>
 
     <!-- Watchlist Edit Modal -->
-    <div id="watchlistEditModal" class="modal-backdrop">
+    <div id="watchlistEditModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="wl-edit-modal-title">
         <div class="modal-box">
-            <div class="modal-title">관심종목 편집</div>
+            <div class="modal-title" id="wl-edit-modal-title">관심종목 편집</div>
             <input type="hidden" id="wl-edit-ticker">
             <div class="form-group">
                 <label id="wl-edit-ticker-label">티커</label>
@@ -752,9 +759,9 @@
     </div>
 
     <!-- Watchlist Order Modal -->
-    <div id="wlOrderModal" class="modal-backdrop">
+    <div id="wlOrderModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="wl-order-modal-title">
         <div class="modal-box">
-            <div class="modal-title">
+            <div class="modal-title" id="wl-order-modal-title">
                 <span id="wl-order-ticker-label"></span>
                 <span id="wl-order-side-label" style="margin-left:8px;font-weight:700"></span>
             </div>
@@ -778,9 +785,9 @@
     </div>
 
     <!-- Watchlist Analyze Modal -->
-    <div id="watchlistAnalyzeModal" class="modal-backdrop">
+    <div id="watchlistAnalyzeModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="wl-analyze-modal-title">
         <div class="modal-box">
-            <div class="modal-title">종목 분석: <span id="wl-analyze-ticker"></span></div>
+            <div class="modal-title" id="wl-analyze-modal-title">종목 분석: <span id="wl-analyze-ticker"></span></div>
             <div id="wl-analyze-body" style="min-height:80px"></div>
             <div style="display:flex;justify-content:flex-end;margin-top:16px">
                 <button class="btn btn-outline" onclick="closeModal('watchlistAnalyzeModal')">닫기</button>
@@ -789,9 +796,9 @@
     </div>
 
     <!-- Setting Edit Modal -->
-    <div id="settingModal" class="modal-backdrop">
+    <div id="settingModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="setting-modal-title">
         <div class="modal-box">
-            <div class="modal-title">설정 변경</div>
+            <div class="modal-title" id="setting-modal-title">설정 변경</div>
             <input type="hidden" id="setting-key">
             <div class="form-group">
                 <label id="setting-key-label">키</label>

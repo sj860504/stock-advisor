@@ -158,13 +158,12 @@ def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]
     # Ensure ticker is registered and has market data
     state = MarketDataService.get_state(real_ticker)
     if not state:
-        # register_batch has market-hours filter that blocks off-hours tickers.
-        # For explicit user queries, bypass it: create state directly + force warm-up.
         from models.ticker_state import TickerState
         state = TickerState(ticker=real_ticker)
         MarketDataService._states[real_ticker] = state
-        MarketDataService._warm_up_data(real_ticker, _force=True)
-        state = MarketDataService.get_state(real_ticker)
+    # 항상 force warm-up — RSI 포함 최신 데이터 갱신
+    MarketDataService._warm_up_data(real_ticker, _force=True)
+    state = MarketDataService.get_state(real_ticker)
     if not state or getattr(state, 'current_price', 0) <= 0:
         raise HTTPException(status_code=404, detail=f"No market data available for {real_ticker}")
 

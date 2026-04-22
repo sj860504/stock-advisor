@@ -170,6 +170,29 @@ class TradingStrategyService:
 
     # ── Universe Management ─────────────────────────────────────────────────────────
 
+    _last_rsi_refresh: dict = {}  # ticker -> datetime
+
+    @classmethod
+    def _refresh_stale_rsi_sync(cls) -> None:
+        """전략 실행 시 RSI 갱신 — 종목당 최대 30분 1회 yfinance 호출."""
+        from datetime import timedelta
+        from services.market.market_data_service import MarketDataService
+        now = datetime.now()
+        tickers = list(MarketDataService.get_all_states().keys())
+        to_refresh = [
+            t for t in tickers
+            if (now - cls._last_rsi_refresh.get(t, datetime.min)) >= timedelta(minutes=30)
+        ]
+        if not to_refresh:
+            return
+        logger.info(f"🔄 RSI force refresh: {to_refresh}")
+        for ticker in to_refresh:
+            try:
+                MarketDataService._warm_up_data(ticker, _force=True)
+                cls._last_rsi_refresh[ticker] = now
+            except Exception as e:
+                logger.warning(f"RSI force refresh failed {ticker}: {e}")
+
     @classmethod
     def _update_target_universe(cls, user_id: str, run_kr: bool = True, run_us: bool = True) -> set:
         """Detect Top 100 changes and clean up universe."""
@@ -441,6 +464,7 @@ class TradingStrategyService:
 
         cls._verify_pending_orders()
         cls._update_target_universe(user_id, run_kr=run_kr, run_us=run_us)
+        cls._refresh_stale_rsi_sync()
 
         holdings, kr_cash, usd_cash, before_snapshot = cls._load_and_sync_portfolio(user_id)
         macro_snapshot, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us = cls._load_macro_and_assets(holdings, kr_cash)

@@ -294,13 +294,18 @@ class MarketDataService:
                 StockMetaService.initialize_default_meta(ticker)
 
             financials = StockMetaService.get_latest_financials(ticker)
-            if financials and cls._load_indicators_from_db(financials, state):
+            if not _force and financials and cls._load_indicators_from_db(financials, state):
                 logger.info(f"✅ DB load: {ticker} ({state.name}) Price={state.current_price}, RSI={state.rsi}")
                 return
 
-            logger.info(f"🔄 DB incomplete for {ticker}. Starting full API warm-up...")
-            with cls._get_semaphore():
-                cls._full_api_warmup(ticker, state)
+            logger.info(f"🔄 {'Force' if _force else 'DB incomplete'} warm-up: {ticker}...")
+            try:
+                with cls._get_semaphore():
+                    cls._full_api_warmup(ticker, state)
+            except Exception as api_err:
+                logger.warning(f"⚠️ API warm-up failed for {ticker}: {api_err} — falling back to DB")
+                if financials and cls._load_indicators_from_db(financials, state):
+                    logger.info(f"↩️ DB fallback loaded: {ticker} RSI={state.rsi}")
 
             # Watchlist 편집값(자체 목표가/메모) 덮어쓰기 (warmup 타겟가격 오버라이드)
             from repositories.watchlist_repo import WatchlistRepo

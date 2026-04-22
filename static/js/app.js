@@ -72,8 +72,8 @@ const fmtCurr = (v, sym = '$') => v == null ? '-' : sym + Number(v).toLocaleStri
 const fmtPct  = (v, sign = true) => v == null ? '-' : (sign && v > 0 ? '+' : '') + fmt(v) + '%';
 const cls     = (v) => v >= 0 ? 'up' : 'down';
 const badge   = (v) => v >= 0
-    ? `<span class="badge b-up">${fmtPct(v)}</span>`
-    : `<span class="badge b-down">${fmtPct(v)}</span>`;
+    ? `<span class="badge b-up">▲ ${fmtPct(v)}</span>`
+    : `<span class="badge b-down">▼ ${fmtPct(v)}</span>`;
 const isKr    = (d) => {
     const m = String(d.market || '').toLowerCase();
     if (m === 'kr') return true;
@@ -234,9 +234,15 @@ function handleSort(tableId, colIndex, renderFn) {
     const tbody = document.getElementById(tableId);
     if (tbody) {
         const allThs = tbody.closest('table').querySelectorAll('thead th');
-        allThs.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+        allThs.forEach(th => {
+            th.classList.remove('sort-asc', 'sort-desc');
+            th.removeAttribute('aria-sort');
+        });
         const targetTh = allThs[colIndex];
-        if (targetTh) targetTh.classList.add('sort-' + sortState[tableId].dir);
+        if (targetTh) {
+            targetTh.classList.add('sort-' + sortState[tableId].dir);
+            targetTh.setAttribute('aria-sort', sortState[tableId].dir === 'asc' ? 'ascending' : 'descending');
+        }
     }
     renderFn();
 }
@@ -284,7 +290,10 @@ function renderKpiCards(data) {
         </div>
         <div class="kpi-card">
             <div class="kpi-label">총 수익</div>
-            <div class="kpi-value ${retPct >= 0 ? 'up' : 'down'}">₩${Math.round(summary.total_profit || 0).toLocaleString()}</div>
+            <div class="kpi-value ${summary.total_profit > 0 ? 'up' : summary.total_profit < 0 ? 'down' : ''}" 
+                 style="${summary.total_profit === 0 ? 'color:var(--sub)' : ''}">
+                 ₩${Math.round(summary.total_profit || 0).toLocaleString()}
+            </div>
             <div class="kpi-delta">실현+미실현</div>
         </div>
         <div class="kpi-card">
@@ -340,7 +349,11 @@ async function fetchPortfolioFull() {
 
         renderPortfolioTable(data);
         setUpdated();
-    } catch (e) { console.error(e); }
+    } catch (e) {
+        console.error('fetchPortfolioFull 실패:', e);
+        const tbody = document.getElementById('portfolio-tbody');
+        if (tbody) tbody.innerHTML = `<tr><td colspan="11" class="empty" style="color:var(--bear)">포트폴리오 조회 실패: ${e.message}</td></tr>`;
+    }
 }
 
 async function syncPortfolio() {
@@ -372,7 +385,8 @@ function renderPortfolioTable(data) {
     tbody.innerHTML = data.map(d => {
         const ret    = d.return_pct ?? d.profit_pct;
         const rsi    = d.rsi;
-        const rsiCls = rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray';
+        const rsiCls = (!rsi || rsi === 0) ? 'b-gray' : (rsi < 30 ? 'b-up' : rsi > 70 ? 'b-down' : 'b-gray');
+        const rsiVal = (!rsi || rsi === 0) ? '-' : fmt(rsi, 1);
         const s      = getSym(d);
         const retColor   = ret >= 0 ? 'var(--bull)' : 'var(--bear)';
         const barWidth   = Math.min(Math.abs(ret ?? 0) * 2, 100);
@@ -384,28 +398,29 @@ function renderPortfolioTable(data) {
             <td class="mono">${fmtCurr(d.current_value || (d.price * (d.quantity || 0)), s)}<span class="${cls(d.profit_loss || 0)} sub-text">${d.profit_loss ? (d.profit_loss > 0 ? '+' : '') + fmtCurr(d.profit_loss, s) : ''}</span></td>
             <td class="pnl-cell">
                 <div class="pnl-bar" style="width:${barWidth}%;background:${retColor}"></div>
-                <span class="pnl-text" style="color:${retColor}">${ret != null ? (ret >= 0 ? '+' : '') + fmt(ret) + '%' : '-'}</span>
+                <span class="pnl-text" style="color:${retColor}">${ret != null ? (ret >= 0 ? '▲ ' : '▼ ') + fmt(Math.abs(ret)) + '%' : '-'}</span>
             </td>
             <td class="mono" style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
-            <td><span class="badge ${rsiCls}">${fmt(rsi, 1)}</span></td>
+            <td><span class="badge ${rsiCls}">${rsiVal}</span></td>
             <td>
-                <select style="width:110px;padding:3px 6px;font-size:.75rem"
-                    onchange="updateSector('${d.ticker}', this.value)">
+                <select style="width:110px;padding:3px 6px;font-size:.75rem; ${d.sector === 'other' || !d.sector ? 'border-color:var(--warn); background:rgba(255,215,64,0.05);' : ''}"
+                    onchange="updateSector('${d.ticker}', this.value)" title="${d.sector === 'other' || !d.sector ? '섹터를 설정해주세요' : ''}">
                     ${SECTOR_OPTIONS.map(o => `<option value="${o.value}"${o.value === (d.sector || 'other') ? ' selected' : ''}>${o.label}</option>`).join('')}
                 </select>
             </td>
             <td class="text-center">
                 ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
                 ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
-                ${!d.has_buy_cooldown && !d.has_sell_cooldown ? '-' : ''}
+                ${!d.has_buy_cooldown && !d.has_sell_cooldown ? '' : ''}
             </td>
             <td style="white-space:nowrap">
-                <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}','${s}')">DCF</button>
+                <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="openDcfSetModal('${d.ticker}','${s}')" title="DCF 적정가 수동 설정">DCF</button>
                 <button class="btn btn-danger btn-sm" style="margin-right:4px" onclick="openSellModal('${d.ticker}')">매도</button>
-                <button class="btn btn-outline btn-sm" style="color:var(--bear);border-color:var(--bear)" onclick="deleteHolding('${d.ticker}')">삭제</button>
+                <button class="btn btn-outline btn-sm btn-delete" onclick="deleteHolding('${d.ticker}')" title="삭제"><i data-lucide="trash-2" class="ico-sm"></i></button>
             </td>
         </tr>`;
     }).join('');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 async function updateSector(ticker, sector) {
@@ -460,13 +475,14 @@ function renderHistoryTable() {
         return `<tr>
             <td class="mono" style="font-size:.8rem;white-space:nowrap">${(d.created_at || d.timestamp || d.date || '').slice(0, 16)}</td>
             <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name || ''}</span></td>
-            <td><span class="badge ${isBuy ? 'b-up' : 'b-down'}">${isBuy ? 'BUY' : 'SELL'}</span></td>
+            <td><span class="badge ${isBuy ? 'b-up' : 'b-down'}">${isBuy ? '<i data-lucide="arrow-up-right" class="ico-sm"></i> BUY' : '<i data-lucide="arrow-down-right" class="ico-sm"></i> SELL'}</span></td>
             <td class="mono">${fmtCurr(d.price, s)}</td>
             <td class="mono">${fmt(d.quantity, 0)}</td>
             <td class="mono">${fmtCurr(d.amount ?? ((d.price || 0) * (d.quantity || 0)), s)}</td>
             <td>${retBadge}</td>
         </tr>`;
     }).join('');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 // ─── Balance ───────────────────────────────────────────────────────────────
@@ -1620,10 +1636,46 @@ function _updateModeBtns(market, mode) {
 }
 
 // ─── Modal Helpers ─────────────────────────────────────────────────────────
-function openModal(id)  { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+function openModal(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('open');
+    // Accessibility: Focus Trap & Keyboard support
+    const focusable = el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (focusable.length > 0) {
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        setTimeout(() => first.focus(), 100);
+        el.onkeydown = (e) => {
+            if (e.key === 'Tab') {
+                if (e.shiftKey && document.activeElement === first) { last.focus(); e.preventDefault(); }
+                else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+            } else if (e.key === 'Escape') { closeModal(id); }
+        };
+    }
+}
+function closeModal(id) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.classList.remove('open');
+        el.onkeydown = null;
+    }
+}
+
+function toggleSection(contentId, titleEl) {
+    const el = document.getElementById(contentId);
+    if (!el) return;
+    const isHidden = el.style.display === 'none';
+    el.style.display = isHidden ? '' : 'none';
+    const icon = titleEl.querySelector('.toggle-icon');
+    if (icon) {
+        icon.setAttribute('data-lucide', isHidden ? 'chevron-up' : 'chevron-down');
+        if (window.lucide) lucide.createIcons();
+    }
+}
 window.addEventListener('click', e => {
-    document.querySelectorAll('.modal-backdrop.open').forEach(m => { if (e.target === m) m.classList.remove('open'); });
+    document.querySelectorAll('.modal-backdrop.open').forEach(m => {
+        if (e.target === m) closeModal(m.id);
+    });
 });
 
 // ─── Dashboard market filter ────────────────────────────────────────────
