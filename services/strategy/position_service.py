@@ -668,8 +668,8 @@ class PositionService:
     def _load_execution_config(cls, macro_data: MacroDataSnapshot = None) -> ExecutionConfig:
         """SettingsService에서 실행 설정값 일괄 조회 후 ExecutionConfig 반환."""
         return ExecutionConfig(
-            buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30),
-            sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70),
+            buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30),
+            sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70),
             take_profit_pct=cls._get_take_profit_pct_by_regime(macro_data),
             stop_loss_pct=cls._get_stop_loss_pct_by_regime(macro_data),
             add_rsi_limit=SettingsService.get_float("STRATEGY_ADD_BUY_RSI_LIMIT", 60.0),

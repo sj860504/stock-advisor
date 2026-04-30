@@ -397,6 +397,10 @@ class DataService:
     @classmethod
     def sync_daily_market_data(cls, limit: int = 100) -> None:
         """Daily sync: collect top tickers + 보유종목 -> calculate indicators -> save to DB."""
+        from services.market.market_hour_service import MarketHourService
+        if MarketHourService.is_weekend():
+            logger.info("🏖️ Weekend — skipping daily market data sync.")
+            return
         logger.info(f"Starting daily market data sync (Top {limit} + holdings)...")
         kr_tickers = cls.get_top_krx_tickers(limit=limit)
         us_tickers = cls.get_top_us_tickers(limit=limit)

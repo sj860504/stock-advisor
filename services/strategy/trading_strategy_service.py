@@ -315,20 +315,24 @@ class TradingStrategyService:
     @classmethod
     def _validate_preconditions(cls, user_id: str) -> tuple[bool, bool, bool]:
         """Check strategy enabled + market open status.
-        Returns (can_run: bool, is_kr_open: bool, is_us_open: bool)."""
+        Returns (can_run: bool, is_kr_active: bool, is_us_active: bool).
+        활성 시간: 정규장 + POST_CLOSE_BUFFER_MIN. 주말 차단."""
         if not cls.is_enabled():
             logger.debug("⏳ Trading Strategy is currently DISABLED. Skipping analysis.")
             return False, False, False
 
-        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
-        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-
-        if not is_kr_open and not is_us_open:
-            logger.debug("⏸️ Both markets closed. Skipping strategy run.")
+        if MarketHourService.is_weekend():
+            logger.debug("🏖️ Weekend — skipping strategy run.")
             return False, False, False
 
-        return True, is_kr_open, is_us_open
+        is_kr_active = MarketHourService.is_kr_trading_active()
+        is_us_active = MarketHourService.is_us_trading_active()
+
+        if not is_kr_active and not is_us_active:
+            logger.debug("⏸️ Both markets outside trading-active window. Skipping strategy run.")
+            return False, False, False
+
+        return True, is_kr_active, is_us_active
 
     @classmethod
     def _load_and_sync_portfolio(cls, user_id: str) -> tuple[list, float, float, dict]:
@@ -457,7 +461,7 @@ class TradingStrategyService:
     @classmethod
     def _build_waiting_list_entry(cls, ticker: str, ticker_state, score: int, reasons: list) -> dict:
         """Build individual waiting list entry dict."""
-        action = "BUY" if score <= SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30) else "SELL"
+        action = "BUY" if score <= SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30) else "SELL"
         return {
             "ticker": ticker,
             "name": getattr(ticker_state, "name", None) or ticker,
@@ -483,8 +487,8 @@ class TradingStrategyService:
         cash_balance = PortfolioService.load_cash(user_id)
         kr_total, us_total_krw, _, _ = TradeExecutorService._calculate_total_assets(holdings, cash_balance, macro_snapshot)
 
-        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
-        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
+        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30)
+        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70)
         holdings_map = {h.ticker: h for h in holdings}
         waiting_list = []
         for ticker, ticker_state in all_state_items:

@@ -35,20 +35,11 @@ class TradeExecutorService:
     # Used by PositionService to update cash_balance within the execution loop.
     _last_buy_spent_krw: float = 0.0
 
+    # Score weights — only constants still referenced after 2026-04-30 unified percentage-scoring change.
     WEIGHTS = {
-        'RSI_OVERSOLD': -20, 'RSI_OVERBOUGHT': +15,
-        'DIP_BUY_5PCT': -15, 'SURGE_SELL_5PCT': +15,
-        'SUPPORT_EMA': -10, 'RESISTANCE_EMA': +10,
-        'ADD_POSITION_LOSS': -10, 'GOLDEN_CROSS_DROP': +15,
-        'PANIC_MARKET_BUY': -30, 'PROFIT_TAKE_TARGET': +30,
-        'BULL_MARKET_SECTOR': -15, 'CASH_PENALTY': +15,
-        'DCF_UNDERVALUE_HIGH': -25,
-        'DCF_UNDERVALUE_MID': -15,
-        'DCF_UNDERVALUE_LOW': -10,
-        'DCF_FAIR_VALUE': -5,
-        'DCF_OVERVALUE_LOW': +10,
-        'DCF_OVERVALUE_HIGH': +20,
-        'DCF_UNAVAILABLE': +10,
+        'PROFIT_TAKE_TARGET': +30,   # _score_portfolio: profit_pct >= take_profit threshold
+        'ADD_POSITION_LOSS': -10,    # _score_portfolio: -5% < profit_pct < stop_loss
+        'DCF_UNAVAILABLE': +10,      # _score_dcf: no DCF data penalty
     }
 
     SECTOR_GROUP_MAP: dict = {
@@ -572,6 +563,10 @@ class TradeExecutorService:
         forced_qty: int = None, reason: str = "",
     ) -> TradeResult:
         """Execute buy order."""
+        market = "KR" if is_kr(ticker) else "US"
+        if MarketHourService.is_weekend() or not MarketHourService.is_trading_active(market):
+            logger.info(f"⛔ {ticker} Buy blocked: outside {market} trading-active window")
+            return TradeResult.no_op()
         if not cls._check_buy_cash_and_entry_conditions(
             ticker, cash_balance, is_holding, profit_pct,
             holdings, exchange_rate,
@@ -606,6 +601,10 @@ class TradeExecutorService:
         forced_qty: int = None, reason: str = "",
     ) -> tuple:
         """Execute sell order. Returns (executed, trade_qty)."""
+        market = "KR" if is_kr(ticker) else "US"
+        if MarketHourService.is_weekend() or not MarketHourService.is_trading_active(market):
+            logger.info(f"⛔ {ticker} Sell blocked: outside {market} trading-active window")
+            return False, 0
         portfolio = holdings or PortfolioService.load_portfolio(user_id)
         current_holding = next((h for h in portfolio if h.ticker == ticker), None)
         if not current_holding:

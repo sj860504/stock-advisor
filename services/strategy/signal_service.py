@@ -59,75 +59,46 @@ class SignalService:
 
     @classmethod
     def _score_rsi(cls, rsi: float, oversold_rsi: float, overbought_rsi: float) -> tuple:
-        """Calculate RSI score by range. Returns (delta, reasons)."""
-        delta = 0
-        reasons = []
-        if rsi <= 30:
-            rsi_score = -(20 - (rsi / 30) * 10)
-            delta += int(rsi_score)
-            reasons.append(f"RSI_extreme_oversold({rsi:.1f},{int(rsi_score)})")
-        elif rsi < 50:
-            rsi_score = -(10 - ((rsi - 30) / 20) * 10)
-            if rsi_score <= -5:
-                delta += int(rsi_score)
-                reasons.append(f"RSI_oversold({rsi:.1f},{int(rsi_score)})")
-        elif rsi <= 70:
-            rsi_score = ((rsi - 50) / 20) * 10
-            if rsi_score >= 5:
-                delta += int(rsi_score)
-                reasons.append(f"RSI_overbought({rsi:.1f},+{int(rsi_score)})")
-        else:
-            rsi_score = 10 + ((rsi - 70) / 30) * 10
-            delta += int(rsi_score)
-            reasons.append(f"RSI_extreme_overbought({rsi:.1f},+{int(rsi_score)})")
-        return delta, reasons
+        """RSI deviation from 50, capped ±RSI_CAP (1 point per 1 RSI unit).
+        Above 50 → positive (sell signal), below 50 → negative (buy signal)."""
+        cap = SettingsService.get_int("STRATEGY_RSI_DEVIATION_CAP", 15)
+        delta = max(-cap, min(cap, int(rsi - 50)))
+        if delta == 0:
+            return 0, []
+        return delta, [f"RSI_deviation({rsi:.1f},{delta:+d})"]
 
     @classmethod
     def _score_dcf(cls, dcf_value: float, curr_price: float) -> tuple:
-        """Calculate undervalue/overvalue score vs DCF. Returns (delta, reasons)."""
+        """DCF deviation %-based score, capped ±DCF_CAP."""
         if not (dcf_value and dcf_value > 0):
             WEIGHTS = TradeExecutorService.WEIGHTS
             w = WEIGHTS.get('DCF_UNAVAILABLE', 10)
             return w, [f"no_dcf_data(+{w})"]
-        delta = 0
-        reasons = []
+        cap = SettingsService.get_int("STRATEGY_DCF_DEVIATION_CAP", 25)
         undervalue_pct = (dcf_value - curr_price) / curr_price * 100
-        WEIGHTS = TradeExecutorService.WEIGHTS
-        if undervalue_pct >= 20:
-            delta += WEIGHTS['DCF_UNDERVALUE_HIGH']; reasons.append(f"DCF_high_undervalue({undervalue_pct:.1f}%)")
-        elif undervalue_pct >= 10:
-            delta += WEIGHTS['DCF_UNDERVALUE_MID']; reasons.append(f"DCF_mid_undervalue({undervalue_pct:.1f}%)")
-        elif undervalue_pct >= 5:
-            delta += WEIGHTS['DCF_UNDERVALUE_LOW']; reasons.append(f"DCF_undervalue({undervalue_pct:.1f}%)")
-        elif undervalue_pct >= -5:
-            delta += WEIGHTS['DCF_FAIR_VALUE']; reasons.append("DCF_fair_value")
-        elif undervalue_pct >= -15:
-            delta += WEIGHTS['DCF_OVERVALUE_LOW']; reasons.append(f"DCF_overvalue({-undervalue_pct:.1f}%)")
-        else:
-            delta += WEIGHTS['DCF_OVERVALUE_HIGH']; reasons.append(f"DCF_high_overvalue({-undervalue_pct:.1f}%)")
-        return delta, reasons
+        delta = max(-cap, min(cap, int(-undervalue_pct)))
+        if delta == 0:
+            return 0, []
+        return delta, [f"DCF_deviation({undervalue_pct:+.1f}%,{delta:+d})"]
 
     @classmethod
     def _score_technical(cls, state, curr_price: float, oversold_rsi: float, overbought_rsi: float, dip_buy_pct: float) -> tuple:
-        """[A] RSI + sharp drop/surge + DCF + EMA200 -> (delta, reasons)"""
-        WEIGHTS = TradeExecutorService.WEIGHTS
+        """[A] RSI + change_rate + DCF — all linear/proportional."""
         delta = 0
         reasons = []
         rsi_delta, rsi_reasons = cls._score_rsi(state.rsi, oversold_rsi, overbought_rsi)
         delta += rsi_delta; reasons.extend(rsi_reasons)
 
-        change_rate = getattr(state, 'change_rate', 0)
-        if change_rate <= dip_buy_pct:
-            delta += WEIGHTS['DIP_BUY_5PCT']; reasons.append(f"sharp_drop({change_rate:.1f}%)")
-        elif change_rate >= 5.0:
-            delta += WEIGHTS['SURGE_SELL_5PCT']; reasons.append(f"sharp_surge({change_rate:.1f}%)")
+        # Day's change_rate %-based: 1% = 3 points, capped ±CHANGE_CAP
+        change_rate = getattr(state, 'change_rate', 0) or 0
+        cap = SettingsService.get_int("STRATEGY_CHANGE_DEVIATION_CAP", 15)
+        change_delta = max(-cap, min(cap, int(change_rate * 3)))
+        if change_delta != 0:
+            delta += change_delta
+            reasons.append(f"change_deviation({change_rate:+.1f}%,{change_delta:+d})")
 
         dcf_d, dcf_r = cls._score_dcf(state.dcf_value, curr_price)
         delta += dcf_d; reasons.extend(dcf_r)
-
-        ema200 = state.ema.get(200) if state.ema else None
-        if ema200 and ema200 > 0 and (ema200 <= curr_price <= ema200 * 1.02):
-            delta += WEIGHTS['SUPPORT_EMA']; reasons.append("EMA200_support")
         return delta, reasons
 
     @classmethod
@@ -148,35 +119,53 @@ class SignalService:
 
     @classmethod
     def _score_market_context(cls, macro: MacroDataSnapshot, regime: str) -> tuple:
-        """[C] Fear/greed + bull/bear market -> (delta, reasons)"""
-        WEIGHTS = TradeExecutorService.WEIGHTS
+        """[C] VIX, F&G, regime_score — all linear/proportional from baselines.
+        High VIX / low F&G / low regime_score → buy signal (negative delta).
+        Low VIX / high F&G / high regime_score → sell signal (positive delta)."""
         delta = 0
         reasons = []
+
+        # VIX baseline 20, 1 unit = 1 point, capped ±VIX_CAP (high VIX = fear = buy)
+        vix_cap = SettingsService.get_int("STRATEGY_VIX_DEVIATION_CAP", 10)
         vix = macro.vix or 20.0
-        fng = macro.fear_greed or 50
-        if vix >= 25 or fng <= 30:
-            delta += WEIGHTS['PANIC_MARKET_BUY']; reasons.append("extreme_fear_buy_opportunity")
-        elif vix <= 15 or fng >= 70:
-            delta += WEIGHTS['PROFIT_TAKE_TARGET'] // 2; reasons.append("market_overheated_partial_profit")
-        if regime == 'BULL':
-            delta += WEIGHTS['BULL_MARKET_SECTOR']; reasons.append("bull_market_advantage")
-            delta += 10; reasons.append("bull_market_profit_take_nudge")
-        elif regime == 'BEAR':
-            reasons.append("bear_market_hold")  # 약세장 매도 억제: 점수 변화 없음
+        vix_delta = max(-vix_cap, min(vix_cap, int(-(vix - 20))))
+        if vix_delta != 0:
+            delta += vix_delta
+            reasons.append(f"VIX_deviation({vix:.1f},{vix_delta:+d})")
+
+        # F&G baseline 50, every 5 units = 1 point, capped ±FNG_CAP (high F&G = greed = sell)
+        fng_cap = SettingsService.get_int("STRATEGY_FNG_DEVIATION_CAP", 10)
+        fng = macro.fear_greed if macro.fear_greed is not None else 50
+        fng_delta = max(-fng_cap, min(fng_cap, int((fng - 50) / 5)))
+        if fng_delta != 0:
+            delta += fng_delta
+            reasons.append(f"FNG_deviation({fng},{fng_delta:+d})")
+
+        # Regime score baseline 50, every 3 units = 1 point, capped ±REGIME_CAP (high regime = bullish = buy)
+        regime_score = None
+        if macro.market_regime:
+            regime_score = getattr(macro.market_regime, 'regime_score', None)
+        # Guard: regime_score must be a valid 0~100 (negative/None = sentinel for "Unknown")
+        if regime_score is not None and 0 <= regime_score <= 100:
+            reg_cap = SettingsService.get_int("STRATEGY_REGIME_DEVIATION_CAP", 10)
+            reg_delta = max(-reg_cap, min(reg_cap, int(-(regime_score - 50) / 3)))
+            if reg_delta != 0:
+                delta += reg_delta
+                reasons.append(f"Regime_deviation({regime_score},{reg_delta:+d})")
         return delta, reasons
 
     @classmethod
     def _score_target_prices(cls, state, curr_price: float) -> tuple:
-        """[D] User-set target entry/sell price reached -> (delta, reasons)"""
-        delta = 0
-        reasons = []
-        target_buy = getattr(state, 'target_buy_price', 0)
-        target_sell = getattr(state, 'target_sell_price', 0)
-        if target_buy > 0 and curr_price <= target_buy:
-            delta -= 15; reasons.append(f"target_entry_price_hit(${target_buy})")
-        if target_sell > 0 and curr_price >= target_sell:
-            delta += 30; reasons.append(f"target_sell_price_hit(${target_sell})")
-        return delta, reasons
+        """[D] EMA200 deviation %-based score (1% per point, capped ±EMA_CAP)."""
+        ema200 = state.ema.get(200) if state.ema else None
+        if not ema200 or ema200 <= 0:
+            return 0, []
+        cap = SettingsService.get_int("STRATEGY_EMA200_DEVIATION_CAP", 15)
+        deviation_pct = (curr_price - ema200) / ema200 * 100
+        delta = max(-cap, min(cap, int(deviation_pct)))
+        if delta == 0:
+            return 0, []
+        return delta, [f"EMA200_deviation({deviation_pct:+.1f}%,{delta:+d})"]
 
     @classmethod
     def _score_bonuses(cls, ticker: str, holding, macro: MacroDataSnapshot, user_state: UserState) -> tuple:
@@ -293,8 +282,8 @@ class SignalService:
         """Public interface for external individual stock analysis."""
         score, reasons, breakdown = cls.calculate_score(ticker, state, holding, macro, user_state, cash_balance, market_total_krw=market_total_krw)
 
-        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
-        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
+        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30)
+        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70)
 
         recommendation = "WAIT"
         if score <= buy_threshold_max:
@@ -330,8 +319,8 @@ class SignalService:
         profit_pct = cls._compute_holding_profit_pct(holding, state)
         reason_str = ", ".join(reasons)
 
-        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
-        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD_MIN", 70)
+        buy_threshold_max = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30)
+        sell_threshold_min = SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70)
         port = PortfolioService.load_portfolio(user_id)
 
         if score <= buy_threshold_max and not holding:
@@ -343,13 +332,13 @@ class SignalService:
 
     @classmethod
     def _determine_analysis_markets(cls, allow_extended: bool) -> tuple[bool, bool]:
-        """개장 여부 기반 분석 대상 시장 판단. 순수 판단, 부수효과 없음.
+        """개장 여부 기반 분석 대상 시장 판단. 정규장+POST_CLOSE_BUFFER 활성 시간만.
         Returns (analyze_kr: bool, analyze_us: bool)."""
-        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
-        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
-        analyze_kr = not is_us_open
-        analyze_us = not is_kr_open or MarketHourService.is_us_strategy_window(allow_extended=allow_extended, lead_minutes=30)
-        logger.info(f"📊 Market status: KR_open={is_kr_open}, US_open={is_us_open} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
+        kr_active = MarketHourService.is_kr_trading_active()
+        us_active = MarketHourService.is_us_trading_active()
+        analyze_kr = kr_active and not us_active
+        analyze_us = us_active
+        logger.info(f"📊 Market status: KR_active={kr_active}, US_active={us_active} → KR_analyze={analyze_kr}, US_analyze={analyze_us}")
         return analyze_kr, analyze_us
 
     @classmethod

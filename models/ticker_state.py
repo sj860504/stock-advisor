@@ -25,10 +25,6 @@ class TickerState:
     rsi: float = 0.0             # RSI (14)
     bollinger: Dict[str, float] = field(default_factory=dict) # {upper, middle, lower}
     dcf_value: float = 0.0       # Fair value (DCF)
-    
-    # Strategy target prices
-    target_buy_price: float = 0.0  # Target entry price
-    target_sell_price: float = 0.0 # Target sell price
 
     # Price last-updated timestamp
     last_updated: Optional[datetime] = None

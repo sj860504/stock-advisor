@@ -127,6 +127,8 @@ class SchedulerService:
     @classmethod
     def manage_subscriptions(cls, force_refresh: bool = False) -> None:
         """Subscription management method called from synchronous scheduler."""
+        if MarketHourService.is_weekend():
+            return
         if cls._ws_loop and cls._ws_loop.is_running():
             asyncio.run_coroutine_threadsafe(cls.manage_subscriptions_async(force_refresh=force_refresh), cls._ws_loop)
         else:
@@ -241,9 +243,11 @@ class SchedulerService:
     @classmethod
     def run_trading_strategy(cls) -> None:
         """Trading strategy analysis and auto-trade execution."""
-        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        if not MarketHourService.is_strategy_window_open(allow_extended=allow_extended, pre_open_lead_minutes=60):
-            logger.info("⏸️ Market closed window. Skipping strategy run.")
+        if MarketHourService.is_weekend():
+            logger.debug("🏖️ Weekend — skipping strategy run.")
+            return
+        if not (MarketHourService.is_kr_trading_active() or MarketHourService.is_us_trading_active()):
+            logger.debug("⏸️ Both markets outside trading-active window. Skipping strategy run.")
             return
 
         logger.info("📊 Running Trading Strategy analysis...")
@@ -402,9 +406,10 @@ class SchedulerService:
         - LOW tier: REST polling is the sole price update source
         - HIGH tier: WebSocket real-time is the primary source; REST polling as fallback
         """
-        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        is_kr_open = MarketHourService.is_kr_market_open(allow_extended=allow_extended)
-        is_us_open = MarketHourService.is_us_market_open(allow_extended=allow_extended)
+        if MarketHourService.is_weekend():
+            return
+        is_kr_open = MarketHourService.is_kr_trading_active()
+        is_us_open = MarketHourService.is_us_trading_active()
         if not is_kr_open and not is_us_open:
             return
         high_tickers = MarketDataService.get_high_tier_tickers()
@@ -432,6 +437,8 @@ class SchedulerService:
     @classmethod
     def sync_portfolio_periodic(cls) -> None:
         """Execute periodic portfolio DB sync every 10 minutes."""
+        if MarketHourService.is_weekend():
+            return
         logger.info("🔄 Running periodic Portfolio DB sync with KIS...")
         try:
             PortfolioService.sync_with_kis("sean")
@@ -617,8 +624,6 @@ class SchedulerService:
                 "change_pct": ticker_state.change_rate,
                 "score": score,  # <-- Added score
                 "fair_value_dcf": ticker_state.dcf_value,
-                "target_buy_price": ticker_state.target_buy_price,
-                "target_sell_price": ticker_state.target_sell_price,
                 "ema5": ticker_state.ema.get(5),
                 "ema10": ticker_state.ema.get(10),
                 "ema20": ticker_state.ema.get(20),
