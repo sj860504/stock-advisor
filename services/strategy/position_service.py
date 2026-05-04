@@ -114,19 +114,36 @@ class PositionService:
     # ── Cooldown ───────────────────────────────────────────────────────────────
 
     @classmethod
-    def _is_buy_cooldown_active(cls, ticker: str, today: str, current_price: float, add_buy_cooldown: dict) -> bool:
-        """Determine if cooldown is active. Includes backward compat for old format (str).
-        Exception: allows same-day rebuy if price drops -5% or more from buy price.
+    def _is_buy_cooldown_active(cls, ticker: str, today: str, current_price: float, add_buy_cooldown: dict, gap_pct: float = 0.0) -> bool:
+        """Determine if cooldown is active. Backward compat for old formats (str / no-timestamp).
+        gap-aware: gap_pct ≥ HIGH_GAP_PCT 시 시간 단위 cooldown(짧음) 적용.
+        Exception: allows rebuy if price drops -5% or more from buy price.
         """
         cd = add_buy_cooldown.get(ticker)
         if not cd:
             return False
-        if isinstance(cd, str):             # Legacy format: "YYYY-MM-DD"
-            return cd == today
-        if cd.date != today:                  # Different day -> cooldown expired
+
+        # 가격 -5% 예외는 모든 케이스 적용
+        cd_price = cd if isinstance(cd, str) else getattr(cd, 'price', 0)
+        if isinstance(cd_price, (int, float)) and cd_price > 0 and current_price <= cd_price * 0.95:
             return False
-        buy_price = cd.price
-        if buy_price > 0 and current_price <= buy_price * 0.95:  # -5% exception
+
+        # gap-aware: 갭 큰 경우 시간 단위 cooldown
+        from services.config.settings_service import SettingsService
+        high_gap_pct = SettingsService.get_float("STRATEGY_COOLDOWN_HIGH_GAP_PCT", 30.0)
+        if gap_pct >= high_gap_pct and not isinstance(cd, str):
+            cd_ts = getattr(cd, 'timestamp', 0) or 0
+            if cd_ts > 0:
+                cd_hours = SettingsService.get_int("STRATEGY_BUY_COOLDOWN_HOURS_HIGH_GAP", 1)
+                elapsed_hours = (datetime.now(pytz.timezone("Asia/Seoul")).timestamp() - cd_ts) / 3600
+                if elapsed_hours >= cd_hours:
+                    return False
+                return True
+
+        # 기본: 일 단위 cooldown
+        if isinstance(cd, str):                 # Legacy format: "YYYY-MM-DD"
+            return cd == today
+        if cd.date != today:                    # Different day -> cooldown expired
             return False
         return True
 
@@ -762,13 +779,17 @@ class PositionService:
     @classmethod
     def execute_buy_budget(
         cls, user_id: str, budget_krw: float, budget_usd: float, signals: list[SignalSchema],
-        user_state: UserState = None,
+        user_state: UserState = None, gap_pct: float = 0.0,
     ) -> None:
         """Buy top-scored tickers within given budget (called by AssetManagementService).
-        Iterates signals in score ascending order until budget is exhausted."""
+        Iterates signals in score ascending order until budget is exhausted.
+        gap_pct 클수록 cooldown 단축 + per-trade 비중 확대."""
         from services.market.macro_service import MacroService
         exchange_rate = MacroService.get_exchange_rate()
-        today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+        kst = pytz.timezone("Asia/Seoul")
+        now_dt = datetime.now(kst)
+        today = now_dt.strftime("%Y-%m-%d")
+        now_ts = now_dt.timestamp()
         add_buy_cooldown = user_state.add_buy_cooldown if user_state else {}
         sorted_signals = sorted(signals, key=lambda s: s.score)
         for sig in sorted_signals:
@@ -778,7 +799,7 @@ class PositionService:
             current_price = getattr(sig.state, 'current_price', 0)
             if current_price <= 0:
                 continue
-            if cls._is_buy_cooldown_active(ticker, today, current_price, add_buy_cooldown):
+            if cls._is_buy_cooldown_active(ticker, today, current_price, add_buy_cooldown, gap_pct=gap_pct):
                 logger.info(f"⏭️ [BuyBudget] {ticker} 쿨다운 활성 → 스킵")
                 continue
             is_kr_ticker = is_kr(ticker)
@@ -790,10 +811,10 @@ class PositionService:
                 profit_pct=0.0, is_holding=bool(sig.holding), score=sig.score,
                 current_price=current_price, market_total=market_total,
                 cash_balance=cash_balance, exchange_rate=exchange_rate,
-                user_id=user_id, holding=sig.holding,
+                user_id=user_id, holding=sig.holding, gap_pct=gap_pct,
             )
             if result.executed:
-                add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price)
+                add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price, timestamp=now_ts)
                 budget_krw = max(0.0, budget_krw - result.spent_krw)
                 budget_usd = max(0.0, budget_usd - result.spent_usd)
                 logger.info(f"[BuyBudget] {ticker} executed. KR budget left={budget_krw:,.0f} US budget left=${budget_usd:,.2f}")

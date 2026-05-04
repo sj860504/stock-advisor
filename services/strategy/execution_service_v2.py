@@ -311,9 +311,11 @@ class TradeExecutorService:
 
     @classmethod
     def _check_market_hours(cls, ticker: str) -> bool:
-        """Check market operating hours."""
-        allow_extended = SettingsService.get_int("STRATEGY_ALLOW_EXTENDED_HOURS", 1) == 1
-        return MarketHourService.is_kr_market_open(allow_extended=allow_extended) if is_kr(ticker) else MarketHourService.is_us_market_open(allow_extended=allow_extended)
+        """Check market trading-active window (정규장 + POST_CLOSE_BUFFER, 주말/공휴일 제외)."""
+        if MarketHourService.is_weekend():
+            return False
+        market = "KR" if is_kr(ticker) else "US"
+        return MarketHourService.is_trading_active(market)
 
     # ── Cash Ratio Conditions ────────────────────────────────────────────────────────
 
@@ -356,13 +358,16 @@ class TradeExecutorService:
     # ── Buy Quantity Calculation ────────────────────────────────────────────────────────
 
     @classmethod
-    def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr_flag: bool, market_total_krw: float = 0.0, usd_cash_krw: float = 0.0) -> tuple:
-        """Calculate total buy quantity and required capital (KRW) based on investment weight."""
+    def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr_flag: bool, market_total_krw: float = 0.0, usd_cash_krw: float = 0.0, gap_pct: float = 0.0) -> tuple:
+        """Calculate total buy quantity and required capital (KRW) based on investment weight.
+        gap_pct (cash 비중 - target, %pa) 비례 multiplier 추가 — 갭 클수록 회당 매수 비중 확대."""
         per_trade_ratio = SettingsService.get_float("STRATEGY_PER_TRADE_RATIO", 0.05)
 
         base_assets = market_total_krw
-        multiplier = 2.0 if score >= 90 else (1.5 if score >= 80 else 1.0)
-        target_invest_krw = base_assets * per_trade_ratio * multiplier
+        score_multiplier = 2.0 if score >= 90 else (1.5 if score >= 80 else 1.0)
+        # gap-aware: gap 25%pa당 +1배, 최대 3배
+        gap_multiplier = 1 + min(2, int(max(0.0, gap_pct) / 25))
+        target_invest_krw = base_assets * per_trade_ratio * score_multiplier * gap_multiplier
         cash_limit = (usd_cash_krw if (not is_kr_flag and usd_cash_krw > 0) else cash_balance)
         actual_invest_krw = min(target_invest_krw, cash_limit)
 
@@ -560,9 +565,9 @@ class TradeExecutorService:
         current_price: float, market_total: float, cash_balance: float,
         exchange_rate: float, holdings: List[HoldingSchema], user_id: str, holding: Optional[HoldingSchema],
         macro: MacroDataSnapshot, target_cash_ratio_kr: float, target_cash_ratio_us: float,
-        forced_qty: int = None, reason: str = "",
+        forced_qty: int = None, reason: str = "", gap_pct: float = 0.0,
     ) -> TradeResult:
-        """Execute buy order."""
+        """Execute buy order. gap_pct 전달 시 per-trade-ratio multiplier 적용."""
         market = "KR" if is_kr(ticker) else "US"
         if MarketHourService.is_weekend() or not MarketHourService.is_trading_active(market):
             logger.info(f"⛔ {ticker} Buy blocked: outside {market} trading-active window")
@@ -579,7 +584,7 @@ class TradeExecutorService:
             final_price = current_price if is_kr_flag else current_price * exchange_rate
         else:
             market_total_krw = kr_assets if is_kr_flag else us_assets_krw
-            quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw, usd_cash_krw=usd_cash_krw)
+            quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw, usd_cash_krw=usd_cash_krw, gap_pct=gap_pct)
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} Insufficient balance (required: {final_price:,.0f}KRW)")
             return TradeResult.no_op()
@@ -638,7 +643,7 @@ class TradeExecutorService:
         exchange_rate: float, holdings: Optional[List[HoldingSchema]] = None, user_id: str = "sean",
         holding: Optional[HoldingSchema] = None, macro: Optional[MacroDataSnapshot] = None,
         target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None,
-        forced_qty: int = None
+        forced_qty: int = None, gap_pct: float = 0.0,
     ) -> TradeResult:
         """Split buy/sell execution logic."""
         logger.info(f"📢 Signal [{side.upper()}] {ticker} - Reason: {reason}")
@@ -661,7 +666,7 @@ class TradeExecutorService:
                 ticker, score, profit_pct, is_holding, current_price, market_total,
                 cash_balance, exchange_rate, holdings, user_id, holding, macro,
                 target_cash_ratio_kr, target_cash_ratio_us, forced_qty=forced_qty,
-                reason=reason,
+                reason=reason, gap_pct=gap_pct,
             )
             trade_qty = int(result.spent_krw / current_price) if result.spent_krw else int(result.spent_usd / current_price) if result.spent_usd else 0
         elif side == "sell":
