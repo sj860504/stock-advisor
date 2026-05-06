@@ -67,6 +67,9 @@ class PositionService:
     @classmethod
     def _get_sell_split_qty(cls, ticker: str, holding_qty: int, sell_split_orders: dict, today: str) -> int:
         """Calculate sell quantity for one tranche. Initializes SplitSellOrderState if needed."""
+        if holding_qty <= 0:
+            sell_split_orders.pop(ticker, None)
+            return 0
         sso = sell_split_orders.get(ticker)
         if not sso:
             split_count = SettingsService.get_int("STRATEGY_SELL_SPLIT_COUNT", 5)
@@ -275,12 +278,21 @@ class PositionService:
                 return TradeResult.no_op()
             if not cls._init_split_order(ticker, state, score, cash_balance, current_price_val, exchange_rate, market_total, today, split_orders):
                 return TradeResult.no_op()
-        return cls._execute_split_tranche(
+            just_initialized = True
+        else:
+            just_initialized = False
+        result = cls._execute_split_tranche(
             ticker, holding, score, reason_str, profit_pct, split_orders,
             current_price_val, market_total, cash_balance, exchange_rate,
             holdings, user_id, macro_data, target_cash_kr, target_cash_us,
             add_buy_cooldown, today,
         )
+        # 1차 트랜치 실패 시 split_orders entry 즉시 폐기 — 다음 루프에서 다시 init부터.
+        # (없으면 entry_price만 남아 5일 만료까지 매 루프 재시도하며 환경변화 무반응)
+        if just_initialized and not result.executed:
+            split_orders.pop(ticker, None)
+            logger.info(f"🧹 {ticker} 1차 트랜치 실패 → split_order 폐기 (다음 루프에서 재평가)")
+        return result
 
     # ── Score-Based Sell ────────────────────────────────────────────────────────
 
@@ -750,6 +762,12 @@ class PositionService:
         for t in list(trailing_high.keys()):
             if t not in active_tickers:
                 trailing_high.pop(t, None)
+
+        # 보유=0인 ticker의 유령 sell_split_orders 정리 (이미 청산됐는데 분할매도 상태만 남은 경우)
+        for t in list(sell_split_orders.keys()):
+            if t not in active_tickers:
+                sell_split_orders.pop(t, None)
+                logger.info(f"🧹 {t} sell_split_order 정리: 보유 0 (이미 청산됨)")
 
         prepared_signals = cls._sort_signals_by_priority(prepared_signals, split_orders)
 
