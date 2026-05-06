@@ -180,7 +180,7 @@ class SectorRebalancerService:
         holdings_map = {h.ticker: h for h in holdings}
         user_state   = UserState(user_id=user_id)
         bought, skipped, buys_executed = [], [], 0
-        buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD_MAX", 30)
+        buy_threshold = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30)
         for grp, info in underweight_groups:
             dev = info["dev"]
             candidates = cls._score_underweight_buy_candidates(

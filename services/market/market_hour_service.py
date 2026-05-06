@@ -212,3 +212,42 @@ class MarketHourService:
     def can_fetch_history() -> bool:
         """Historical data (daily/minute candles) is available 24/7 (KIS API characteristic)."""
         return True
+
+    US_PRE_MARKET_START = time(4, 0)  # US 프리마켓 시작 (ET)
+
+    @classmethod
+    def _post_close_buffer_min(cls) -> int:
+        """DB Settings에서 정규장 마감 후 활성 유지 분 로드 (default 30)."""
+        from services.config.settings_service import SettingsService
+        return SettingsService.get_int("STRATEGY_POST_CLOSE_BUFFER_MIN", 30)
+
+    @classmethod
+    def is_weekend(cls) -> bool:
+        """KR/US 양 시장 모두 weekend면 True. 한 곳이라도 평일이면 False."""
+        kr_now = datetime.now(pytz.timezone("Asia/Seoul"))
+        us_now = datetime.now(pytz.timezone("America/New_York"))
+        return kr_now.weekday() >= 5 and us_now.weekday() >= 5
+
+    @classmethod
+    def is_kr_trading_active(cls) -> bool:
+        """KR 매매/전략 활성 시간: 09:00 ~ (15:30 + POST_CLOSE_BUFFER_MIN). 주말 X."""
+        now = datetime.now(pytz.timezone('Asia/Seoul'))
+        if now.weekday() >= 5:
+            return False
+        end_dt = datetime.combine(now.date(), time(15, 30)) + timedelta(minutes=cls._post_close_buffer_min())
+        return time(9, 0) <= now.time() <= end_dt.time()
+
+    @classmethod
+    def is_us_trading_active(cls) -> bool:
+        """US 매매/전략 활성 시간: 04:00 ET (프리장) ~ (16:00 ET + POST_CLOSE_BUFFER_MIN).
+        주말/공휴일 X. KIS API가 프리마켓 가격 제공하므로 분석/주문 모두 활성."""
+        now = datetime.now(pytz.timezone('America/New_York'))
+        if now.weekday() >= 5 or cls._is_us_market_holiday(now.date()):
+            return False
+        end_dt = datetime.combine(now.date(), time(16, 0)) + timedelta(minutes=cls._post_close_buffer_min())
+        return cls.US_PRE_MARKET_START <= now.time() <= end_dt.time()
+
+    @classmethod
+    def is_trading_active(cls, market: str) -> bool:
+        """KR/US 매매 활성 여부. is_kr_trading_active / is_us_trading_active 위임."""
+        return cls.is_us_trading_active() if market.upper() == "US" else cls.is_kr_trading_active()

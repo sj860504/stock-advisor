@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 from models.schemas import HoldingSchema, MacroDataSnapshot, MarketRegimeSchema, UserState
+from services.config.settings_service import SettingsService
 from utils.logger import get_logger
 from utils.market import is_kr, filter_kr, filter_us
 
@@ -41,10 +42,19 @@ class AssetManagementService:
             f"kr_stock={kr_stock_total:,.0f} us_stock=${us_stock_total_usd:,.2f}"
         )
 
-        if is_kr_open:
+        # 시장별 전략 활성화 여부 확인
+        is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
+        is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
+
+        if is_kr_open and is_kr_strategy_enabled:
             cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings, user_state)
-        if is_us_open:
+        elif is_kr_open:
+            logger.info("[AssetMgmt] KR Strategy is disabled. Skipping KR rebalance.")
+
+        if is_us_open and is_us_strategy_enabled:
             cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings, user_state)
+        elif is_us_open:
+            logger.info("[AssetMgmt] US Strategy is disabled. Skipping US rebalance.")
 
     @classmethod
     def _rebalance_market(
@@ -52,19 +62,44 @@ class AssetManagementService:
         target_ratio: float, holdings: List[HoldingSchema],
         user_state: Optional[UserState] = None,
     ) -> None:
-        """단일 시장(KR/US) 현금갭 계산 후 매수 또는 매도 위임."""
+        """단일 시장(KR/US) 현금갭 계산 후 매수 또는 매도 위임.
+        gap 크기 비례 BUY threshold 동적 완화 (cash-gap-aware)."""
         from services.strategy.signal_service import SignalService
         from services.strategy.position_service import PositionService
 
         gap = cls._calc_cash_gap(cash, stock_total, target_ratio)
         gap_str = f"{gap:,.0f}원" if market == "KR" else f"${gap:,.2f}"
-        logger.info(f"[AssetMgmt] {market} gap={gap_str}")
+
+        # gap percentage-points (현재 비중 - 목표) — gap-aware 임계 완화에 사용
+        total = stock_total + max(0.0, cash)
+        cash_ratio = (cash / total) if total > 0 else 0.0
+        gap_pct = max(0.0, (cash_ratio - target_ratio) * 100)
+
+        logger.info(f"[AssetMgmt] {market} gap={gap_str} ({gap_pct:.1f}%pa)")
 
         if gap > 0:
             signals = SignalService.get_latest_signals()
+            # 시장별 시그널 필터
+            from utils.market import is_kr as _is_kr
+            mkt_signals = [s for s in signals if (_is_kr(s.ticker) if market == "KR" else not _is_kr(s.ticker))]
+
+            # cash-gap-aware: gap 5%pa당 threshold +N, 최대 +M
+            base_thr = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 40)
+            relax_step = SettingsService.get_int("STRATEGY_GAP_RELAX_STEP", 5)
+            relax_max = SettingsService.get_int("STRATEGY_GAP_RELAX_MAX", 20)
+            relaxed_thr = base_thr + min(relax_max, int(gap_pct / 5) * relax_step)
+            eligible = [s for s in mkt_signals if s.score <= relaxed_thr]
+            logger.info(
+                f"[AssetMgmt] {market} threshold {base_thr}→{relaxed_thr} "
+                f"(eligible={len(eligible)}/{len(mkt_signals)})"
+            )
+
             budget_krw = gap if market == "KR" else 0.0
             budget_usd = 0.0 if market == "KR" else gap
-            PositionService.execute_buy_budget(user_id, budget_krw=budget_krw, budget_usd=budget_usd, signals=signals, user_state=user_state)
+            PositionService.execute_buy_budget(
+                user_id, budget_krw=budget_krw, budget_usd=budget_usd,
+                signals=eligible, user_state=user_state, gap_pct=gap_pct,
+            )
         elif gap < 0:
             signals = SignalService.get_latest_signals()
             market_holdings = [h for h in holdings if (is_kr(h.ticker) if market == "KR" else not is_kr(h.ticker))]

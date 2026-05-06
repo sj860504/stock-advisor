@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from config import Config
 from services.kis.kis_service import KisService
 from services.kis.fetch.kis_fetcher import KisFetcher
-from typing import Dict
+from typing import Dict, Optional
 from utils.logger import get_logger
 from models.schemas import (
     MarketRegimeSchema, MarketRegimeComponents, OtherDetailScores,
@@ -164,20 +164,27 @@ class MacroService:
         logger.info(f"Regime update complete: {status} ({score}/100)")
         return data
 
+    _last_exchange_rate: Optional[float] = None  # 직전 성공 환율 캐시
+
     @classmethod
     def get_exchange_rate(cls) -> float:
-        """USD/KRW exchange rate via yfinance, fallback to 1400."""
+        """USD/KRW exchange rate via yfinance.
+        Fallback chain: yfinance → 직전 성공값 캐시 → 1400."""
         try:
             import yfinance as yf
             data = yf.Ticker("USDKRW=X").history(period="5d")
             if data is not None and not data.empty and "Close" in data.columns:
                 rate = float(data["Close"].dropna().iloc[-1])
                 if rate > 0:
+                    cls._last_exchange_rate = rate
                     logger.info(f"💱 Exchange rate (yfinance): {rate:.2f}")
                     return rate
         except Exception as e:
             logger.warning(f"⚠️ Failed to fetch exchange rate from yfinance: {e}")
-        logger.warning("⚠️ Using fallback exchange rate: 1400.0")
+        if cls._last_exchange_rate and cls._last_exchange_rate > 0:
+            logger.info(f"💱 Using cached exchange rate: {cls._last_exchange_rate:.2f}")
+            return cls._last_exchange_rate
+        logger.warning("⚠️ Using fallback exchange rate: 1400.0 (no cache available)")
         return 1400.0
 
     # yfinance fallback symbols (used when KIS IDX returns 0)

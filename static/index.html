@@ -48,7 +48,13 @@
             <div class="nav-item" data-tab="logs" onclick="switchTab(this,'logs')">Logs</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
-            <span id="strategy-chip" class="status-chip chip-off">전략 OFF</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+                <span id="strategy-chip" class="status-chip chip-off">전략 OFF</span>
+                <div style="display:flex;gap:4px">
+                    <span id="kr-status-chip" class="status-chip mini chip-off" style="font-size:0.65rem;padding:1px 4px">KR OFF</span>
+                    <span id="us-status-chip" class="status-chip mini chip-off" style="font-size:0.65rem;padding:1px 4px">US OFF</span>
+                </div>
+            </div>
             <span id="last-updated" style="font-size:0.78rem;color:var(--sub)">-</span>
             <button class="btn btn-outline btn-sm" onclick="logout()" style="font-size:.75rem">로그아웃</button>
         </div>
@@ -297,10 +303,26 @@
                             <div id="strategy-status-big" style="font-size:1.4rem;font-weight:700">확인 중...</div>
                         </div>
                         <div style="display:flex;gap:10px">
-                            <button class="btn btn-success" style="flex:1;padding:12px" onclick="startStrategy()">▶ 전략
-                                시작</button>
-                            <button class="btn btn-danger" style="flex:1;padding:12px" onclick="stopStrategy()">⏹ 전략
-                                중지</button>
+                            <button class="btn btn-success" style="flex:1;padding:12px" onclick="startStrategy()">▶ 마스터 시작</button>
+                            <button class="btn btn-danger" style="flex:1;padding:12px" onclick="stopStrategy()">⏹ 마스터 중지</button>
+                        </div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                            <div style="background:var(--bg-base);border-radius:6px;padding:8px;text-align:center;border:1px solid var(--border)">
+                                <div style="font-size:0.75rem;color:var(--sub);margin-bottom:6px">🇰🇷 한국 시장</div>
+                                <div id="kr-status-text" style="font-size:0.85rem;font-weight:600;margin-bottom:8px">-</div>
+                                <div style="display:flex;gap:4px">
+                                    <button class="btn btn-success btn-xs" style="flex:1" onclick="startStrategy('kr')">ON</button>
+                                    <button class="btn btn-danger btn-xs" style="flex:1" onclick="stopStrategy('kr')">OFF</button>
+                                </div>
+                            </div>
+                            <div style="background:var(--bg-base);border-radius:6px;padding:8px;text-align:center;border:1px solid var(--border)">
+                                <div style="font-size:0.75rem;color:var(--sub);margin-bottom:6px">🇺🇸 미국 시장</div>
+                                <div id="us-status-text" style="font-size:0.85rem;font-weight:600;margin-bottom:8px">-</div>
+                                <div style="display:flex;gap:4px">
+                                    <button class="btn btn-success btn-xs" style="flex:1" onclick="startStrategy('us')">ON</button>
+                                    <button class="btn btn-danger btn-xs" style="flex:1" onclick="stopStrategy('us')">OFF</button>
+                                </div>
+                            </div>
                         </div>
                         <hr class="divider">
                         <div class="card-title" style="margin-bottom:8px">🔥 수동 매도</div>

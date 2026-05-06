@@ -61,92 +61,78 @@ run_strategy(user_id) [매 1분 실행]
 
 ---
 
-## 2. 점수 계산 로직
+## 2. 점수 계산 로직 — ✅ 통합 비율 시스템 (2026-04-30)
 
 **파일**: `services/strategy/signal_service.py`
 
 ### 기본 구조
 
 ```
-score = BASE_SCORE(50) + [A] + [B] + [C] + [D] + [E~G]
+score = BASE_SCORE(50) + Σ(컴포넌트별 비율 점수)
 ```
 
-점수가 낮을수록 매수 신호, 높을수록 매도 신호.
+모든 시그널 컴포넌트는 **base 50 기준 ±N 비율로 가산**. 한 컴포넌트의 한방 트리거 없이, 여러 신호 동시 양호 시에만 매수 임계 도달.
 
-### [A] 기술적 지표
+### 컴포넌트 매트릭스
 
-**RSI**
+| 컴포넌트 | 기준값 | 1점 단위 | 캡 | 매수 신호 (-) | 매도 신호 (+) |
+|---------|-------|---------|----|------------|------------|
+| **DCF_deviation** | 0% (공정가치) | 1% = 1점 | ±25 | DCF > 현재가 | 현재가 > DCF |
+| **RSI_deviation** | 50 | 1 RSI = 1점 | ±15 | RSI < 50 | RSI > 50 |
+| **EMA200_deviation** | EMA200 | 1% = 1점 | ±15 | 가격 < EMA | 가격 > EMA |
+| **change_deviation** | 0% (당일 등락) | 1% = 3점 | ±15 | 급락 | 급등 |
+| **VIX_deviation** | VIX 20 | 1 = 1점 | ±10 | VIX 높음 (공포) | VIX 낮음 (안일) |
+| **FNG_deviation** | F&G 50 | 5 = 1점 | ±10 | F&G 낮음 (공포) | F&G 높음 (탐욕) |
+| **Regime_deviation** | regime 50 | 3 = 1점 | ±10 | regime 낮음 (Bear) | regime 높음 (Bull) |
 
-| 조건 | 점수 변화 |
-|------|----------|
-| RSI ≤ 30 (극도 과매도) | -20 ~ -10 |
-| RSI 30~50 (과매도) | -10 ~ -5 (±5 미만이면 무시) |
-| RSI 50~70 (과매수) | +5 ~ +10 (±5 미만이면 무시) |
-| RSI > 70 (극도 과매수) | +10 ~ +20 |
+> 단방향 최대 누적 -25-15-15-15-10-10-10 = **-100점** → score 1까지 클램프.
 
-**급락/급등**
+### [A] 기술적 (`_score_technical`)
+- `RSI_deviation`: `clamp(int(rsi - 50), -15, +15)`
+- `change_deviation`: `clamp(int(change_rate × 3), -15, +15)`
+- `DCF_deviation`: `_score_dcf` 위임. DCF 데이터 없으면 `no_dcf_data: +10` 패널티
 
-| 조건 | 점수 변화 |
-|------|----------|
-| 당일 등락률 ≤ -5% (급락) | -15 |
-| 당일 등락률 ≥ +5% (급등) | +15 |
+### [B] 포트폴리오 (`_score_portfolio`) — 보유 종목 한정, 비율화 X
+- `profit_pct ≥ take_profit_pct`(레짐별 3/5/7%): **+30** (익절 신호)
+- `-5% ≤ profit_pct < take_profit`: 0 (홀드 영역)
+- `profit_pct ≤ -5% AND profit_pct > stop_loss(-8%)`: -10 (추매 신호)
+- `profit_pct ≤ stop_loss(-8%)`: **forced_sell = True, score = 100**
 
-**DCF 밸류에이션** (`undervalue_pct = (DCF - 현재가) / 현재가 × 100`)
+### [C] 거시 (`_score_market_context`)
+- VIX/FNG/Regime_score 각각 비율 컴포넌트로 분해
 
-| 조건 | 점수 변화 |
-|------|----------|
-| undervalue_pct ≥ 20% (크게 저평가) | -25 |
-| undervalue_pct ≥ 10% | -15 |
-| undervalue_pct ≥ 5% | -10 |
-| undervalue_pct ≥ -5% (공정가치) | -5 |
-| undervalue_pct ≥ -15% (약간 고평가) | +10 |
-| undervalue_pct < -15% (크게 고평가) | +20 |
-| DCF 데이터 없음 | +10 (패널티) |
+### [D] 가격 위치 (`_score_target_prices`)
+- `EMA200_deviation`: `clamp(int((curr-ema200)/ema200×100), -15, +15)`
+- 옛 `target_buy_price`/`target_sell_price` 필드 폐기됨
 
-**EMA 지지선**
-
-| 조건 | 점수 변화 |
-|------|----------|
-| EMA200 ~ EMA200×1.02 구간 (지지) | -10 |
-
-### [B] 포트폴리오 상태
-
-| 조건 | 점수 변화 |
-|------|----------|
-| profit_pct ≥ TAKE_PROFIT_PCT (3%) | +30 (익절 신호) |
-| profit_pct ≤ -5% AND profit_pct > STOP_LOSS_PCT | -10 (추매 신호 — 손실 구간에서만) |
-| profit_pct ≤ STOP_LOSS_PCT (-8%) | forced_sell = True, score = 100 (이하 컴포넌트 계산 생략) |
-
-### [C] 거시 환경
-
-| 조건 | 점수 변화 |
-|------|----------|
-| VIX ≥ 25 또는 F&G ≤ 30 (공포장) | -30 (매수 유리) |
-| VIX ≤ 15 또는 F&G ≥ 70 (과열) | +15 |
-| Regime = BULL | -15 (매수 유리) + **+10 익절 넛지** = 순 -5 — BULL에서 홀드/매수 기조 유지하되 익절 약하게 촉진 |
-| Regime = BEAR | **0** (점수 변화 없음) — 약세장 매도 억제, 저점 강제 청산 방지 |
-
-### [D] 목표가 설정
-
-| 조건 | 점수 변화 |
-|------|----------|
-| 현재가 ≤ target_buy_price | -15 (매수 트리거) |
-| 현재가 ≥ target_sell_price | +30 (매도 트리거) |
-
-### [E~G] 보너스
-
-| 조건 | 점수 변화 |
-|------|----------|
-| 시총 Top 10 종목 | -10 (우량주 보너스) |
-| 사용자 비중 오버라이드 | ±커스텀값 |
-| 섹터 비중 부족 (underweight) | -10 |
-| 섹터 비중 초과 (overweight) | +10 |
+### [E~G] 보너스 (`_score_bonuses`) — 카테고리/임계 기반, 비율화 X
+- 시총 Top 10 종목: -10
+- 사용자 비중 오버라이드: ±커스텀
+- 섹터 underweight (편차 < -5%): -10
+- 섹터 overweight (편차 > +5%): +10
 
 ### [H] 현금 패널티 (사후 적용)
 
 | 조건 | 점수 변화 |
 |------|----------|
 | 현금비중 < 목표 && score > 50 | +15 (매수 억제) |
+
+### Reason 문자열 매핑 (옛 → 새)
+
+| 옛 | 새 |
+|---|---|
+| `RSI_oversold(37.2,-6)` | `RSI_deviation(37.2,-13)` |
+| `RSI_extreme_oversold/overbought` | `RSI_deviation` 통합 |
+| `DCF_high_undervalue(36.3%)` | `DCF_deviation(+36.3%,-25)` |
+| `DCF_fair_value`, `DCF_overvalue` | `DCF_deviation` 통합 |
+| `target_entry_price_hit($478046)` | `EMA200_deviation(-3.7%,-3)` |
+| `target_sell_price_hit` | `EMA200_deviation` 통합 |
+| `EMA200_support` | (제거됨, EMA200_deviation에 흡수) |
+| `extreme_fear_buy_opportunity` | `VIX_deviation` + `FNG_deviation` |
+| `bull_market_advantage` | `Regime_deviation` |
+| `bear_market_hold` | (제거됨, Regime_deviation으로 표현) |
+| `sharp_drop(-5.6%)` | `change_deviation(-5.6%,-15)` |
+| `sharp_surge(+5.6%)` | `change_deviation(+5.6%,+15)` |
 
 ---
 
@@ -759,8 +745,7 @@ FRED 14개 지표를 **ThreadPoolExecutor(max_workers=8)** 병렬 조회.
 
 ### [5] Other / 복합자산 (0~20점)
 
-yfinance + FRED(DGS2) 기반. 최대 합산 ±34점 → 0~20 정규화.
-(`forward_pe_raw` ±6 추가로 max_val 28→34으로 확장, 2026-04-05)
+yfinance + FRED(DGS2) 기반. 최대 합산 ±28점 → 0~20 정규화.
 
 | 항목 | 조건 | 점수 |
 |------|------|------|
@@ -790,16 +775,6 @@ yfinance + FRED(DGS2) 기반. 최대 합산 ±34점 → 0~20 정규화.
 | | > +5% | -1 |
 | | < -5% | +1 |
 | | < -15% | +2 |
-| **S&P 500 Forward P/E** | deviation ≤ -20% (매우 저평가) | **+6** |
-| (5Y 평균 대비 편차) | deviation ≤ -10% | **+4** |
-| deviation = (현재 - 5Y평균) / 5Y평균 | deviation ≤ -5% | **+2** |
-| 5Y평균 fallback = 18.5 (DB <30건) | -5% < deviation < +5% | **0** |
-| | deviation < +10% | **-2** |
-| | deviation < +20% | **-4** |
-| | deviation ≥ +20% (매우 고평가) | **-6** |
-
-> `forward_pe` 원시값과 `avg_5y_pe`는 DB `market_regime_history.forward_pe` 컬럼에 저장.
-> `yf.Ticker("SPY").info.get("forwardPE")` 로 실시간 조회; 조회 실패 시 forward_pe_raw=0.
 
 ---
 
@@ -1176,4 +1151,4 @@ US:
 
 ---
 
-**Last Updated**: 2026-04-05 (Forward P/E 레짐 편입: other_20 max_val 28→34, 5Y 평균 대비 편차 ±6점; 쿨다운 만료 정리 _cleanup_expired_cooldowns 추가; KIS 실전계좌 라우팅 _get_trading_base_url/_get_trading_headers)
+**Last Updated**: 2026-04-30 (✅ 점수 시스템 통합 비율(%) 기반 전환 — DCF/RSI/EMA200/VIX/F&G/Regime/change 모두 비율 컴포넌트화, target_buy/sell 필드 폐기)

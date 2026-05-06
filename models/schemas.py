@@ -629,6 +629,7 @@ class BuyCooldownEntry(BaseModel):
     """Buy cooldown tracking entry."""
     date: str = ""
     price: float = 0.0
+    timestamp: float = 0.0  # epoch seconds — gap-aware cooldown 시간 단위 비교용
 
 
 class SplitSellOrderState(BaseModel):

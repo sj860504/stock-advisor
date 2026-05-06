@@ -17,10 +17,8 @@ class SettingsService:
         "STRATEGY_TARGET_CASH_RATIO": (str(Config.STRATEGY_TARGET_CASH_RATIO), "Target cash ratio (0.0 ~ 1.0)"),
         "STRATEGY_PER_TRADE_RATIO": (str(Config.STRATEGY_PER_TRADE_RATIO), "Per-trade ratio (relative to total assets)"),
         "STRATEGY_BASE_SCORE": (str(Config.STRATEGY_BASE_SCORE), "Base score"),
-        "STRATEGY_BUY_THRESHOLD_MIN": (str(Config.STRATEGY_BUY_THRESHOLD_MIN), "Buy score lower bound (default 30)"),
-        "STRATEGY_BUY_THRESHOLD": (str(Config.STRATEGY_BUY_THRESHOLD), "Buy score threshold"),
-        "STRATEGY_SELL_THRESHOLD": (str(Config.STRATEGY_SELL_THRESHOLD), "Sell score threshold"),
-        "STRATEGY_SELL_THRESHOLD_MAX": (str(Config.STRATEGY_SELL_THRESHOLD_MAX), "Sell score upper bound (default 100)"),
+        "STRATEGY_BUY_THRESHOLD": (str(Config.STRATEGY_BUY_THRESHOLD), "Buy score threshold (score ≤ N → BUY signal)"),
+        "STRATEGY_SELL_THRESHOLD": (str(Config.STRATEGY_SELL_THRESHOLD), "Sell score threshold (score ≥ N → SELL signal)"),
         "STRATEGY_REQUIRE_FULL_ANALYSIS": (str(Config.STRATEGY_REQUIRE_FULL_ANALYSIS), "Block trading before full analysis ready (1=block)"),
         "STRATEGY_MIN_READY_RATIO": (str(Config.STRATEGY_MIN_READY_RATIO), "Minimum readiness ratio to allow trading (0.0~1.0)"),
         "STRATEGY_SPLIT_COUNT": (str(Config.STRATEGY_SPLIT_COUNT), "Split trade count"),
@@ -30,6 +28,19 @@ class SettingsService:
         "STRATEGY_OVERSOLD_RSI": (str(Config.STRATEGY_OVERSOLD_RSI), "Oversold RSI threshold"),
         "STRATEGY_OVERBOUGHT_RSI": (str(Config.STRATEGY_OVERBOUGHT_RSI), "Overbought RSI threshold"),
         "STRATEGY_ALLOW_EXTENDED_HOURS": ("1", "Allow US pre/after-market orders (1=allow, 0=disallow)"),
+        "STRATEGY_POST_CLOSE_BUFFER_MIN": ("30", "정규장 마감 후 매매/전략 활성 유지 시간 (분)"),
+        "STRATEGY_DCF_DEVIATION_CAP": ("25", "DCF 편차 점수 캡 (±)"),
+        "STRATEGY_RSI_DEVIATION_CAP": ("15", "RSI 편차 점수 캡 (±)"),
+        "STRATEGY_EMA200_DEVIATION_CAP": ("15", "EMA200 편차 점수 캡 (±)"),
+        "STRATEGY_CHANGE_DEVIATION_CAP": ("15", "당일 등락률 편차 점수 캡 (±)"),
+        "STRATEGY_VIX_DEVIATION_CAP": ("10", "VIX 편차 점수 캡 (±)"),
+        "STRATEGY_FNG_DEVIATION_CAP": ("10", "Fear & Greed 편차 점수 캡 (±)"),
+        "STRATEGY_REGIME_DEVIATION_CAP": ("10", "Regime score 편차 점수 캡 (±)"),
+        "STRATEGY_GAP_RELAX_STEP": ("5", "현금갭 5%pa당 BUY threshold +N (cash-gap-aware)"),
+        "STRATEGY_GAP_RELAX_MAX": ("20", "현금갭 기반 BUY threshold 최대 완화"),
+        "STRATEGY_COOLDOWN_HIGH_GAP_PCT": ("30", "쿨다운 단축 임계 (현금갭 %pa)"),
+        "STRATEGY_BUY_COOLDOWN_HOURS": ("24", "기본 매수 쿨다운 (시간)"),
+        "STRATEGY_BUY_COOLDOWN_HOURS_HIGH_GAP": ("1", "갭 큰 경우 매수 쿨다운 (시간)"),
         "STRATEGY_TICK_ENABLED": ("0", "Tick trading strategy enabled (1=on, 0=off)"),
         "STRATEGY_TICK_TICKER": ("005930", "Tick trading target ticker (1 stock per day)"),
         "STRATEGY_TICK_CASH_RATIO": ("0.20", "Cash ratio for tick trading (relative to total assets)"),
@@ -103,6 +114,18 @@ class SettingsService:
         try:
             val = cls.get_setting(key)
             return int(float(val)) if val is not None else default
+        except (ValueError, TypeError):
+            return default
+
+    @classmethod
+    def get_bool(cls, key: str, default: bool = False) -> bool:
+        try:
+            val = str(cls.get_setting(key)).lower()
+            if val in ("true", "1", "yes", "on"):
+                return True
+            if val in ("false", "0", "no", "off"):
+                return False
+            return default
         except (ValueError, TypeError):
             return default
 

@@ -75,9 +75,6 @@ class MarketDataService:
         }
         state.current_price = float(financials.current_price or 0.0)
         state.update_indicators(emas=emas, dcf=financials.dcf_value, rsi=financials.rsi)
-        if state.ema.get(200):
-            state.target_buy_price  = round(state.ema[200] * 1.01, 2)
-            state.target_sell_price = round(state.ema[200] * 1.15, 2)
         return cls._has_minimum_indicators(state)
 
     @classmethod
@@ -132,14 +129,6 @@ class MarketDataService:
             "base_date":    datetime.now(),
         }
 
-    @staticmethod
-    def _update_target_prices_from_snapshot(state: TickerState, snapshot) -> None:
-        """Set EMA200-based target buy/sell prices on state."""
-        ema200 = snapshot.ema.get(200) if snapshot else None
-        if ema200:
-            state.target_buy_price  = round(ema200 * 1.01, 2)
-            state.target_sell_price = round(ema200 * 1.15, 2)
-
     @classmethod
     def _warmup_save_basic(cls, ticker: str, state: TickerState, basic_info: dict, df) -> dict:
         """Phase 1: Build and save basic metrics to DB. Returns partial_metrics dict."""
@@ -190,10 +179,10 @@ class MarketDataService:
         partial_metrics          = cls._warmup_save_basic(ticker, state, basic_info, df)
         snapshot, rsi, dcf_val   = cls._warmup_compute_indicators(ticker, state, df, partial_metrics)
         cls._warmup_save_final(ticker, partial_metrics, snapshot, dcf_val)
-        cls._update_target_prices_from_snapshot(state, snapshot)
+        ema200 = snapshot.ema.get(200) if snapshot else None
         logger.info(
             f"✅ Full warm-up: {ticker} ({state.name}) "
-            f"Price={state.current_price}, RSI={rsi}, DCF={dcf_val}, TargetBuy={state.target_buy_price}"
+            f"Price={state.current_price}, RSI={rsi}, DCF={dcf_val}, EMA200={ema200}"
         )
         time.sleep(1.0)  # TPS compliance
 
