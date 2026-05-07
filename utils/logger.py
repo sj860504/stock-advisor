@@ -27,7 +27,7 @@ def _init_root_logger() -> None:
     )
 
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
 
     # Drop any pre-existing handlers (e.g. from --reload re-import) so we
     # don't double-register and re-introduce the duplicate-fd problem.
@@ -45,9 +45,15 @@ def _init_root_logger() -> None:
         backupCount=5,
         encoding='utf-8',
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
+
+    # 외부 라이브러리 노이즈 제거 (DEBUG로 매 프레임 찍히는 것들)
+    for noisy in ("websockets", "websockets.client", "websockets.protocol",
+                  "urllib3", "urllib3.connectionpool",
+                  "asyncio", "apscheduler"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _root_initialized = True
 
