@@ -1,9 +1,15 @@
+import os
 from datetime import datetime, time, timedelta, date
 import pytz
 from config import Config
 
 class MarketHourService:
     """KR and US market hours check service."""
+
+    @staticmethod
+    def _force_us_active() -> bool:
+        """Test/debug override — env FORCE_US_ACTIVE=1 forces is_us_trading_active() True."""
+        return os.getenv("FORCE_US_ACTIVE", "0") == "1"
 
     @staticmethod
     def _is_time_between(now_t: time, start_t: time, end_t: time) -> bool:
@@ -197,16 +203,21 @@ class MarketHourService:
 
     @classmethod
     def should_fetch(cls, market: str = "KR") -> bool:
-        """Check if real-time data collection should run (allowed up to 1hr after market close)."""
-        # Regular hours + 1 hour (data cleanup window)
+        """Check if real-time data collection should run.
+
+        KR: 09:00~16:30 KST (정규장 + 1h cleanup)
+        US: 04:00~20:00 ET — 프리마켓·정규장·애프터마켓 모두 포함.
+            (sync_daily_market_data가 미장 시작 전(KST 22:00=ET 08:00) cron으로 호출돼도
+             RSI/EMA fetch 가능하도록 범위 확장)
+        """
         tz = pytz.timezone('Asia/Seoul' if market.upper() == "KR" else 'America/New_York')
         now = datetime.now(tz)
         if now.weekday() >= 5: return False
-        
+
         if market.upper() == "KR":
             return time(9, 0) <= now.time() <= time(16, 30)
         else:
-            return time(9, 30) <= now.time() <= time(17, 30)
+            return time(4, 0) <= now.time() <= time(20, 0)
 
     @staticmethod
     def can_fetch_history() -> bool:
@@ -241,6 +252,8 @@ class MarketHourService:
     def is_us_trading_active(cls) -> bool:
         """US 매매/전략 활성 시간: 04:00 ET (프리장) ~ (16:00 ET + POST_CLOSE_BUFFER_MIN).
         주말/공휴일 X. KIS API가 프리마켓 가격 제공하므로 분석/주문 모두 활성."""
+        if cls._force_us_active():
+            return True
         now = datetime.now(pytz.timezone('America/New_York'))
         if now.weekday() >= 5 or cls._is_us_market_holiday(now.date()):
             return False

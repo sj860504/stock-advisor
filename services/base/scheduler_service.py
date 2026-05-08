@@ -48,7 +48,11 @@ class SchedulerService:
         from zoneinfo import ZoneInfo
         _ET = ZoneInfo("America/New_York")
 
-        cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0)
+        # KR 정규장 시작 전 (KST 04:00 = ET 15:00) — 옛 미국 정규장 마감 1h 전 sync (US 일봉 마감 가까운 시점)
+        cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=4, minute=0, id='sync_daily_kst04')
+        # 미국 정규장 시작 30분 전 (KST 22:00 = ET 08:00 프리마켓) — US universe RSI/EMA freshly load
+        # → 미장 strategy 첫 사이클(KST 22:30)에 ready=True 보장
+        cls._scheduler.add_job(lambda: DataService.sync_daily_market_data(limit=100), 'cron', hour=22, minute=0, id='sync_us_premarket')
         cls._scheduler.add_job(lambda: cls.manage_subscriptions(force_refresh=True), 'cron', hour=8, minute=30)
         cls._scheduler.add_job(cls.run_trading_strategy, 'interval', minutes=1)
         cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=15, minute=35, id='kr_close_report')
