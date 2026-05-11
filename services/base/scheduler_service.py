@@ -420,7 +420,10 @@ class SchedulerService:
         low_tickers = MarketDataService.get_low_tier_tickers()
         is_kr_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_KR", True)
         is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
-        
+
+        # HIGH(WebSocket 주 채널) + LOW(REST 폴링 주 채널) 합본을 후보로 두고
+        # 시장 활성 여부 기준으로 필터. 기존엔 변수 미정의로 NameError 매 5분 발생.
+        all_poll_tickers = list(set(high_tickers) | set(low_tickers))
         active_tickers = cls._filter_active_low_tickers(all_poll_tickers, is_kr_open, is_us_open)
         
         # 시장별 활성화 여부로 최종 필터링
