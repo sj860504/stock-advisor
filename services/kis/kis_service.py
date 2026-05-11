@@ -32,6 +32,11 @@ class KisService:
     # Live trading account token (price quote only)
     _real_access_token = None
     _real_token_expiry = None
+
+    # 토큰 발급 동시성 lock — 멀티 thread/worker가 동시에 _request_new_token
+    # 호출해서 KIS에 토큰을 두 번 받는 사태 방지 (KIS는 분당 1회 발급 제한)
+    _token_issue_lock = threading.Lock()
+    _real_token_issue_lock = threading.Lock()
     
     @classmethod
     def _throttle_request(cls) -> None:
@@ -141,16 +146,21 @@ class KisService:
 
     @classmethod
     def get_access_token(cls) -> str:
-        """Get access token with DB-based cache."""
-        # 1. Check in-memory cache
+        """Get access token with DB-based cache + lock (double-checked locking).
+
+        멀티 thread에서 동시 호출 시 모두 캐시 미스 후 둘 다 _request_new_token() 호출 →
+        KIS에 토큰을 두 번 받음 → '분당 1회 제한' 정책 위반 / 옛 토큰 무효화. lock 으로 직렬화."""
+        # 1. fast path — in-memory cache 유효
         if cls._access_token and cls._token_expiry and datetime.now() < cls._token_expiry:
             return cls._access_token
-        # 2. Check DB cache
-        cached = cls._load_cached_token()
-        if cached:
-            return cached
-        # 3. Request new token
-        return cls._request_new_token()
+        # 2. lock 잡고 다시 확인 (다른 thread가 이미 발급했을 수 있음)
+        with cls._token_issue_lock:
+            if cls._access_token and cls._token_expiry and datetime.now() < cls._token_expiry:
+                return cls._access_token
+            cached = cls._load_cached_token()
+            if cached:
+                return cached
+            return cls._request_new_token()
 
     # ── Live account token (price quote / WebSocket only) ─────────────────────
 
@@ -200,15 +210,20 @@ class KisService:
 
     @classmethod
     def get_real_access_token(cls) -> str:
-        """Return live account token. Falls back to VTS token if has_real_credentials()=False."""
+        """Return live account token. Falls back to VTS token if has_real_credentials()=False.
+
+        double-checked locking — 동시 호출 시 토큰 중복 발급 방지."""
         if not Config.has_real_credentials():
             return cls.get_access_token()
         if cls._real_access_token and cls._real_token_expiry and datetime.now() < cls._real_token_expiry:
             return cls._real_access_token
-        cached = cls._load_cached_real_token()
-        if cached:
-            return cached
-        return cls._request_new_real_token()
+        with cls._real_token_issue_lock:
+            if cls._real_access_token and cls._real_token_expiry and datetime.now() < cls._real_token_expiry:
+                return cls._real_access_token
+            cached = cls._load_cached_real_token()
+            if cached:
+                return cached
+            return cls._request_new_real_token()
 
     @classmethod
     def get_real_headers(cls, tr_id: str) -> dict:
