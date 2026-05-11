@@ -52,6 +52,48 @@
 **Root Cause**: 자산관리가 설정한 `sell_cooldown`이 DB에 저장되지 않아 다음 루프에서 소실
 **Fix**: `AssetManagementService.run()` 이후 `_save_state(state)` 2차 호출 추가
 
+### 7. logger 모듈별 핸들러 → 회전 시 fd 좀비 (2026-05-11 수정)
+
+**Symptom**: 로그 파일이 회전된 .deleted fd로 흘러 디스크에 안 남음, 며칠치 로그 영구 휘발
+**Check**: `lsof -p <uvicorn_pid> | grep "logs/app"` 결과 동일 파일 fd 30개 이상 (대부분 deleted)
+**Root Cause**: `utils/logger.py`에서 `get_logger(name)`이 모듈마다 별도 `RotatingFileHandler` 인스턴스 생성. 한 핸들러가 회전(rename)하면 다른 핸들러는 옛 fd로 deleted 파일에 계속 쓰기.
+**Fix**: 루트 로거 1개에 핸들러 등록, 모듈 로거는 `propagate=True`로 위임 (`_root_initialized` 플래그로 1회 초기화 보장)
+
+### 8. sync_daily_market 후 메모리 _states 미반영 (2026-05-11 수정)
+
+**Symptom**: DB(financials) RSI/EMA는 갱신되는데 strategy 사이클이 옛 메모리 값 보고 is_ready=False 유지
+**Check**: `Signal collection complete. N stocks ready`에서 N이 보유 종목 수에 머무름. financials 테이블 updated_at은 최신
+**Root Cause**: `DataService.sync_daily_market_data`가 DB 갱신만 하고 `MarketDataService._states`에 reload 안 함. lazy warm-up은 KIS 야간 API에 의존 → 야간 응답 부실하면 영원히 not ready.
+**Fix**: `MarketDataService.reload_states_from_db(tickers)` 메서드 추가 + `sync_daily_market_data` 끝에서 호출
+
+### 9. APScheduler cron 잡 timezone 누락 (2026-05-11 발견)
+
+**Symptom**: `sync_daily_market_data` 잡 시간 의도와 실제 동작 불일치
+**Check**: `scheduler_service.py`에서 `add_job(..., 'cron', hour=N)` — timezone 인자 누락 시 서버 OS time 기준
+**Root Cause**: BackgroundScheduler 기본은 OS time. 다른 잡(`econ_0830`, `vix_spike_check`)은 명시적 `timezone=_ET` 쓰는데 `sync_daily_market`만 누락 → KST 04:00에 실행
+**Fix**: 시간 명시적 변환 + `should_fetch` 범위 확장 (US는 ET 04:00~20:00 프리/애프터 포함) + 미장 시작 전 `sync_us_premarket` 잡 (KST 22:00) 추가
+
+### 10. get_top_us_tickers fallback 미보강 → universe US=3 (2026-05-11 수정)
+
+**Symptom**: `Universe updated: ... US=3 [top100]` — 100개 top100 의도인데 보유 종목 3개만
+**Check**: KIS VTS US ranking API가 빈/부분 응답 줄 때 `_apply_us_ticker_supplements` 분기에서 보강 안 됨
+**Root Cause**: `_fetch_us_tickers_from_kis` 결과가 0개 아닌 작은 수(1~5개)면 `if not tickers:` 분기 안 타고 `if len(tickers) < limit:` 분기로 가는데 supplements 작동 안 함
+**Fix**: `get_top_us_tickers` 최종 결과 < 50개 시 `_build_us_fallback_data`로 강제 보강 + `_update_target_universe`에 이중 안전망
+
+### 11. `__pycache__` 캐시로 옛 코드 로드 (2026-05-11 학습)
+
+**Symptom**: git pull 후 재시작했는데도 옛 동작 그대로 (NameError 계속 발생)
+**Check**: `ls -la services/*/__pycache__/*.pyc` mtime이 `.py` 파일보다 신선
+**Root Cause**: Python이 `.pyc` 캐시 timestamp 비교에서 오판 (git pull은 .py mtime 자동 갱신 X)
+**Fix**: `find . -path ./venv -prune -o -name "__pycache__" -type d -print | xargs rm -rf` + `find services/ -name "*.py" -exec touch {} \;` 후 재시작
+
+### 12. _refresh_low_tier_prices NameError (2026-05-11 수정)
+
+**Symptom**: 매 5분 `apscheduler.executors.default - ERROR - Job ... raised an exception` + `NameError: name 'all_poll_tickers' is not defined`
+**Check**: `scheduler_service.py:424` — `all_poll_tickers` 변수 정의 누락
+**Root Cause**: HIGH + LOW 합본 변수가 정의 안 됨. 매 5분 잡이 전부 fail → US LOW-tier 가격 폴링 자체 작동 안 함 → US 종목 ready=False
+**Fix**: `all_poll_tickers = list(set(high_tickers) | set(low_tickers))` 추가
+
 ---
 
 **Update this file when:**
@@ -59,4 +101,4 @@
 - Error could cause production issue
 - Mistake repeated across sessions
 
-**Last Updated**: 2026-03-18
+**Last Updated**: 2026-05-11
