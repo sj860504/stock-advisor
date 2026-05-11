@@ -412,12 +412,24 @@ class DataService:
         token = KisService.get_access_token()  # Fetch once outside the loop
         markets = {market for _, market in all_tickers}
         open_markets = {m for m in markets if MarketHourService.should_fetch(m)}
+        synced_tickers = []
         for ticker, market in all_tickers:
             if market not in open_markets:
                 continue
             try:
                 cls._sync_ticker_market_data(ticker, market, token)
+                synced_tickers.append(ticker)
                 time.sleep(KIS_RATE_LIMIT_SLEEP_SEC)
             except Exception as e:
                 logger.error(f"Error syncing {ticker}: {e}")
         logger.info("Daily market data sync completed.")
+
+        # DB(financials) 갱신 직후 MarketDataService._states 메모리를 즉시 reload.
+        # 이게 없으면 다음 strategy 사이클은 옛 메모리 그대로 봐서 is_ready=False 유지.
+        # (운영 미장에서 96개 US 종목이 ready 안 됐던 직접 원인)
+        if synced_tickers:
+            try:
+                from services.market.market_data_service import MarketDataService
+                MarketDataService.reload_states_from_db(synced_tickers)
+            except Exception as e:
+                logger.warning(f"⚠️ reload_states_from_db skipped: {e}")

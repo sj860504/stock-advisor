@@ -333,6 +333,34 @@ class MarketDataService:
         if stale:
             logger.info(f"🧹 Pruned {len(stale)} stale states (kept {len(keep_tickers)}).")
 
+    @classmethod
+    def reload_states_from_db(cls, tickers: Optional[List[str]] = None) -> int:
+        """Reload _states from DB(financials) without hitting KIS API.
+
+        Use case: sync_daily_market_data writes fresh RSI/EMA/price to financials,
+        but memory _states still holds stale values until the next per-ticker warm-up.
+        Calling this right after sync lets the next strategy cycle see the new data
+        immediately (otherwise lazy warm-up + KIS night API failures keep
+        is_ready=False on 95%+ of US universe).
+
+        tickers=None → reload every ticker already registered in _states.
+        Returns number of tickers whose state got refreshed."""
+        from services.market.stock_meta_service import StockMetaService
+        target = list(tickers) if tickers is not None else list(cls._states.keys())
+        if not target:
+            return 0
+        updated = 0
+        for ticker in target:
+            state = cls._states.get(ticker)
+            if state is None:
+                state = TickerState(ticker=ticker)
+                cls._states[ticker] = state
+            financials = StockMetaService.get_latest_financials(ticker)
+            if financials and cls._load_indicators_from_db(financials, state):
+                updated += 1
+        logger.info(f"🔄 reload_states_from_db: {updated}/{len(target)} tickers refreshed from DB")
+        return updated
+
     # ── Tier management ───────────────────────────────────────────────────
 
     @classmethod
