@@ -233,13 +233,39 @@ class DataService:
 
     @classmethod
     def get_top_us_tickers(cls, limit: int = 100) -> list:
-        """Get top US stocks by market cap via KIS API."""
+        """Get top US stocks by market cap via KIS API.
+
+        최종 안전망: KIS 호출/supplements 결과가 50개 미만이면
+        fallback list로 강제 보강 — universe US=3 사태 재발 방지."""
         try:
             tickers = cls._fetch_us_tickers_from_kis(limit)
-            return cls._apply_us_ticker_supplements(tickers, limit)
+            tickers = cls._apply_us_ticker_supplements(tickers, limit)
         except Exception as e:
             logger.error(f"Error fetching top US tickers via KIS: {e}")
-            return [ft for ft, _, _ in cls._build_us_fallback_data(limit=limit)]
+            tickers = [ft for ft, _, _ in cls._build_us_fallback_data(limit=limit)]
+
+        if len(tickers) < 50:
+            logger.warning(
+                f"⚠️ get_top_us_tickers result too small ({len(tickers)}). Force-fallback to hardcoded SP500 list."
+            )
+            existing = set(tickers)
+            for ft, excd, ex_name in cls._build_us_fallback_data(limit=limit):
+                if ft in existing:
+                    continue
+                tickers.append(ft)
+                existing.add(ft)
+                # 메타도 같이 보강 — 추후 KIS 가격 조회 시 exchange_code 필요
+                try:
+                    tr_id, path = StockMetaService.get_api_info("해외주식_상세시세")
+                    StockMetaService.upsert_stock_meta(
+                        ticker=ft, name_ko=ft, market_type="US",
+                        exchange_code=ex_name, api_path=path, api_tr_id=tr_id, api_market_code=excd,
+                    )
+                except Exception:
+                    pass
+                if len(tickers) >= limit:
+                    break
+        return tickers
 
     @classmethod
     def _fetch_kr_price_history(cls, ticker: str, token: str, start_date: str, end_date: str) -> pd.DataFrame:

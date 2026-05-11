@@ -184,6 +184,20 @@ class TradingStrategyService:
 
         kr_tickers = [_norm_ticker(t) for t in DataService.get_top_krx_tickers(limit=100)] if run_kr else []
         us_tickers = [_norm_ticker(t) for t in DataService.get_top_us_tickers(limit=100)] if run_us else []
+
+        # KIS VTS US ranking이 빈 응답/일부만 반환할 때 fallback list 강제 보강.
+        # 운영에서 US universe=3 (보유 종목만)으로 떨어지는 사태 재발 방지.
+        if run_us and len([t for t in us_tickers if t and t.isalpha()]) < 50:
+            logger.warning(
+                f"⚠️ get_top_us_tickers returned only {len(us_tickers)} valid tickers — applying hardcoded fallback (100 SP500)"
+            )
+            try:
+                fallback = DataService._build_us_fallback_data(limit=100)
+                fallback_norm = [_norm_ticker(t) for t, _, _ in fallback]
+                us_tickers = list({t for t in (us_tickers + fallback_norm) if t and t.isalpha()})
+            except Exception as e:
+                logger.error(f"❌ US fallback 적용 실패: {e}")
+
         portfolio = PortfolioService.load_portfolio(user_id)
         holdings = [_norm_ticker(h.ticker) for h in portfolio]
 
