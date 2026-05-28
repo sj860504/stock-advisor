@@ -14,11 +14,12 @@ logger = get_logger("kis_service")
 # KIS API constants
 KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 TOKEN_REQUEST_TIMEOUT = 5
-# 잔고/시세 조회 timeout — 짧게(3s) 두어 KIS 무응답시 빠르게 실패하고 캐시 fallback 사용.
-# 길게 두면 (특히 모의투자 계좌 초기화 후) UI 라우터 호출이 줄줄이 8s × N 누적되어 UI가 멈춤.
-BALANCE_REQUEST_TIMEOUT = 3
+# 잔고/시세 조회 timeout — 5초. 3초는 KIS VTS 해외 API에 너무 짧고, 8초는 UI 막힘.
+BALANCE_REQUEST_TIMEOUT = 5
 ORDER_REQUEST_TIMEOUT = 10
 MAX_BALANCE_RETRIES = 3
+# 해외잔고 실패 후 재시도 백오프 (초). 실패 폭주 차단용.
+OVERSEAS_FAIL_BACKOFF_SEC = 30
 
 
 class KisService:
@@ -27,6 +28,7 @@ class KisService:
     _token_expiry = None
     _last_balance_data = None
     _last_overseas_balance_data = None
+    _overseas_fail_until = None  # datetime — 이 시각까지 해외잔고 재시도 차단
     _req_lock = threading.Lock()
     _last_req_ts = 0.0
     _min_req_interval = 0.55  # ~2 TPS rate limit for VTS
@@ -402,7 +404,22 @@ class KisService:
 
     @classmethod
     def get_overseas_balance(cls) -> Optional[dict]:
-        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Fetches ALL pages. Returns None on failure."""
+        """Get overseas stock balance - all exchanges (NYSE/NASD/AMEX). Fetches ALL pages.
+        실패 시 OVERSEAS_FAIL_BACKOFF_SEC(30초) 동안 재시도 차단 — UI 라우터 호출 폭주 방지."""
+        from datetime import datetime, timedelta
+
+        # 1) 백오프 윈도우 내라면 호출 자체를 skip
+        now = datetime.now()
+        if cls._overseas_fail_until and now < cls._overseas_fail_until:
+            remaining = int((cls._overseas_fail_until - now).total_seconds())
+            if cls._last_overseas_balance_data:
+                logger.debug(f"⏸ Overseas balance 백오프 중 ({remaining}s 남음). stale 캐시 반환.")
+                stale_copy = dict(cls._last_overseas_balance_data)
+                stale_copy["_stale"] = True
+                return stale_copy
+            logger.debug(f"⏸ Overseas balance 백오프 중 ({remaining}s 남음). None 반환.")
+            return None
+
         cano, acnt_prdt_cd = cls._get_account_parts()
         if not cano:
             return None
@@ -426,9 +443,14 @@ class KisService:
                 result = cls._fetch_all_pages_for_tr_id(tr_id, url, base_params)
                 if result:
                     cls._last_overseas_balance_data = result
+                    cls._overseas_fail_until = None  # 성공 시 백오프 해제
                     return result
             except Exception as e:
                 logger.warning(f"⚠️ Overseas balance tr_id={tr_id} failed: {e}")
+
+        # 모든 TR ID 실패 → 백오프 설정
+        cls._overseas_fail_until = now + timedelta(seconds=OVERSEAS_FAIL_BACKOFF_SEC)
+        logger.warning(f"⏸ 해외잔고 실패 — {OVERSEAS_FAIL_BACKOFF_SEC}s 백오프 시작 (until {cls._overseas_fail_until.strftime('%H:%M:%S')})")
 
         if cls._last_overseas_balance_data:
             logger.warning("⚠️ All overseas balance attempts failed. Using last cached result as fallback (stale).")
