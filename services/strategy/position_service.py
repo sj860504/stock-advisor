@@ -437,7 +437,13 @@ class PositionService:
         # [Manual Fix] Reset buy-spent tracker for v1 compatibility before handling each signal
         TradeExecutorService._last_buy_spent_krw = 0.0
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
+        # 가격이 stop_loss 임계 위로 회복했으면 연속손절 카운터 리셋
+        if u.holding and not u.forced_sell:
+            cls._reset_stop_loss_streak(u.ticker, user_state)
         if u.forced_sell and u.holding:
+            # 3일 연속 손절 룰 — 임계 미달 시 매도 보류, 카운터만 누적
+            if not cls._should_execute_stop_loss(u.ticker, u.profit_pct, macro_data, user_state, cfg.today):
+                return False, None, 0.0, 0.0
             (split_orders or {}).pop(u.ticker, None)
             (sell_split_orders or {}).pop(u.ticker, None)
             result = cls._handle_forced_sell(
@@ -457,10 +463,13 @@ class PositionService:
         )
         if trail_result and trail_result.executed:
             return True, u.ticker, 0.0, 0.0
-        if cls._handle_profit_take_signal(u.ticker, u.holding, u.profit_pct, cfg.take_profit_pct, sell_cooldown, cfg.today, u.state, u.score, u.market_total, cash_balance, cfg.exchange_rate, sell_split_orders=sell_split_orders, **common_kwargs):
+        # ticker별 mode×market×regime 기반 동적 파라미터 조회
+        take_profit_pct = cls._get_take_profit_pct(u.ticker, macro_data)
+        stop_loss_pct = cls._get_stop_loss_pct(u.ticker, macro_data)
+        if cls._handle_profit_take_signal(u.ticker, u.holding, u.profit_pct, take_profit_pct, sell_cooldown, cfg.today, u.state, u.score, u.market_total, cash_balance, cfg.exchange_rate, sell_split_orders=sell_split_orders, **common_kwargs):
             return True, u.ticker, 0.0, 0.0
         current_rsi = getattr(u.state, 'rsi', 50.0)
-        add_result = cls._handle_add_buy_signal(u.ticker, u.holding, u.profit_pct, cfg.stop_loss_pct, current_rsi, cfg.add_rsi_limit, cfg.add_score_limit, u.score, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, split_orders=split_orders, **common_kwargs)
+        add_result = cls._handle_add_buy_signal(u.ticker, u.holding, u.profit_pct, stop_loss_pct, current_rsi, cfg.add_rsi_limit, cfg.add_score_limit, u.score, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, split_orders=split_orders, **common_kwargs)
         if add_result.executed:
             return True, u.ticker, add_result.spent_krw, add_result.spent_usd
         result = cls._handle_score_trade(u.ticker, u.holding, u.score, u.reason_str, u.profit_pct, cfg.buy_max, cfg.sell_min, sell_cooldown, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders, sell_split_orders=sell_split_orders)
@@ -469,10 +478,11 @@ class PositionService:
     # ── Trailing Stop ──────────────────────────────────────────────────────────
 
     @classmethod
-    def _get_trailing_stop_pct(cls, macro_data: MacroDataSnapshot) -> float:
-        """레짐별 트레일링 스탑 임계값 반환. BULL: -7%, NEUTRAL/BEAR: -5%."""
-        status = macro_data.market_regime.status if macro_data.market_regime else "Neutral"
-        return -7.0 if status == "Bull" else -5.0
+    def _get_trailing_stop_pct(cls, ticker: str, macro_data: MacroDataSnapshot) -> float:
+        """레짐별 트레일링 스탑 임계값 반환 (ticker × mode × market × regime fallback)."""
+        regime = cls._resolve_regime_key(macro_data)
+        default = -7.0 if regime == "BULL" else -5.0
+        return cls._get_strategy_param("TRAILING_STOP_PCT", ticker, regime, default=default)
 
     @classmethod
     def _update_trailing_high(cls, ticker: str, current_price: float, trailing_high: dict) -> None:
@@ -498,18 +508,19 @@ class PositionService:
         buy_price = float(holding.buy_price or 0)
         profit_pct = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
         max_profit_pct = (high - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
-        
+
         drawdown = (current_price - high) / high * 100
-        
-        # [수익 보존(Tight Stop) 로직] 최고점이 +1.5% 이상 도달했다면, 방어막을 거두고 -1.0%로 매우 조임
-        if max_profit_pct >= 1.5:
-            threshold = -1.0
+
+        # [수익 보존(Tight Stop) 로직] 최고점이 trigger% 이상 도달했다면, 방어막을 tight_stop%로 조임.
+        tight_trigger = cls._get_strategy_param("TIGHT_STOP_TRIGGER_PCT", ticker, regime=None, default=1.5)
+        if max_profit_pct >= tight_trigger:
+            threshold = cls._get_strategy_param("TIGHT_STOP_PCT", ticker, regime=None, default=-1.0)
         else:
-            threshold = cls._get_trailing_stop_pct(macro_data)
-            
+            threshold = cls._get_trailing_stop_pct(ticker, macro_data)
+
         if drawdown > threshold:
             return None
-        logger.info(f"🔻 {ticker} Trailing stop: high={high:,.2f} current={current_price:,.2f} drawdown={drawdown:.1f}% (threshold={threshold:.1f}%)")
+        logger.info(f"🔻 {ticker} Trailing stop: high={high:,.2f} current={current_price:,.2f} drawdown={drawdown:.1f}% (threshold={threshold:.1f}%, tight_trigger={tight_trigger:.1f}%)")
         return cls._handle_forced_sell(
             ticker, holding, profit_pct, current_price, market_total,
             cash_balance, exchange_rate,
@@ -536,6 +547,53 @@ class PositionService:
         for t in expired:
             user_state.panic_locks.pop(t, None)
             logger.info(f"🔓 {t} panic_lock 해제 ({expire_days}일 경과)")
+
+    # ── 3일 연속 손절 룰 (intra-day wick으로 인한 오손절 방지) ─────────────────
+
+    @classmethod
+    def _should_execute_stop_loss(
+        cls, ticker: str, profit_pct: float, macro_data: MacroDataSnapshot,
+        user_state: UserState, today: str,
+    ) -> bool:
+        """STOP_LOSS_CONSECUTIVE_DAYS 룰 적용.
+        - threshold=0 → 즉시 손절 (기본 거동, 룰 비활성)
+        - threshold=N (≥1) → N일 연속 손절 임계 초과 시에만 매도, 그 전엔 카운터만 누적 후 보류
+        Returns True if sell should fire now, False if hold.
+        """
+        if user_state is None:
+            return True
+        threshold_days = int(cls._get_strategy_param(
+            "STOP_LOSS_CONSECUTIVE_DAYS", ticker, regime=None, default=0
+        ))
+        if threshold_days <= 0:
+            return True
+
+        streak = user_state.stop_loss_streak.get(ticker) or {}
+        last_date = (streak.get("last_date") or "") if isinstance(streak, dict) else ""
+        days = int(streak.get("days") or 0) if isinstance(streak, dict) else 0
+
+        if last_date == today:
+            pass  # 같은 날 재호출 — 카운트 유지
+        else:
+            days += 1
+
+        user_state.stop_loss_streak[ticker] = {"days": days, "last_date": today}
+
+        if days >= threshold_days:
+            user_state.stop_loss_streak.pop(ticker, None)  # 매도 실행 직전 리셋
+            return True
+
+        logger.info(f"⏸ {ticker} 연속손절룰: {days}/{threshold_days}일 (PnL={profit_pct:.2f}% — 오늘 매도 보류)")
+        return False
+
+    @staticmethod
+    def _reset_stop_loss_streak(ticker: str, user_state: UserState) -> None:
+        """profit_pct가 stop_loss 임계 위로 회복 시 카운터 리셋."""
+        if user_state is None:
+            return
+        if ticker in user_state.stop_loss_streak:
+            logger.debug(f"🔄 {ticker} 연속손절 카운터 리셋 (가격 회복)")
+            user_state.stop_loss_streak.pop(ticker, None)
 
     # ── Forced Sell (Stop-Loss) ────────────────────────────────────────────────
 
@@ -567,6 +625,7 @@ class PositionService:
         cfg: ExecutionConfig, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float,
         sell_cooldown: dict, sell_split_orders: dict,
+        user_state: UserState = None,
     ) -> tuple:
         """Stop-loss/profit-taking check for holdings outside monitoring universe (ETFs, etc.).
         Returns (trade_executed: bool, executed_tickers: set)."""
@@ -581,7 +640,7 @@ class PositionService:
             executed, ticker = cls._process_unmonitored_holding(
                 h, kr_total, us_total_krw, cash_balance, cfg, macro_data,
                 target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders,
-                holdings, user_id,
+                holdings, user_id, user_state=user_state,
             )
             if executed and ticker:
                 executed_tickers.add(ticker)
@@ -595,6 +654,7 @@ class PositionService:
         target_cash_kr: float, target_cash_us: float,
         sell_cooldown: dict, sell_split_orders: dict,
         holdings: list[HoldingSchema], user_id: str,
+        user_state: UserState = None,
     ) -> tuple[bool, Optional[str]]:
         """단일 미감시 종목의 가격 조회 및 손절/익절 실행. (executed, ticker_or_None) 반환."""
         ticker = h.ticker
@@ -611,15 +671,23 @@ class PositionService:
             holdings=holdings, user_id=user_id, macro_data=macro_data,
             target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
         )
-        if profit_pct <= cfg.stop_loss_pct:
+        # ticker별 mode×market×regime 기반 동적 파라미터 조회
+        take_profit_pct = cls._get_take_profit_pct(ticker, macro_data)
+        stop_loss_pct = cls._get_stop_loss_pct(ticker, macro_data)
+        if profit_pct <= stop_loss_pct:
+            # 3일 연속 룰 — 임계 미달이면 카운터만 누적 후 보류
+            if not cls._should_execute_stop_loss(ticker, profit_pct, macro_data, user_state, cfg.today):
+                return False, None
             result = cls._handle_forced_sell(
                 ticker, h, profit_pct, current_price, market_total,
                 cash_balance, cfg.exchange_rate, **common_kwargs,
             )
             return result.executed, ticker if result.executed else None
-        elif profit_pct >= cfg.take_profit_pct:
+        else:
+            cls._reset_stop_loss_streak(ticker, user_state)
+        if profit_pct >= take_profit_pct:
             executed = cls._handle_profit_take_signal(
-                ticker, h, profit_pct, cfg.take_profit_pct,
+                ticker, h, profit_pct, take_profit_pct,
                 sell_cooldown, cfg.today, cached_state, 0,
                 market_total, cash_balance, cfg.exchange_rate,
                 sell_split_orders=sell_split_orders, **common_kwargs,
@@ -658,44 +726,100 @@ class PositionService:
             add_buy_cooldown.pop(t)
             logger.debug(f"🧹 {t} add_buy_cooldown 만료 항목 제거")
 
+    # ── Mode × Market × Regime 파라미터 조회 ────────────────────────────────────
+    #
+    # 키 컨벤션: STRATEGY_{MODE}_{MARKET}_{PARAM}_{REGIME}
+    #   MODE   = TOP100 | WATCHLIST  (kr_strategy_mode / us_strategy_mode setting)
+    #   MARKET = KR | US
+    #   PARAM  = TAKE_PROFIT_PCT | STOP_LOSS_PCT | TRAILING_STOP_PCT
+    #          | TIGHT_STOP_TRIGGER_PCT | TIGHT_STOP_PCT | STOP_LOSS_CONSECUTIVE_DAYS
+    #   REGIME = BULL | NEUTRAL | BEAR | WEAK_BEAR  (TIGHT_*, CONSECUTIVE_DAYS는 omit)
+    #
+    # Fallback 체인 (위→아래):
+    #   1) STRATEGY_{MODE}_{MARKET}_{PARAM}_{REGIME}
+    #   2) STRATEGY_{MARKET}_{PARAM}_{REGIME}
+    #   3) STRATEGY_{PARAM}_{REGIME}    (레거시)
+    #   4) default
+
     @classmethod
-    def _get_take_profit_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
-        """레짐 점수(regime_score) 기반 익절 기준 반환.
-        - Deep Bear (0~35):  익절  3% - 민첩하게 수익 실현
-        - Weak Bear (36~45): 익절  5% - 전환 신호 구간
-        - Neutral (46~55):  익절  7% - 상승 추세 홀딩
-        - Bull (56+):       익절 10% - 수익 극대화
-        """
+    def _resolve_regime_key(cls, macro_data: MacroDataSnapshot = None) -> str:
+        """레짐 → 키 suffix (BULL/NEUTRAL/BEAR/WEAK_BEAR) 통일 변환."""
         regime = (macro_data.market_regime.status if macro_data and macro_data.market_regime else "Neutral").upper()
         score = (macro_data.market_regime.regime_score if macro_data and macro_data.market_regime else -1)
-        if regime == "BULL":
-            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BULL", 10.0)
-        elif regime == "BEAR":
-            # Weak Bear (36~45): Bear 판정이지만 회복 신호 구간
-            if score >= 36:
-                return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_WEAK_BEAR", 5.0)
-            # Deep Bear (0~35): 민첩하게 수익 실현
-            return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_BEAR", 3.0)
-        return SettingsService.get_float("STRATEGY_TAKE_PROFIT_PCT_NEUTRAL", 7.0)
+        if regime == "BEAR" and score >= 36:
+            return "WEAK_BEAR"
+        return regime  # BULL / NEUTRAL / BEAR
+
+    @staticmethod
+    def _get_mode_for_market(market: str) -> str:
+        """현재 시장(KR/US)의 strategy mode 조회. 기본 top100."""
+        from repositories.settings_repo import SettingsRepo
+        key = "kr_strategy_mode" if market.upper() == "KR" else "us_strategy_mode"
+        return (SettingsRepo.get(key) or "top100").lower()
+
+    @classmethod
+    def _get_strategy_param(
+        cls, param: str, ticker: str, regime: str = None, default: float = 0.0
+    ) -> float:
+        """Mode × Market × Regime fallback 체인으로 strategy param 조회."""
+        market = "KR" if is_kr(ticker) else "US"
+        mode = cls._get_mode_for_market(market).upper()
+        param = param.upper()
+        regime_u = regime.upper() if regime else None
+
+        candidates = []
+        if regime_u:
+            candidates.append(f"STRATEGY_{mode}_{market}_{param}_{regime_u}")
+            candidates.append(f"STRATEGY_{market}_{param}_{regime_u}")
+            candidates.append(f"STRATEGY_{param}_{regime_u}")
+        else:
+            candidates.append(f"STRATEGY_{mode}_{market}_{param}")
+            candidates.append(f"STRATEGY_{market}_{param}")
+            candidates.append(f"STRATEGY_{param}")
+
+        for key in candidates:
+            val = SettingsService.get_setting(key)
+            if val is None or val == "":
+                continue
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                continue
+        return default
+
+    @classmethod
+    def _get_take_profit_pct(cls, ticker: str, macro_data: MacroDataSnapshot = None) -> float:
+        regime = cls._resolve_regime_key(macro_data)
+        default = {"BULL": 10.0, "WEAK_BEAR": 5.0, "BEAR": 3.0}.get(regime, 7.0)
+        return cls._get_strategy_param("TAKE_PROFIT_PCT", ticker, regime, default=default)
+
+    @classmethod
+    def _get_stop_loss_pct(cls, ticker: str, macro_data: MacroDataSnapshot = None) -> float:
+        regime = cls._resolve_regime_key(macro_data)
+        default = {"WEAK_BEAR": -3.0, "BEAR": -5.0}.get(regime, -5.0)
+        return cls._get_strategy_param("STOP_LOSS_PCT", ticker, regime, default=default)
+
+    # ── Backward-compat thin wrappers (regime-only, no ticker) ────────────────
+    # ExecutionConfig.{take_profit_pct, stop_loss_pct} 필드 호환을 위해 유지.
+    # ticker-aware lookup이 도입된 _route_signal/_handle_trailing_stop 외 호출처에서만 사용.
+    @classmethod
+    def _get_take_profit_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
+        regime = cls._resolve_regime_key(macro_data)
+        key = f"STRATEGY_TAKE_PROFIT_PCT_{regime}"
+        default = {"BULL": 10.0, "WEAK_BEAR": 5.0, "BEAR": 3.0}.get(regime, 7.0)
+        return SettingsService.get_float(key, default)
 
     @classmethod
     def _get_stop_loss_pct_by_regime(cls, macro_data: MacroDataSnapshot = None) -> float:
-        """레짐 점수(regime_score) 기반 손절 기준 반환.
-        - Deep Bear (0~35):  -5%  - 민첩하게 손절
-        - Weak Bear (36~45): -3%  - 회복 구간, 빠른 컷
-        - Neutral/Bull:      -5%  - 추세 유지, 여유 있게
-        """
-        regime = (macro_data.market_regime.status if macro_data and macro_data.market_regime else "Neutral").upper()
-        score = (macro_data.market_regime.regime_score if macro_data and macro_data.market_regime else -1)
-        if regime == "BEAR":
-            if score >= 36:  # Weak Bear
-                return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_WEAK_BEAR", -3.0)
-            return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_BEAR", -5.0)  # Deep Bear
-        return SettingsService.get_float("STRATEGY_STOP_LOSS_PCT_NEUTRAL", -5.0)  # Neutral / Bull
+        regime = cls._resolve_regime_key(macro_data)
+        key = f"STRATEGY_STOP_LOSS_PCT_{regime}"
+        default = {"WEAK_BEAR": -3.0, "BEAR": -5.0}.get(regime, -5.0)
+        return SettingsService.get_float(key, default)
 
     @classmethod
     def _load_execution_config(cls, macro_data: MacroDataSnapshot = None) -> ExecutionConfig:
-        """SettingsService에서 실행 설정값 일괄 조회 후 ExecutionConfig 반환."""
+        """SettingsService에서 실행 설정값 일괄 조회 후 ExecutionConfig 반환.
+        take_profit_pct/stop_loss_pct는 레짐 기준 fallback값 — 실제 분기는 _route_signal/_handle_trailing_stop에서 ticker별 _get_strategy_param 사용."""
         return ExecutionConfig(
             buy_max=SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30),
             sell_min=SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70),
@@ -787,6 +911,7 @@ class PositionService:
         unmon_executed, unmon_tickers = cls._check_unmonitored_holdings(
             prepared_signals, holdings, user_id, kr_total, us_total_krw, cash_balance,
             cfg, macro_data, target_cash_kr, target_cash_us, sell_cooldown, sell_split_orders,
+            user_state=user_state,
         )
         trade_executed = unmon_executed or trade_executed
         executed_tickers |= unmon_tickers

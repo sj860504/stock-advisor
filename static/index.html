@@ -540,11 +540,16 @@
                     <div class="card-title">⚙️ 전략 설정
                         <button class="btn btn-outline btn-sm" onclick="fetchSettings()">🔄</button>
                     </div>
-                    <div class="tbl-wrap" style="max-height:500px;overflow-y:auto">
+                    <div style="margin-bottom:8px">
+                        <input type="text" id="settings-filter" placeholder="🔍 키 또는 설명으로 검색…"
+                            oninput="fetchSettings()"
+                            style="width:100%;padding:8px;font-size:.85rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-family:var(--mono)">
+                    </div>
+                    <div class="tbl-wrap" style="max-height:560px;overflow-y:auto">
                         <table>
                             <thead>
                                 <tr>
-                                    <th>설정 키</th>
+                                    <th>설정 키 / 설명</th>
                                     <th>현재값</th>
                                     <th>수정</th>
                                 </tr>
