@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 from services.base.scheduler_service import SchedulerService
 from services.kis.kis_ws_service import kis_ws_service
@@ -77,13 +77,19 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-@app.get("/", response_class=FileResponse)
+# 부팅 시점 timestamp — 정적 asset 캐시 무효화용 (브라우저가 재시작 후 새 JS/CSS 받음)
+import time as _time
+_ASSET_VERSION = str(int(_time.time()))
+
+@app.get("/")
 def serve_dashboard():
-    """Dashboard main page."""
+    """Dashboard main page. {ASSET_VERSION} placeholder를 부팅 timestamp로 치환."""
     index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
+    if not os.path.exists(index_path):
+        return {"message": "Welcome to Sean's Stock Advisor API. Use /docs for documentation."}
+    with open(index_path, "r", encoding="utf-8") as f:
+        html = f.read().replace("{ASSET_VERSION}", _ASSET_VERSION)
+    return HTMLResponse(content=html)
 
 # Register routers
 app.include_router(auth_router.router, prefix="/api")
