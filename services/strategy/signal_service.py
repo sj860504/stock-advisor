@@ -169,7 +169,7 @@ class SignalService:
 
     @classmethod
     def _score_bonuses(cls, ticker: str, holding, macro: MacroDataSnapshot, user_state: UserState) -> tuple:
-        """[E-G] Top10 market cap / user weight / sector weight bonuses -> (delta, reasons)"""
+        """[E-F] Top10 market cap / user weight bonuses -> (delta, reasons). 섹터 보정 제거."""
         delta = 0
         reasons = []
         top10_bonus = SettingsService.get_int("STRATEGY_TOP10_BONUS", 10)
@@ -181,20 +181,6 @@ class SignalService:
             custom_bonus = int(overrides[ticker])
             if custom_bonus != 0:
                 delta += custom_bonus; reasons.append(f"user_weight_override({custom_bonus:+d})")
-
-        try:
-            grp = TradeExecutorService._get_sector_group(ticker, holding)
-            if grp != "other":
-                exchange_rate_g = MacroService.get_exchange_rate()
-                all_holdings = PortfolioService.load_portfolio(user_state.user_id)
-                sw = TradeExecutorService._get_sector_group_weights(all_holdings, exchange_rate_g)
-                dev = sw["weights"].get(grp, {}).get("dev", 0.0)
-                if dev < -TradeExecutorService.SECTOR_REBAL_THRESHOLD:
-                    delta -= 10; reasons.append(f"sector_underweight_buy_priority({grp} {dev:+.1%})")
-                elif dev > TradeExecutorService.SECTOR_REBAL_THRESHOLD:
-                    delta += 10; reasons.append(f"sector_overweight_sell_priority({grp} {dev:+.1%})")
-        except Exception:
-            pass
         return delta, reasons
 
     # ── Score Integration ─────────────────────────────────────────────────────────────

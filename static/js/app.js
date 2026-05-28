@@ -52,7 +52,7 @@ function switchTab(el, tabId) {
     document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
     document.getElementById(tabId).classList.add('active');
     const loaders = {
-        dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchSectorWeightsMini(); fetchPortfolioFull(); },
+        dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchPortfolioFull(); },
         history:   () => { fetchHistory(); },
         market:    () => { fetchTop20(); fetchSignals(); },
         trading:   () => { fetchWaitingList(); fetchStrategyStatus(); },
@@ -354,13 +354,6 @@ async function syncPortfolio() {
     } catch (e) { showToast(e.message, false); }
 }
 
-const SECTOR_OPTIONS = [
-    { value: 'other',     label: '── 미분류/ETF ──' },
-    { value: 'tech',      label: '💻 기술주' },
-    { value: 'value',     label: '🏥 가치주' },
-    { value: 'financial', label: '🏦 금융주' },
-];
-
 function renderPortfolioTable(data) {
     const tbody = document.getElementById('portfolio-tbody');
     if (!data?.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">보유 종목 없음</td></tr>'; return; }
@@ -377,6 +370,12 @@ function renderPortfolioTable(data) {
         const s      = getSym(d);
         const retColor   = ret >= 0 ? 'var(--bull)' : 'var(--bear)';
         const barWidth   = Math.min(Math.abs(ret ?? 0) * 2, 100);
+        // 점수: signal_service 가 매긴 1~100 (BUY ≤ buy_threshold, SELL ≥ sell_threshold)
+        const score    = d.score;
+        const scoreCls = (score == null) ? 'b-gray'
+                       : (score <= 30 ? 'b-up'     // BUY 권장
+                       : (score >= 70 ? 'b-down'   // SELL 권장
+                       : 'b-gray'));
         return `<tr>
             <td><span class="ticker-cell">${d.ticker}</span><span class="sub-text">${d.name || ''}</span></td>
             <td class="mono">${fmtCurr(d.buy_price ?? d.avg_price, s)}</td>
@@ -389,12 +388,7 @@ function renderPortfolioTable(data) {
             </td>
             <td class="mono" style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi, 1)}</span></td>
-            <td>
-                <select style="width:110px;padding:3px 6px;font-size:.75rem"
-                    onchange="updateSector('${d.ticker}', this.value)">
-                    ${SECTOR_OPTIONS.map(o => `<option value="${o.value}"${o.value === (d.sector || 'other') ? ' selected' : ''}>${o.label}</option>`).join('')}
-                </select>
-            </td>
+            <td><span class="badge ${scoreCls}">${score != null ? score : '-'}</span></td>
             <td class="text-center">
                 ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
                 ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
@@ -407,14 +401,6 @@ function renderPortfolioTable(data) {
             </td>
         </tr>`;
     }).join('');
-}
-
-async function updateSector(ticker, sector) {
-    try {
-        await apiFetch(`/portfolio/${USER}/${encodeURIComponent(ticker)}/sector?sector=${encodeURIComponent(sector)}`, { method: 'PATCH' });
-        showToast(`${ticker} 섹터 → ${sector}`);
-        fetchSectorWeightsMini();
-    } catch (e) { showToast(e.message, false); }
 }
 
 async function deleteHolding(ticker) {
@@ -545,169 +531,6 @@ function renderBalanceContent(data) {
         <div style="width:1px;background:var(--border)"></div>
         <div style="text-align:center"><div style="color:var(--sub);margin-bottom:2px">보유주식</div><b class="mono">${dispStockStr}</b> <span style="font-size:.78rem;color:var(--sub)">(${fmtPct(stockPct,false)})</span></div>
     </div>${pendingHtml}`;
-}
-
-// ─── Sector Weights ────────────────────────────────────────────────────────
-const SECTOR_LABELS = { tech: '기술주', value: '가치주', financial: '금융주' };
-const SECTOR_ICONS  = { tech: '💻', value: '🏥', financial: '🏦' };
-
-let sectorMarketTab      = 'kr';
-let sectorTargetOverrides = {};
-let _sectorDataCache     = null;
-
-function switchSectorTab(market) {
-    sectorMarketTab = market;
-    sectorTargetOverrides = {};
-    document.querySelectorAll('.sector-mkt-tab').forEach(b => b.classList.remove('active'));
-    const tab = document.getElementById('sector-tab-' + market);
-    if (tab) tab.classList.add('active');
-    if (_sectorDataCache) {
-        const el = document.getElementById('sector-weights-content');
-        if (el) el.innerHTML = renderSectorWeightsFull(_sectorDataCache[market] || {}, market);
-    } else fetchSectorWeights();
-}
-
-async function fetchSectorWeights() {
-    const el = document.getElementById('sector-weights-content');
-    if (el) el.innerHTML = '<div class="empty">Loading...</div>';
-    try {
-        const data = await apiFetch('/analysis/sector-weights?user_id=' + USER);
-        _sectorDataCache = data;
-        const mktData = data?.[sectorMarketTab] || {};
-        if (el) el.innerHTML = renderSectorWeightsFull(mktData, sectorMarketTab);
-        renderSectorMini(data?.kr || {});
-    } catch (e) {
-        if (el) el.innerHTML = `<div class="empty" style="color:var(--bear)">오류: ${e.message}</div>`;
-    }
-}
-
-async function fetchSectorWeightsMini() {
-    try {
-        const data = await apiFetch('/analysis/sector-weights?user_id=' + USER);
-        _sectorDataCache = data;
-        renderSectorMini(data?.kr || {});
-    } catch (e) {}
-}
-
-function renderSectorMini(mktData) {
-    const el = document.getElementById('sector-mini-content');
-    if (!el) return;
-    const weights = mktData?.weights || {};
-    el.innerHTML = ['tech','value','financial'].map(g => {
-        const w   = weights[g] || {};
-        const cur = (w.weight ?? w.current ?? 0) * 100;
-        const tgt = (w.target ?? 0) * 100;
-        const dev = (w.dev ?? 0) * 100;
-        const barColor = Math.abs(dev) < 5 ? 'var(--bull)' : dev > 0 ? 'var(--bear)' : 'var(--warn)';
-        return `<div style="margin-bottom:8px">
-            <div style="display:flex;justify-content:space-between;font-size:.77rem;margin-bottom:2px">
-                <span>${SECTOR_ICONS[g]} ${SECTOR_LABELS[g]}</span>
-                <span style="color:${barColor};font-weight:700;font-family:var(--mono)">${cur.toFixed(1)}%
-                    <span style="color:var(--sub);font-weight:400">(목표 ${tgt.toFixed(0)}%)</span></span>
-            </div>
-            <div class="sector-mini-bar">
-                <div class="sector-mini-fill" style="width:${Math.min(cur,100)}%;background:${barColor}"></div>
-                <div style="position:absolute;top:0;left:${Math.min(tgt,100)}%;width:2px;height:100%;background:rgba(255,255,255,.4)"></div>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-function renderSectorWeightsFull(mktData, market) {
-    const weights   = mktData?.weights || {};
-    const underweight = mktData?.underweight || [];
-    const overweight  = mktData?.overweight  || [];
-    const currency  = mktData?.currency || (market === 'us' ? 'USD' : 'KRW');
-    const totalVal  = mktData?.total || 0;
-
-    const otherW   = weights['other'] || {};
-    const otherCur = (otherW.weight ?? otherW.current ?? 0) * 100;
-    const otherWarning = otherCur > 10
-        ? `<div style="background:rgba(255,215,64,.08);border:1px solid rgba(255,215,64,.25);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:.8rem">
-            ⚠️ <b style="color:var(--warn)">${otherCur.toFixed(1)}%</b>가 미분류(기타)로 집계되어 섹터 비중이 부정확합니다.</div>`
-        : '';
-
-    const weightRows = ['tech','value','financial'].map(g => {
-        const w = weights[g] || {};
-        const cur = (w.weight ?? w.current ?? 0) * 100;
-        const overrideKey = market + '_' + g;
-        const tgt = sectorTargetOverrides[overrideKey] != null ? sectorTargetOverrides[overrideKey] : (w.target ?? 0) * 100;
-        const dev = cur - tgt;
-        const isOk = Math.abs(dev) < 5;
-        const isOver = dev > 5;
-        const barColor = isOk ? 'var(--bull)' : isOver ? 'var(--bear)' : 'var(--warn)';
-        const devBadge = isOk ? `<span class="badge b-up">적정</span>`
-            : isOver ? `<span class="badge b-down">+${dev.toFixed(1)}% 초과</span>`
-            : `<span class="badge b-warn">${dev.toFixed(1)}% 부족</span>`;
-        return `<div class="sector-row">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                <div>
-                    <span style="font-weight:700;font-size:.93rem">${SECTOR_ICONS[g]} ${SECTOR_LABELS[g]}</span>
-                    <span style="color:var(--sub);font-size:.77rem;margin-left:8px">현재 <b class="mono">${cur.toFixed(1)}%</b></span>
-                </div>
-                <div style="display:flex;align-items:center;gap:10px">
-                    ${devBadge}
-                    <span class="mono" style="font-size:.95rem;font-weight:800;color:${barColor}">${cur.toFixed(1)}%</span>
-                </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-                <span style="font-size:.77rem;color:var(--sub);white-space:nowrap">목표:</span>
-                <input type="range" min="0" max="100" step="1" value="${Math.round(tgt)}" style="flex:1;height:6px;cursor:pointer"
-                    oninput="updateSectorTarget('${market}','${g}',this.value)" id="sector-slider-${market}-${g}">
-                <span id="sector-tgt-val-${market}-${g}" class="mono" style="font-size:.83rem;font-weight:700;min-width:36px;text-align:right">${Math.round(tgt)}%</span>
-            </div>
-            <div class="sector-bar-outer">
-                <div class="sector-bar-fill2" style="width:${Math.min(cur,100)}%;background:${barColor}"></div>
-                <div class="sector-target-line" style="left:${Math.min(tgt,100)}%"></div>
-            </div>
-        </div>`;
-    }).join('');
-
-    const renderHoldingList = (list) => list.length
-        ? list.map(h => {
-            const label = (h.name && h.name !== h.ticker) ? h.name : (h.ticker ?? h);
-            return `<span title="${h.ticker??''}" style="display:inline-block;padding:2px 8px;background:var(--raised);border-radius:4px;font-size:.78rem;margin:2px">${label}</span>`;
-        }).join('')
-        : '<span style="color:var(--sub);font-size:.8rem">없음</span>';
-
-    const sym = currency === 'USD' ? '$' : '₩';
-    const totalLabel = totalVal ? `<div style="font-size:.78rem;color:var(--sub);margin-bottom:12px">총 주식 평가액: ${sym}${Math.round(totalVal).toLocaleString()}</div>` : '';
-
-    return `${totalLabel}${otherWarning}${weightRows}
-        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
-            <button class="btn btn-outline btn-sm" onclick="resetSectorTargets()">초기화</button>
-            <button class="btn btn-primary btn-sm" onclick="saveSectorTargets('${market}')">목표 저장</button>
-        </div>
-        <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div><div class="section-title" style="margin-bottom:6px">매수 우선 (부족 섹터)</div><div>${renderHoldingList(underweight)}</div></div>
-            <div><div class="section-title" style="margin-bottom:6px">매도 고려 (초과 섹터)</div><div>${renderHoldingList(overweight)}</div></div>
-        </div>`;
-}
-
-function updateSectorTarget(market, group, val) {
-    sectorTargetOverrides[market + '_' + group] = parseInt(val);
-    const lbl = document.getElementById('sector-tgt-val-' + market + '-' + group);
-    if (lbl) lbl.textContent = val + '%';
-}
-function resetSectorTargets() { sectorTargetOverrides = {}; fetchSectorWeights(); }
-
-async function saveSectorTargets(market) {
-    market = market || sectorMarketTab;
-    const marketEntries = Object.entries(sectorTargetOverrides).filter(([k]) => k.startsWith(market + '_'));
-    if (!marketEntries.length) { showToast('변경된 목표 없음', false); return; }
-    try {
-        await Promise.all(marketEntries.map(([k, v]) => {
-            const group = k.replace(market + '_', '');
-            return apiFetch('/trading/settings', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: `SECTOR_TARGET_${market.toUpperCase()}_${group.toUpperCase()}`, value: String(v / 100) }),
-            });
-        }));
-        showToast('섹터 목표 비중 저장됨');
-        sectorTargetOverrides = {};
-        fetchSectorWeights();
-    } catch (e) { showToast(e.message, false); }
 }
 
 // ─── Economic Calendar ─────────────────────────────────────────────────────
@@ -1612,7 +1435,6 @@ async function initApp() {
         fetchBalance(),
         fetchMacroBar(),
         fetchStrategyStatus(),
-        fetchSectorWeightsMini(),
         fetchPortfolioFull(),
     ]);
     connectPriceStream();

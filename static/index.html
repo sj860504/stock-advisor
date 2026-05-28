@@ -127,7 +127,7 @@
                                 <th class="sortable" onclick="handleSort('portfolio-tbody',5,()=>renderPortfolioTable(_portfolioDataCache))">수익률</th>
                                 <th class="sortable" onclick="handleSort('portfolio-tbody',6,()=>renderPortfolioTable(_portfolioDataCache))">DCF 적정가</th>
                                 <th class="sortable" onclick="handleSort('portfolio-tbody',7,()=>renderPortfolioTable(_portfolioDataCache))">RSI</th>
-                                <th>섹터</th>
+                                <th class="sortable" onclick="handleSort('portfolio-tbody',8,()=>renderPortfolioTable(_portfolioDataCache))">점수</th>
                                 <th class="text-center">쿨다운</th>
                                 <th></th>
                             </tr>
@@ -152,13 +152,6 @@
                     </div>
                     <div id="regime-components" style="margin-top:16px"></div>
                 </div>
-                <!-- Sector Mini Card -->
-                    <div class="card mt" id="sector-mini-card">
-                        <div class="card-title" style="margin-bottom:10px"><span>🏗️ 섹터 비중</span></div>
-                        <div id="sector-mini-content">
-                            <div class="empty" style="font-size:.8rem;padding:10px 0">-</div>
-                        </div>
-                    </div>
                 </div>
             </div>
 

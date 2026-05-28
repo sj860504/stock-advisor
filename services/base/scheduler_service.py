@@ -58,7 +58,6 @@ class SchedulerService:
         cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=15, minute=35, id='kr_close_report')
         cls._scheduler.add_job(cls.send_market_close_report, 'cron', hour=6, minute=5, id='us_close_report')
         cls._scheduler.add_job(cls.report_daily_trade_history, 'cron', hour=9, minute=0)
-        cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
         cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
         cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
         # UI read/write 분리 — 5분 주기로 score 캐시 갱신 (DB upsert).
@@ -353,15 +352,6 @@ class SchedulerService:
             logger.info(f"📤 Daily trade history report sent: {len(trades)} trades.")
         except Exception as e:
             logger.error(f"❌ Error in daily trade history report: {e}")
-
-    @classmethod
-    def run_rebalancing(cls) -> None:
-        """Execute portfolio rebalancing."""
-        logger.info("⚖️ Running daily Portfolio Rebalancing check...")
-        try:
-            PortfolioService.rebalance_portfolio("sean")
-        except Exception as e:
-            logger.error(f"❌ Error during rebalancing: {e}")
 
     @classmethod
     def _filter_active_low_tickers(cls, low_tickers: list, is_kr_open: bool, is_us_open: bool) -> list:
