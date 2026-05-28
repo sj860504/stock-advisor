@@ -14,3 +14,8 @@ output.log
 .venv/
 
 logs/
+
+# KIS 토큰 캐시 (로컬 검증용) — 절대 커밋 금지
+data/.kis_token_cache.json
+data/*.db
+data/*.db-journal
