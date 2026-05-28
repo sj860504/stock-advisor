@@ -135,8 +135,8 @@ async def get_balance() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/waiting-list", response_model=List[Dict[str, Any]])
-async def get_waiting_list() -> List[Dict[str, Any]]:
+@router.get("/waiting-list", response_model=Dict[str, Any])
+async def get_waiting_list() -> Dict[str, Any]:
     """Get trade waiting list (BUY/SELL signals)."""
     try:
         items = TradingStrategyService.get_waiting_list()

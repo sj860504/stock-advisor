@@ -62,11 +62,12 @@ class SchedulerService:
         cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
         cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
         # UI read/write 분리 — 5분 주기로 score 캐시 갱신 (DB upsert).
-        # next_run_time: 부팅 직후 30초 뒤 즉시 1차 실행 (UI가 빈 캐시 마주치지 않도록).
+        # 1코어/1GB 환경: 부팅 직후엔 UI 응답 우선 → 5분 후 첫 실행
+        # (score는 5분 stale 허용; 그 사이 buy_list/sell_list만 비어 보일 뿐 큰 문제 없음)
         from datetime import datetime as _dt, timedelta as _td
         cls._scheduler.add_job(
             cls._refresh_signal_cache, 'interval', minutes=5,
-            id='refresh_signal_cache', next_run_time=_dt.now() + _td(seconds=30),
+            id='refresh_signal_cache', next_run_time=_dt.now() + _td(minutes=5),
         )
         cls._register_econ_vix_jobs(_ET)
 

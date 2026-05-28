@@ -165,11 +165,20 @@ class MacroService:
         return data
 
     _last_exchange_rate: Optional[float] = None  # 직전 성공 환율 캐시
+    _exchange_rate_cached_at: Optional[float] = None  # epoch sec — TTL 캐시
+    _EXCHANGE_RATE_TTL_SEC: int = 300  # 5분
 
     @classmethod
     def get_exchange_rate(cls) -> float:
-        """USD/KRW exchange rate via yfinance.
-        Fallback chain: yfinance → 직전 성공값 캐시 → 1400."""
+        """USD/KRW exchange rate via yfinance — 5분 메모리 캐시.
+        Fallback chain: 5분 캐시 → yfinance → 직전 성공값 → 1400."""
+        import time
+        now = time.time()
+        # 5분 캐시 hit
+        if (cls._last_exchange_rate and cls._last_exchange_rate > 0 and
+            cls._exchange_rate_cached_at and (now - cls._exchange_rate_cached_at) < cls._EXCHANGE_RATE_TTL_SEC):
+            return cls._last_exchange_rate
+        # 만료 → yfinance 재조회
         try:
             import yfinance as yf
             data = yf.Ticker("USDKRW=X").history(period="5d")
@@ -177,12 +186,13 @@ class MacroService:
                 rate = float(data["Close"].dropna().iloc[-1])
                 if rate > 0:
                     cls._last_exchange_rate = rate
+                    cls._exchange_rate_cached_at = now
                     logger.info(f"💱 Exchange rate (yfinance): {rate:.2f}")
                     return rate
         except Exception as e:
             logger.warning(f"⚠️ Failed to fetch exchange rate from yfinance: {e}")
         if cls._last_exchange_rate and cls._last_exchange_rate > 0:
-            logger.info(f"💱 Using cached exchange rate: {cls._last_exchange_rate:.2f}")
+            logger.debug(f"💱 Using stale cached exchange rate: {cls._last_exchange_rate:.2f}")
             return cls._last_exchange_rate
         logger.warning("⚠️ Using fallback exchange rate: 1400.0 (no cache available)")
         return 1400.0

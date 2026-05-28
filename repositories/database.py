@@ -7,7 +7,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import create_engine, Engine, event
 from sqlalchemy.orm import sessionmaker, scoped_session, Session
 from sqlalchemy.exc import OperationalError
 from utils.logger import get_logger
@@ -32,7 +32,23 @@ def _create_engine_and_session() -> None:
         max_overflow=50,
         pool_pre_ping=True,
         pool_recycle=3600,
+        # 1코어/저메모리 환경 동시성 — WAL + busy_timeout
+        connect_args={"check_same_thread": False, "timeout": 15.0},
     )
+
+    # 매 connection PRAGMA 적용 — read/write 동시성 + 안전성 보장
+    @event.listens_for(_engine, "connect")
+    def _on_connect(dbapi_conn, conn_record):
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")       # 동시 read/write
+            cursor.execute("PRAGMA synchronous=NORMAL")     # 적당히 빠름 (FULL은 너무 느림)
+            cursor.execute("PRAGMA busy_timeout=15000")     # 15s 락 대기
+            cursor.execute("PRAGMA temp_store=MEMORY")      # 임시 테이블 메모리
+            cursor.execute("PRAGMA cache_size=-32000")      # 32MB 페이지 캐시
+        finally:
+            cursor.close()
+
     _Session = scoped_session(sessionmaker(bind=_engine))
 
 
