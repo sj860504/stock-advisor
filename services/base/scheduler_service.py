@@ -61,6 +61,13 @@ class SchedulerService:
         cls._scheduler.add_job(cls.run_rebalancing, 'cron', hour=9, minute=10)
         cls._scheduler.add_job(cls._refresh_low_tier_prices, 'interval', minutes=LOW_TIER_POLL_MINUTES)
         cls._scheduler.add_job(cls.sync_portfolio_periodic, 'interval', minutes=10)
+        # UI read/write 분리 — 5분 주기로 score 캐시 갱신 (DB upsert).
+        # next_run_time: 부팅 직후 30초 뒤 즉시 1차 실행 (UI가 빈 캐시 마주치지 않도록).
+        from datetime import datetime as _dt, timedelta as _td
+        cls._scheduler.add_job(
+            cls._refresh_signal_cache, 'interval', minutes=5,
+            id='refresh_signal_cache', next_run_time=_dt.now() + _td(seconds=30),
+        )
         cls._register_econ_vix_jobs(_ET)
 
     @classmethod
@@ -581,47 +588,79 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"❌ _check_vix_spike error: {e}")
 
+    # ── Read/Write 분리 ──────────────────────────────────────────────────────
+    #
+    # UI 조회 (get_all_cached_prices) — DB read only, score 계산 X
+    # 백그라운드 5분 잡 (_refresh_signal_cache) — 무거운 score 계산 + DB write
+    # ───────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _refresh_signal_cache(cls, limit: int = 1000) -> int:
+        """Background job: 전체 universe score 일괄 계산 후 ticker_signal_cache 테이블에 upsert.
+        Returns upserted row count."""
+        try:
+            from services.strategy.signal_service import SignalService
+            from repositories.signal_cache_repo import SignalCacheRepo
+            from models.schemas import UserState
+
+            all_states = MarketDataService.get_all_states()
+            if not all_states:
+                logger.debug("⏭ _refresh_signal_cache: no ticker states yet")
+                return 0
+
+            user_state = UserState(user_id="sean")
+            portfolio = PortfolioService.load_portfolio("sean")
+            holdings_map = {h.ticker: h for h in portfolio}
+            macro_data = MacroService.get_macro_data_snapshot()
+
+            exchange_rate_g = macro_data.exchange_rate if macro_data else 1350.0
+            kr_total = sum((h.current_price or h.buy_price) * h.quantity for h in portfolio if is_kr(h.ticker))
+            us_total_krw = sum((h.current_price or h.buy_price) * h.quantity * exchange_rate_g for h in portfolio if not is_kr(h.ticker))
+            cash_balance = PortfolioService.load_cash("sean")
+            usd_cash = 0.0
+
+            entries = []
+            for ticker, ticker_state in list(all_states.items())[:limit]:
+                try:
+                    is_kr_t = is_kr(ticker)
+                    market_total = kr_total if is_kr_t else us_total_krw
+                    score, reasons, breakdown = SignalService.calculate_score(
+                        ticker=ticker, state=ticker_state, holding=holdings_map.get(ticker),
+                        macro=macro_data, user_state=user_state,
+                        cash_balance=cash_balance if is_kr_t else usd_cash * exchange_rate_g,
+                        market_total_krw=market_total,
+                    )
+                    entries.append({
+                        "ticker": ticker, "score": score,
+                        "reasons": reasons, "breakdown": breakdown,
+                    })
+                except Exception as inner:
+                    logger.debug(f"⚠️ {ticker} score calc skip: {inner}")
+                    continue
+
+            n = SignalCacheRepo.upsert_many(entries)
+            logger.info(f"🔄 SignalCache refreshed: {n} tickers")
+            return n
+        except Exception as e:
+            logger.error(f"❌ _refresh_signal_cache error: {e}")
+            return 0
+
     @classmethod
     def get_all_cached_prices(cls, limit: int = 1000) -> dict:
-        """Return cached data for all monitored tickers.
-        tier: 'high' = WebSocket real-time, 'low' = 5min polling
-        limit: max number of tickers to return (default 1000)
-        """
-        all_states = MarketDataService.get_all_states()
-        tiers = MarketDataService._tiers  # Avoid repeated calls inside loop
-        result = {}
-        # Initialize variables needed for score calculation
-        from services.strategy.signal_service import SignalService
-        from models.schemas import UserState
-        
-        user_state = UserState(user_id="sean")
-        portfolio = PortfolioService.load_portfolio("sean")
-        holdings_map = {h.ticker: h for h in portfolio}
-        macro_data = MacroService.get_macro_data_snapshot()
-        
-        # Determine total market value for cash ratio (Krw vs Usd)
-        all_holdings = portfolio
-        exchange_rate_g = macro_data.exchange_rate if macro_data else 1350.0
-        kr_total = sum((h.current_price or h.buy_price) * h.quantity for h in all_holdings if is_kr(h.ticker))
-        us_total_krw = sum((h.current_price or h.buy_price) * h.quantity * exchange_rate_g for h in all_holdings if not is_kr(h.ticker))
-        cash_balance = PortfolioService.load_cash("sean")
-        usd_cash = 0.0 # simplified for cache response
-        
-        for ticker, ticker_state in list(all_states.items())[:limit]:
-            # Calculate Score
-            is_kr_t = is_kr(ticker)
-            market_total = kr_total if is_kr_t else us_total_krw
-            holding = holdings_map.get(ticker)
-            score, reasons, breakdown = SignalService.calculate_score(
-                ticker=ticker, 
-                state=ticker_state, 
-                holding=holding, 
-                macro=macro_data, 
-                user_state=user_state, 
-                cash_balance=cash_balance if is_kr_t else usd_cash * exchange_rate_g,
-                market_total_krw=market_total
-            )
+        """Return cached data for all monitored tickers — READ ONLY (no score calculation).
+        score는 ticker_signal_cache DB 테이블에서 join. 갱신은 백그라운드 5분 잡 _refresh_signal_cache 담당.
 
+        tier: 'high' = WebSocket real-time, 'low' = 5min polling
+        """
+        from repositories.signal_cache_repo import SignalCacheRepo
+
+        all_states = MarketDataService.get_all_states()
+        tiers = MarketDataService._tiers
+        signal_cache = SignalCacheRepo.load_all()  # 1회 DB query
+
+        result = {}
+        for ticker, ticker_state in list(all_states.items())[:limit]:
+            sig = signal_cache.get(ticker) or {}
             result[ticker] = {
                 "ticker": ticker,
                 "name": ticker_state.name,
@@ -629,7 +668,8 @@ class SchedulerService:
                 "rsi": ticker_state.rsi,
                 "change": ticker_state.current_price - ticker_state.prev_close if ticker_state.prev_close > 0 else 0,
                 "change_pct": ticker_state.change_rate,
-                "score": score,  # <-- Added score
+                "score": sig.get("score"),  # ← DB cache
+                "score_calculated_at": sig.get("calculated_at"),
                 "fair_value_dcf": ticker_state.dcf_value,
                 "ema5": ticker_state.ema.get(5),
                 "ema10": ticker_state.ema.get(10),

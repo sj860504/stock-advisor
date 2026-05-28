@@ -115,6 +115,23 @@ class DcfOverride(Base):
         return f"<DcfOverride(ticker='{self.ticker}')>"
 
 
+class TickerSignalCache(Base):
+    """Per-ticker signal score cache. Updated by background scheduler (5min), read by UI.
+
+    UI는 이 테이블에서만 read — score 계산은 백그라운드에서만 실행.
+    """
+    __tablename__ = 'ticker_signal_cache'
+
+    ticker          = Column(String(20), primary_key=True)
+    score           = Column(Integer)             # 1~100
+    reasons_json    = Column(String)              # JSON list of reasons
+    breakdown_json  = Column(String)              # JSON dict of score components
+    calculated_at   = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    def __repr__(self):
+        return f"<TickerSignalCache(ticker='{self.ticker}', score={self.score})>"
+
+
 class MarketRegimeHistory(Base):
     """Daily market regime snapshot history."""
     __tablename__ = 'market_regime_history'
