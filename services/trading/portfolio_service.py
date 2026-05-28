@@ -553,8 +553,33 @@ class PortfolioService:
 
     @classmethod
     def rebalance_portfolio(cls, user_id: str = "sean") -> dict:
-        """Sync portfolio with KIS and log sector deviation report."""
+        """Sync portfolio with KIS and log sector deviation report.
+        ⚠️ KIS sync 포함 — 백그라운드 잡/관리자 명령에서만 사용. UI 라우터에서 호출 금지."""
         return cls._rebalance_logic(user_id)
+
+    @classmethod
+    def get_sector_weights(cls, user_id: str = "sean") -> dict:
+        """Compute sector weights from DB holdings (read-only, no KIS sync).
+        UI 라우터(/sector-weights)용 — 백그라운드 잡이 10분마다 sync_with_kis로 holdings 갱신."""
+        holdings = cls.load_portfolio(user_id)
+        if not holdings:
+            return {"sector_weights": {}, "total_value": 0, "holdings_count": 0}
+
+        total_value = sum((h.current_price or h.buy_price or 0) * (h.quantity or 0) for h in holdings)
+        if total_value <= 0:
+            return {"sector_weights": {}, "total_value": 0, "holdings_count": len(holdings)}
+
+        sector_values: dict[str, float] = {}
+        for h in holdings:
+            sector = h.sector or DEFAULT_SECTOR
+            sector_values[sector] = sector_values.get(sector, 0.0) + (h.current_price or h.buy_price or 0) * (h.quantity or 0)
+
+        sector_weights = {s: round(v / total_value * 100, 2) for s, v in sector_values.items()}
+        return {
+            "sector_weights": sector_weights,
+            "total_value": total_value,
+            "holdings_count": len(holdings),
+        }
 
     @classmethod
     def _rebalance_logic(cls, user_id: str) -> dict:

@@ -14,7 +14,9 @@ logger = get_logger("kis_service")
 # KIS API constants
 KIS_RATE_LIMIT_MSG_CD = "EGW00201"
 TOKEN_REQUEST_TIMEOUT = 5
-BALANCE_REQUEST_TIMEOUT = 8
+# 잔고/시세 조회 timeout — 짧게(3s) 두어 KIS 무응답시 빠르게 실패하고 캐시 fallback 사용.
+# 길게 두면 (특히 모의투자 계좌 초기화 후) UI 라우터 호출이 줄줄이 8s × N 누적되어 UI가 멈춤.
+BALANCE_REQUEST_TIMEOUT = 3
 ORDER_REQUEST_TIMEOUT = 10
 MAX_BALANCE_RETRIES = 3
 

@@ -33,9 +33,10 @@ def resolve_ticker_or_404(ticker_input: str) -> str:
 
 @router.get("/sector-weights")
 def get_sector_weights(user_id: str = "sean") -> Dict[str, Any]:
-    """포트폴리오 섹터별 비중 + 총 평가금액 + 보유종목 수."""
+    """포트폴리오 섹터별 비중 + 총 평가금액 + 보유종목 수.
+    DB read only — KIS sync는 백그라운드 잡 (run_rebalancing cron / sync_portfolio_periodic 10분) 담당."""
     try:
-        return PortfolioService.rebalance_portfolio(user_id)
+        return PortfolioService.get_sector_weights(user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

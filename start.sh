@@ -123,8 +123,17 @@ if [[ ! -f "$STAMP" ]] || [[ "$REQ" -nt "$STAMP" ]]; then
 fi
 
 # ── 6. DB 마이그레이션 ────────────────────────────────────────────────────────
-echo "[6/7] DB 마이그레이션 실행 (alembic upgrade head)..."
-alembic upgrade head 2>&1 | sed 's/^/      /'
+# 빈 DB 또는 financials 테이블 없음 → init_db (Base.metadata.create_all) + alembic stamp head
+# 그 외 → alembic upgrade head
+DB_FILE="data/stock_advisor.db"
+if [[ ! -s "$DB_FILE" ]] || ! sqlite3 "$DB_FILE" ".tables" 2>/dev/null | grep -q financials; then
+    echo "[6/7] 빈 DB 감지 → init_db로 테이블 생성 후 alembic stamp head"
+    python -c "from repositories.database import init_db; init_db()" 2>&1 | sed 's/^/      /'
+    alembic stamp head 2>&1 | sed 's/^/      /'
+else
+    echo "[6/7] DB 마이그레이션 실행 (alembic upgrade head)..."
+    alembic upgrade head 2>&1 | sed 's/^/      /'
+fi
 
 # ── 7. uvicorn 실행 ──────────────────────────────────────────────────────────
 echo "[7/7] 서버 시작"

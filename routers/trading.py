@@ -56,12 +56,16 @@ async def place_order(order: OrderRequest) -> Dict[str, Any]:
 
 @router.get("/balance", response_model=Dict[str, Any])
 async def get_balance() -> Dict[str, Any]:
-    """Query stock balance."""
+    """Query stock balance.
+    DB read only — KIS balance summary는 백그라운드 sync_with_kis (10분 잡 + strategy 1분 잡) 결과 캐시 사용."""
     try:
         from services.trading.portfolio_service import PortfolioService
         from services.base.scheduler_service import SchedulerService
-        kis_balance = KisService.get_balance() or {}
-        
+        # 백그라운드 잡이 갱신한 KIS summary 캐시 사용 — 직접 KIS API 호출 X
+        # _last_balance_summary는 dict; 응답 호환을 위해 array로 wrap.
+        _last_summary = PortfolioService.get_last_balance_summary() or {}
+        kis_balance = {"summary": [_last_summary] if _last_summary else []}
+
         # user_id is hardcoded to "sean" in several places, use as default to fetch portfolio analysis
         analysis = PortfolioService.analyze_portfolio("sean", SchedulerService.get_all_cached_prices())
         
