@@ -651,6 +651,8 @@ class UserState(BaseModel):
     split_orders: Dict[str, Any] = Field(default_factory=dict)
     sell_split_orders: Dict[str, Any] = Field(default_factory=dict)
     trailing_high: Dict[str, float] = Field(default_factory=dict)
+    # {ticker: {"days": int, "last_date": "YYYY-MM-DD"}} — 연속 손절 임계초과 일수 카운터
+    stop_loss_streak: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

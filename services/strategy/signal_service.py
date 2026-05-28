@@ -231,7 +231,11 @@ class SignalService:
         d, r = cls._score_technical(state, curr_price, t["oversold_rsi"], t["overbought_rsi"], t["dip_buy_pct"])
         score += d; reasons.extend(r); breakdown["technical"] = d
 
-        d, r, forced_sell = cls._score_portfolio(holding, profit_pct, t["take_profit_pct"], t["stop_loss_pct"])
+        # ticker별 mode×market×regime 동적 take_profit/stop_loss 사용 (portfolio scoring 한정)
+        from services.strategy.position_service import PositionService
+        tp_dyn = PositionService._get_take_profit_pct(ticker, macro)
+        sl_dyn = PositionService._get_stop_loss_pct(ticker, macro)
+        d, r, forced_sell = cls._score_portfolio(holding, profit_pct, tp_dyn, sl_dyn)
         if forced_sell:
             return 100, r, True, {"base": t["base_score"], "forced_sell": True}
         score += d; reasons.extend(r); breakdown["portfolio"] = d

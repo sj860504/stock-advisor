@@ -1168,14 +1168,82 @@ async function confirmSellAll() {
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────
+// key prefix → group label
+function _settingsGroupOf(key) {
+    if (key.startsWith('STRATEGY_TOP100_KR_'))    return 'Top100 · KR';
+    if (key.startsWith('STRATEGY_TOP100_US_'))    return 'Top100 · US';
+    if (key.startsWith('STRATEGY_WATCHLIST_KR_')) return 'Watchlist · KR';
+    if (key.startsWith('STRATEGY_WATCHLIST_US_')) return 'Watchlist · US';
+    if (key.startsWith('STRATEGY_TICK_'))         return 'Tick Trading';
+    if (key.startsWith('STRATEGY_TARGET_CASH_'))  return '시장별 현금 비율';
+    if (key.startsWith('STRATEGY_'))              return '공통 (Legacy)';
+    if (key.startsWith('DCF_'))                   return 'DCF';
+    if (key.startsWith('PORTFOLIO_'))             return 'Portfolio';
+    if (key.startsWith('KIS_'))                   return 'KIS 토큰';
+    return '기타';
+}
+
+// 그룹 표시 순서
+const _SETTINGS_GROUP_ORDER = [
+    'Top100 · KR', 'Top100 · US', 'Watchlist · KR', 'Watchlist · US',
+    '시장별 현금 비율', '공통 (Legacy)', 'Tick Trading', 'DCF', 'Portfolio', 'KIS 토큰', '기타'
+];
+// 기본 펼침 상태
+const _SETTINGS_GROUP_EXPANDED_DEFAULT = new Set(['Top100 · KR', 'Top100 · US']);
+const _settingsExpanded = new Set(_SETTINGS_GROUP_EXPANDED_DEFAULT);
+
+function _escapeAttr(s) { return String(s ?? '').replace(/'/g, '&#39;').replace(/"/g, '&quot;'); }
+
+function toggleSettingsGroup(group) {
+    if (_settingsExpanded.has(group)) _settingsExpanded.delete(group);
+    else _settingsExpanded.add(group);
+    fetchSettings();
+}
+
 async function fetchSettings() {
     try {
         const data = await apiFetch('/trading/settings');
-        document.getElementById('settings-tbody').innerHTML = data.map(s => `<tr>
-            <td style="font-size:.8rem;font-weight:600;font-family:var(--mono)">${s.key}</td>
-            <td class="mono" style="font-size:.83rem">${s.value??s.val??'-'}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="openSettingEdit('${s.key}','${s.value??s.val??''}')">수정</button></td>
-        </tr>`).join('');
+        const grouped = {};
+        data.forEach(s => {
+            const g = _settingsGroupOf(s.key);
+            (grouped[g] = grouped[g] || []).push(s);
+        });
+
+        // 그룹 정렬 + 미리 정한 순서 우선
+        const groups = Object.keys(grouped).sort((a, b) => {
+            const ia = _SETTINGS_GROUP_ORDER.indexOf(a);
+            const ib = _SETTINGS_GROUP_ORDER.indexOf(b);
+            return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+        });
+
+        const filter = (document.getElementById('settings-filter')?.value || '').toLowerCase();
+        const html = groups.map(g => {
+            const items = grouped[g]
+                .filter(s => !filter || s.key.toLowerCase().includes(filter) || (s.description || '').toLowerCase().includes(filter))
+                .sort((a, b) => a.key.localeCompare(b.key));
+            if (!items.length) return '';
+            const expanded = filter ? true : _settingsExpanded.has(g);
+            const rows = expanded ? items.map(s => {
+                const val = s.value ?? s.val ?? '-';
+                const desc = s.description || '';
+                return `<tr>
+                    <td style="font-size:.78rem;font-weight:600;font-family:var(--mono);padding-left:24px">
+                        ${s.key}
+                        ${desc ? `<div style="font-weight:400;color:var(--sub);font-size:.72rem;margin-top:2px;font-family:var(--font)">${desc}</div>` : ''}
+                    </td>
+                    <td class="mono" style="font-size:.83rem">${val}</td>
+                    <td><button class="btn btn-outline btn-sm" onclick="openSettingEdit('${_escapeAttr(s.key)}','${_escapeAttr(val)}')">수정</button></td>
+                </tr>`;
+            }).join('') : '';
+            const arrow = expanded ? '▼' : '▶';
+            return `<tr style="background:var(--raised);cursor:pointer" onclick="toggleSettingsGroup('${_escapeAttr(g)}')">
+                <td colspan="3" style="padding:8px 12px;font-weight:700;font-size:.85rem">
+                    ${arrow} ${g} <span style="color:var(--sub);font-weight:400">(${items.length})</span>
+                </td>
+            </tr>${rows}`;
+        }).join('');
+
+        document.getElementById('settings-tbody').innerHTML = html || '<tr><td colspan="3" class="empty">설정 없음</td></tr>';
     } catch (e) { console.error(e); }
 }
 
