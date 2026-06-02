@@ -6,7 +6,7 @@ import pandas as pd
 import math
 from config import Config
 from utils.logger import get_logger
-from utils.market import is_kr
+from utils.market import is_kr, is_kr_preferred
 from services.kis.kis_service import KisService
 from services.analysis.analyzer.financial_analyzer import FinancialAnalyzer
 from services.market.stock_meta_service import StockMetaService
@@ -280,10 +280,21 @@ class FinancialService:
     @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
         """Return DCF calculation input data.
-        Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> analyst target -> EPS*PER -> KIS API."""
+        Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> analyst target -> EPS*PER -> KIS API.
+
+        ⚠️ KR 우선주(예: 005935 삼성전자우)는 자동 스킵 — yfinance가 회사 전체 FCF를
+        우선주 주식수로 나눠 반환하여 per-share 값이 비정상적으로 부풀려지는 문제 회피.
+        사용자 override는 우선주에도 적용 (override > preferred 가드).
+        """
         override_dcf = cls._get_dcf_from_override(ticker)
         if override_dcf is not None:
             return override_dcf
+
+        # 우선주는 yfinance FCF/share 가 왜곡됨 → DCF 자동 계산 비활성화.
+        # KRX 종목코드 부여 규칙: 본주=끝자리 0, 우선주=끝자리 5/7/9
+        if is_kr_preferred(ticker):
+            logger.debug(f"[DCF] {ticker}: KR 우선주 — DCF 자동 계산 스킵 (override로만 설정 가능)")
+            return None
 
         cached_dcf = cls._get_dcf_from_cache(ticker)
         if cached_dcf is not None:
