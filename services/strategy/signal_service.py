@@ -20,13 +20,9 @@ from utils.market import is_kr
 
 logger = get_logger("signal_service")
 
-TOP10_CACHE_TTL_SEC = 6 * 60 * 60
-
-
 class SignalService:
     """Score calculation and trading signal collection."""
 
-    _top10_cache = {"timestamp": 0, "tickers": set()}
     _cached_signals: list[SignalSchema] = []
 
     @classmethod
@@ -34,26 +30,6 @@ class SignalService:
         """Return cached signals from last _collect_trading_signals() call.
         Used by AssetManagementService to avoid re-computation."""
         return cls._cached_signals
-
-    # ── Top10 Market Cap Cache ───────────────────────────────────────────────────────
-
-    @classmethod
-    def _get_top10_market_cap_tickers(cls) -> set:
-        """Return cached top 10 US/KR market cap tickers."""
-        now = datetime.now().timestamp()
-        if now - cls._top10_cache["timestamp"] < TOP10_CACHE_TTL_SEC:
-            return cls._top10_cache["tickers"]
-
-        try:
-            kr_top = DataService.get_top_krx_tickers(limit=100)[:10]
-            us_top = DataService.get_top_us_tickers(limit=100)[:10]
-            top10 = set(kr_top + us_top)
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to refresh top10 market cap tickers: {e}")
-            top10 = cls._top10_cache["tickers"]
-
-        cls._top10_cache = {"timestamp": now, "tickers": top10}
-        return top10
 
     # ── Score Components ─────────────────────────────────────────────────────────
 
@@ -141,14 +117,16 @@ class SignalService:
             delta += fng_delta
             reasons.append(f"FNG_deviation({fng},{fng_delta:+d})")
 
-        # Regime score baseline 50, every 3 units = 1 point, capped ±REGIME_CAP (high regime = bullish = buy)
+        # Regime score baseline 50, every 3 units = 1 point, capped ±REGIME_CAP
+        # 역추세(contrarian): 강세장(높은 regime)=과열 위험 → +score(매도) /
+        #                     약세장(낮은 regime)=공포 저점 → -score(매수)
         regime_score = None
         if macro.market_regime:
             regime_score = getattr(macro.market_regime, 'regime_score', None)
         # Guard: regime_score must be a valid 0~100 (negative/None = sentinel for "Unknown")
         if regime_score is not None and 0 <= regime_score <= 100:
             reg_cap = SettingsService.get_int("STRATEGY_REGIME_DEVIATION_CAP", 10)
-            reg_delta = max(-reg_cap, min(reg_cap, int(-(regime_score - 50) / 3)))
+            reg_delta = max(-reg_cap, min(reg_cap, int((regime_score - 50) / 3)))
             if reg_delta != 0:
                 delta += reg_delta
                 reasons.append(f"Regime_deviation({regime_score},{reg_delta:+d})")
@@ -169,13 +147,9 @@ class SignalService:
 
     @classmethod
     def _score_bonuses(cls, ticker: str, holding, macro: MacroDataSnapshot, user_state: UserState) -> tuple:
-        """[E-F] Top10 market cap / user weight bonuses -> (delta, reasons). 섹터 보정 제거."""
+        """[F] User weight override만 잔존. top10 시총 보너스 / 섹터 보정 모두 제거."""
         delta = 0
         reasons = []
-        top10_bonus = SettingsService.get_int("STRATEGY_TOP10_BONUS", 10)
-        if top10_bonus and ticker in cls._get_top10_market_cap_tickers():
-            delta -= top10_bonus; reasons.append(f"top10_market_cap(-{top10_bonus})")
-
         overrides = TradeExecutorService.get_top_weight_overrides()
         if ticker in overrides:
             custom_bonus = int(overrides[ticker])
