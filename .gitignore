@@ -19,3 +19,6 @@ logs/
 data/.kis_token_cache.json
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/*.db.*
