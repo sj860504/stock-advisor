@@ -55,7 +55,7 @@ class PositionService:
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-            forced_qty=sell_qty,
+            forced_qty=sell_qty, trigger_reason="take_profit",
         )
         if result.executed:
             cls._update_sell_split_state(ticker, sell_qty, sell_split_orders)
@@ -189,6 +189,7 @@ class PositionService:
             current_price_val, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            trigger_reason="add_position",
         )
         if result.executed:
             add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price_val)
@@ -251,7 +252,7 @@ class PositionService:
             profit_pct, bool(holding), score, current_price_val, market_total, cash_balance,
             exchange_rate, holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-            forced_qty=this_run_qty,
+            forced_qty=this_run_qty, trigger_reason="score_buy",
         )
         if result.executed:
             so.splits_done += 1
@@ -329,7 +330,7 @@ class PositionService:
             getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-            forced_qty=sell_qty,
+            forced_qty=sell_qty, trigger_reason="score_sell",
         )
         if result.executed:
             cls._update_sell_split_state(ticker, sell_qty, sell_split_orders)
@@ -608,12 +609,18 @@ class PositionService:
         """Execute forced stop-loss sell at full quantity. No cooldown — stop-loss must always fire."""
         if reason is None:
             reason = f"stop_loss({profit_pct:.2f}%)"
+        # trigger_reason: reason 텍스트 prefix로 구조화 매핑
+        trig = "stop_loss"
+        if reason.startswith("trailing_stop"):
+            trig = "trailing_stop"
+        elif reason.startswith("tight_stop"):
+            trig = "tight_stop"
         return TradeExecutorService._execute_trade_v2(
             ticker, "sell", reason, profit_pct, True, 0,
             current_price, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
-            forced_qty=holding.quantity,
+            forced_qty=holding.quantity, trigger_reason=trig,
         )
 
     # ── Unmonitored Holdings Check ─────────────────────────────────────────────
@@ -955,6 +962,7 @@ class PositionService:
                 current_price=current_price, market_total=market_total,
                 cash_balance=cash_balance, exchange_rate=exchange_rate,
                 user_id=user_id, holding=sig.holding, gap_pct=gap_pct,
+                trigger_reason="budget_buy",
             )
             if result.executed:
                 add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price, timestamp=now_ts)
@@ -1008,6 +1016,7 @@ class PositionService:
                 current_price=current_price, market_total=market_total,
                 cash_balance=cash_balance, exchange_rate=exchange_rate,
                 user_id=user_id, holding=holding,
+                trigger_reason="asset_mgmt_sell",
             )
             if result.executed:
                 sell_cooldown[ticker] = today

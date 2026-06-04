@@ -541,10 +541,12 @@ class TradeExecutorService:
     def _place_and_record(
         cls, ticker: str, side: str, qty: int, price: float,
         reason: str, user_id: str, buy_price: Optional[float] = None,
+        trigger_reason: Optional[str] = None,
     ) -> bool:
         """Send KIS order and record trade on success. Common for buy and sell.
         Skips if there is a pending (unfilled) order for the same ticker and side.
-        Returns True if order succeeded."""
+        Returns True if order succeeded.
+        trigger_reason: 구조화 사유 ('trailing_stop', 'take_profit', ...). free-text reason 과 별개."""
         if cls._has_pending_order(ticker, side):
             logger.info(f"⏸️ {ticker} {side.upper()} 스킵: 미체결 주문 대기 중")
             return False
@@ -554,7 +556,7 @@ class TradeExecutorService:
         else:
             order_result = KisService.send_overseas_order(ticker, qty, round(float(price), 2), side, market=excg_cd)
         if order_result.get("status") == "success":
-            OrderService.record_trade(ticker, side, qty, price, reason, "v3_strategy", buy_price=buy_price)
+            OrderService.record_trade(ticker, side, qty, price, reason, "v3_strategy", buy_price=buy_price, trigger_reason=trigger_reason)
             return True
         logger.error(f"Order failed: {order_result}")
         return False
@@ -566,6 +568,7 @@ class TradeExecutorService:
         exchange_rate: float, holdings: List[HoldingSchema], user_id: str, holding: Optional[HoldingSchema],
         macro: MacroDataSnapshot, target_cash_ratio_kr: float, target_cash_ratio_us: float,
         forced_qty: int = None, reason: str = "", gap_pct: float = 0.0,
+        trigger_reason: Optional[str] = None,
     ) -> TradeResult:
         """Execute buy order. gap_pct 전달 시 per-trade-ratio multiplier 적용."""
         market = "KR" if is_kr(ticker) else "US"
@@ -591,7 +594,7 @@ class TradeExecutorService:
         logger.info(f"⚖️ {ticker} Split buy scheduled ({quantity} shares)")
         current_price = cls._refresh_us_price(ticker, current_price)
         record_price = current_price if not is_kr_flag else final_price
-        executed = cls._place_and_record(ticker, "buy", quantity, record_price, reason or "strategy_execution", user_id)
+        executed = cls._place_and_record(ticker, "buy", quantity, record_price, reason or "strategy_execution", user_id, trigger_reason=trigger_reason)
         if executed:
             spent_krw = quantity * final_price if is_kr_flag else 0.0
             spent_usd = quantity * current_price if not is_kr_flag else 0.0
@@ -604,6 +607,7 @@ class TradeExecutorService:
     def _execute_sell_order(
         cls, ticker: str, score: int, current_price: float, holdings: Optional[List[HoldingSchema]], user_id: str,
         forced_qty: int = None, reason: str = "",
+        trigger_reason: Optional[str] = None,
     ) -> tuple:
         """Execute sell order. Returns (executed, trade_qty)."""
         market = "KR" if is_kr(ticker) else "US"
@@ -623,7 +627,7 @@ class TradeExecutorService:
         msg = reason or ("forced_sell(full)" if (forced_qty is not None and forced_qty > 0) else "partial_sell(take_profit)")
         buy_price_val = float(current_holding.buy_price or 0) or None
         current_price = cls._refresh_us_price(ticker, current_price)
-        executed = cls._place_and_record(ticker, "sell", sell_qty, current_price, msg, user_id, buy_price=buy_price_val)
+        executed = cls._place_and_record(ticker, "sell", sell_qty, current_price, msg, user_id, buy_price=buy_price_val, trigger_reason=trigger_reason)
         if executed:
             return True, sell_qty
         return False, 0
@@ -644,10 +648,14 @@ class TradeExecutorService:
         holding: Optional[HoldingSchema] = None, macro: Optional[MacroDataSnapshot] = None,
         target_cash_ratio_kr: float = None, target_cash_ratio_us: float = None,
         forced_qty: int = None, gap_pct: float = 0.0,
+        trigger_reason: Optional[str] = None,
     ) -> TradeResult:
-        """Split buy/sell execution logic."""
+        """Split buy/sell execution logic.
+        trigger_reason: 구조화 사유 ('trailing_stop', 'take_profit', 'stop_loss',
+                        'score_buy', 'score_sell', 'add_position', 'budget_buy', ...).
+                        free-text reason 과 별개로 DB에 저장 — 분석 쿼리/그룹핑용."""
         logger.info(f"📢 Signal [{side.upper()}] {ticker} - Reason: {reason}")
-        
+
         # 시장별 활성화 여부 최종 체크
         market = "KR" if is_kr(ticker) else "US"
         is_strategy_enabled = SettingsService.get_bool(f"STRATEGY_ENABLED_{market}", True)
@@ -666,11 +674,11 @@ class TradeExecutorService:
                 ticker, score, profit_pct, is_holding, current_price, market_total,
                 cash_balance, exchange_rate, holdings, user_id, holding, macro,
                 target_cash_ratio_kr, target_cash_ratio_us, forced_qty=forced_qty,
-                reason=reason, gap_pct=gap_pct,
+                reason=reason, gap_pct=gap_pct, trigger_reason=trigger_reason,
             )
             trade_qty = int(result.spent_krw / current_price) if result.spent_krw else int(result.spent_usd / current_price) if result.spent_usd else 0
         elif side == "sell":
-            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty, reason=reason)
+            executed, trade_qty = cls._execute_sell_order(ticker, score, current_price, holdings, user_id, forced_qty=forced_qty, reason=reason, trigger_reason=trigger_reason)
             if executed and trade_qty > 0:
                 is_kr_flag = is_kr(ticker)
                 sold_krw = trade_qty * current_price if is_kr_flag else 0.0

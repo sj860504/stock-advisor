@@ -24,8 +24,11 @@ class TradeHistoryRepo:
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
         status: str = "filled",
+        trigger_reason: Optional[str] = None,
     ) -> Optional[TradeHistory]:
-        """Record trade to DB. Returns detached TradeHistory on success, None on failure."""
+        """Record trade to DB. Returns detached TradeHistory on success, None on failure.
+        trigger_reason: 구조화된 사유 (분석/그룹핑용). 예: 'trailing_stop', 'take_profit',
+                        'stop_loss', 'score_buy', 'score_sell', 'add_position', 'budget_buy', 'manual'."""
         try:
             with session_scope() as session:
                 trade = TradeHistory(
@@ -35,6 +38,7 @@ class TradeHistoryRepo:
                     price=price,
                     buy_price_at_trade=buy_price,
                     result_msg=result_msg,
+                    trigger_reason=trigger_reason,
                     timestamp=datetime.now(),
                     strategy_name=strategy_name,
                     status=status,
@@ -42,7 +46,7 @@ class TradeHistoryRepo:
                 session.add(trade)
                 session.flush()
                 session.expunge(trade)
-                logger.info(f"💾 Trade recorded: {ticker} {order_type} {quantity} @ {price} (status={status})")
+                logger.info(f"💾 Trade recorded: {ticker} {order_type} {quantity} @ {price} (status={status}, reason={trigger_reason})")
                 return trade
         except Exception as e:
             logger.error(f"❌ Error recording trade: {e}")

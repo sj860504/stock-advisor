@@ -85,12 +85,14 @@ class OrderService:
         strategy_name: str = "manual",
         buy_price: Optional[float] = None,
         status: str = "pending",
+        trigger_reason: Optional[str] = None,
     ):
         """Record trade history to DB. Default status is 'pending' (verified later).
-        Returns TradeHistory entity on success, None on failure."""
+        Returns TradeHistory entity on success, None on failure.
+        trigger_reason: 구조화 사유 ('trailing_stop', 'take_profit', etc.)."""
         return TradeHistoryRepo.record(
             ticker, order_type, quantity, price, result_msg, strategy_name,
-            buy_price=buy_price, status=status,
+            buy_price=buy_price, status=status, trigger_reason=trigger_reason,
         )
 
     @classmethod
