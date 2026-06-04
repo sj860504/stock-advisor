@@ -430,13 +430,34 @@ async function fetchHistory() {
     } catch (e) { showToast(e.message, false); }
 }
 
+// trigger_reason → 한글 라벨 + 배지 색상
+const TRIGGER_REASON_LABELS = {
+    'trailing_stop':   { label: '트레일링', cls: 'b-down' },
+    'tight_stop':      { label: '타이트',   cls: 'b-down' },
+    'stop_loss':       { label: '손절',     cls: 'b-down' },
+    'take_profit':     { label: '익절',     cls: 'b-up' },
+    'score_buy':       { label: '점수매수', cls: 'b-up' },
+    'score_sell':      { label: '점수매도', cls: 'b-down' },
+    'add_position':    { label: '추매',     cls: 'b-up' },
+    'budget_buy':      { label: '예산매수', cls: 'b-up' },
+    'asset_mgmt_sell': { label: '리밸런싱', cls: 'b-down' },
+    'panic_reentry':   { label: '재진입',   cls: 'b-warn' },
+    'manual':          { label: '수동',     cls: 'b-gray' },
+};
+function renderTriggerBadge(reason, msg) {
+    if (!reason) return msg ? `<span class="sub-text" title="${(msg||'').replace(/"/g,'&quot;')}">${(msg||'').slice(0, 30)}</span>` : '-';
+    const m = TRIGGER_REASON_LABELS[reason] || { label: reason, cls: 'b-gray' };
+    const tip = msg ? ` title="${(msg||'').replace(/"/g,'&quot;')}"` : '';
+    return `<span class="badge ${m.cls}"${tip}>${m.label}</span>`;
+}
+
 function renderHistoryTable() {
     const tbody = document.getElementById('history-tbody');
     let data = _historyDataCache;
-    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">내역 없음</td></tr>'; return; }
+    if (!data?.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">내역 없음</td></tr>'; return; }
     const q = searchState['history-tbody'];
     if (q) data = data.filter(d => (d.ticker||'').toLowerCase().includes(q) || (d.name||'').toLowerCase().includes(q));
-    if (!data.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">해당 종목 없음</td></tr>'; return; }
+    if (!data.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">해당 종목 없음</td></tr>'; return; }
     data = applySortToData('history-tbody', data);
     tbody.innerHTML = data.map(d => {
         const isBuy   = (d.action || d.order_type || '').toLowerCase() === 'buy';
@@ -452,6 +473,7 @@ function renderHistoryTable() {
             <td class="mono">${fmt(d.quantity, 0)}</td>
             <td class="mono">${fmtCurr(d.amount ?? ((d.price || 0) * (d.quantity || 0)), s)}</td>
             <td>${retBadge}</td>
+            <td>${renderTriggerBadge(d.trigger_reason, d.result_msg)}</td>
         </tr>`;
     }).join('');
 }

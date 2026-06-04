@@ -419,6 +419,7 @@ class TradeRecordDto(BaseModel):
     quantity: int = 0
     price: float = 0.0
     result_msg: Optional[str] = None
+    trigger_reason: Optional[str] = None
     timestamp: Optional[str] = None
     strategy_name: str = ""
     name: Optional[str] = None
