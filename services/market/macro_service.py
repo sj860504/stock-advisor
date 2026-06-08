@@ -115,12 +115,47 @@ class MacroService:
 
     @classmethod
     def get_macro_data_snapshot(cls) -> "MacroDataSnapshot":
-        """get_macro_data() dict → MacroDataSnapshot 변환 래퍼."""
+        """get_macro_data() dict → MacroDataSnapshot 변환 래퍼.
+        KOSPI/SPX 1d/5d 변화율 추가 (Uptrend DCA Crash 감지 + KOSPI 보너스용)."""
         from models.schemas import MacroDataSnapshot
         data = cls.get_macro_data()
         snapshot = MacroDataSnapshot(**{k: v for k, v in data.items() if k != "timestamp"})
         snapshot.exchange_rate = cls.get_exchange_rate()
+        # KOSPI/SPX 변화율 계산 — yfinance 5분 캐시
+        kchg = cls._get_index_changes("^KS11")
+        schg = cls._get_index_changes("^GSPC")
+        snapshot.kospi_change_1d = kchg[0]
+        snapshot.kospi_change_5d = kchg[1]
+        snapshot.spx_change_1d = schg[0]
+        snapshot.spx_change_5d = schg[1]
         return snapshot
+
+    _index_change_cache: dict = {}   # {symbol: (1d, 5d, cached_at_epoch)}
+    _INDEX_CHANGE_TTL_SEC: int = 300  # 5분
+
+    @classmethod
+    def _get_index_changes(cls, symbol: str) -> tuple:
+        """yfinance로 지수 1d/5d 변화율 (%) 계산. 5분 메모리 캐시.
+        실패 시 (None, None) 반환."""
+        import time
+        now = time.time()
+        cached = cls._index_change_cache.get(symbol)
+        if cached and (now - cached[2]) < cls._INDEX_CHANGE_TTL_SEC:
+            return cached[0], cached[1]
+        try:
+            import yfinance as yf
+            data = yf.Ticker(symbol).history(period="15d", interval="1d", auto_adjust=True)
+            if data is None or data.empty or len(data) < 6:
+                return None, None
+            closes = list(data["Close"].dropna())
+            cur = float(closes[-1])
+            chg_1d = (cur - float(closes[-2])) / float(closes[-2]) * 100
+            chg_5d = (cur - float(closes[-6])) / float(closes[-6]) * 100
+            cls._index_change_cache[symbol] = (chg_1d, chg_5d, now)
+            return chg_1d, chg_5d
+        except Exception as e:
+            logger.debug(f"⚠️ index changes fetch failed for {symbol}: {e}")
+            return None, None
 
     @staticmethod
     def _save_regime_snapshot(market_regime, vix, fear_greed):

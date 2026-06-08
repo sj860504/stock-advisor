@@ -24,6 +24,183 @@ logger = get_logger("position_service")
 class PositionService:
     """Position management and trading signal execution."""
 
+    # ── Uptrend DCA — 부분 익절 + 잔여 trailing ────────────────────────────────
+
+    @classmethod
+    def _is_uptrend_dca_enabled(cls) -> bool:
+        """Uptrend DCA 알고리즘 활성화 여부. 기본 ON."""
+        return SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1
+
+    @classmethod
+    def _handle_uptrend_partial_take(
+        cls, ticker: str, holding, profit_pct: float, state, score: int,
+        market_total: float, cash_balance: float, exchange_rate: float,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
+        target_cash_kr: float, target_cash_us: float, user_state,
+    ) -> bool:
+        """[Uptrend] +N% 도달 시 보유의 RATIO 비중 매도 (1회만). Crash 중엔 보류."""
+        if not holding or not user_state:
+            return False
+        if user_state.partial_take_done.get(ticker):
+            return False
+        tp_pct = SettingsService.get_float("STRATEGY_UPTREND_PARTIAL_TAKE_PCT", 15.0)
+        if profit_pct < tp_pct:
+            return False
+        from services.strategy.crash_guard_service import CrashGuardService
+        if CrashGuardService.is_crash(macro_data):
+            logger.info(f"⏸ {ticker} 부분익절 보류 (Crash 가드 활성)")
+            return False
+        ratio = SettingsService.get_float("STRATEGY_UPTREND_PARTIAL_TAKE_RATIO", 0.5)
+        qty = int(holding.quantity)
+        sell_qty = max(1, int(qty * ratio))
+        if sell_qty >= qty:
+            sell_qty = max(1, qty - 1) if qty > 1 else qty
+        result = TradeExecutorService._execute_trade_v2(
+            ticker, "sell",
+            f"uptrend_partial_take(+{profit_pct:.2f}%, {ratio*100:.0f}%)",
+            profit_pct, True, score,
+            getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
+            holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
+            target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=sell_qty, trigger_reason="partial_take",
+        )
+        if result.executed:
+            user_state.partial_take_done[ticker] = True
+            user_state.remaining_high[ticker] = float(getattr(state, "current_price", 0))
+        return result.executed
+
+    @classmethod
+    def _handle_uptrend_dca_signal(
+        cls, ticker: str, holding, profit_pct: float, current_price: float,
+        market_total: float, cash_balance: float, exchange_rate: float,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
+        target_cash_kr: float, target_cash_us: float, user_state,
+    ) -> "TradeResult":
+        """[Uptrend] DCA 3단계 추매 (-3/-8/-15% × 3/4/5% 자본).
+        KOSPI 5d 변화율 mult 적용 (1.0/1.5/2.0/2.5×). Frozen(VIX>50) 시 보류.
+        종목당 max position 가드, 일일 매수 한도 등 안전장치."""
+        if not holding or not user_state:
+            return TradeResult.no_op()
+        from services.strategy.crash_guard_service import CrashGuardService
+        if CrashGuardService.is_frozen(macro_data):
+            logger.info(f"⏸ {ticker} DCA 보류 (Frozen 가드 — VIX>50)")
+            return TradeResult.no_op()
+
+        # 3단계 임계 + 비율
+        stages = [
+            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE3_PCT", -15.0),
+             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE3_RATIO", 0.05), -15),
+            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE2_PCT", -8.0),
+             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE2_RATIO", 0.04), -8),
+            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE1_PCT", -3.0),
+             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE1_RATIO", 0.03), -3),
+        ]
+        ticker_dca = user_state.dca_done.get(ticker) or {}
+        triggered_stage = None
+        triggered_ratio = None
+        for threshold, ratio, key in stages:
+            if ticker_dca.get(str(key)):  # JSON serialization 호환
+                continue
+            if profit_pct <= threshold:
+                triggered_stage = key
+                triggered_ratio = ratio
+                break
+        if triggered_stage is None:
+            return TradeResult.no_op()
+
+        # KOSPI 5d mult 적용
+        mult = CrashGuardService.per_trade_mult(macro_data)
+        effective_ratio = triggered_ratio * mult
+
+        # 자본 = 시장 평가액 + 가용 현금 (kr/us 분리)
+        total_assets = market_total + cash_balance
+        budget = total_assets * effective_ratio
+
+        # max position 가드
+        max_pos_pct = SettingsService.get_float("STRATEGY_UPTREND_MAX_POSITION_PCT", 0.15)
+        cur_pos_val = (holding.quantity or 0) * current_price
+        max_allowed = total_assets * max_pos_pct
+        if cur_pos_val >= max_allowed:
+            logger.info(f"⏭ {ticker} DCA 보류 (max position {max_pos_pct*100:.0f}% 초과)")
+            ticker_dca[str(triggered_stage)] = True  # 한번 평가했으니 mark
+            user_state.dca_done[ticker] = ticker_dca
+            return TradeResult.no_op()
+        if cur_pos_val + budget > max_allowed:
+            budget = max(0, max_allowed - cur_pos_val)
+
+        # min cash 가드
+        min_cash_ratio = SettingsService.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
+        min_cash = total_assets * min_cash_ratio
+        if cash_balance - budget < min_cash:
+            budget = max(0, cash_balance - min_cash)
+
+        if budget < current_price:
+            ticker_dca[str(triggered_stage)] = True
+            user_state.dca_done[ticker] = ticker_dca
+            return TradeResult.no_op()
+        add_qty = int(budget / current_price)
+        if add_qty <= 0:
+            return TradeResult.no_op()
+
+        result = TradeExecutorService._execute_trade_v2(
+            ticker, "buy",
+            f"uptrend_dca({triggered_stage}%, ratio={triggered_ratio*100:.1f}%×mult{mult:.1f})",
+            profit_pct, True, 0,
+            current_price, market_total, cash_balance, exchange_rate,
+            holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
+            target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=add_qty, trigger_reason=f"dca_stage_{triggered_stage}",
+        )
+        if result.executed:
+            ticker_dca[str(triggered_stage)] = True
+            user_state.dca_done[ticker] = ticker_dca
+        return result
+
+    @classmethod
+    def _reset_uptrend_state_on_sell(cls, ticker: str, user_state) -> None:
+        """매도 후 Uptrend 상태 클리어. 재진입 시 신규 진입처럼 동작."""
+        if user_state is None:
+            return
+        user_state.partial_take_done.pop(ticker, None)
+        user_state.remaining_high.pop(ticker, None)
+        user_state.dca_done.pop(ticker, None)
+
+    @classmethod
+    def _handle_uptrend_remaining_trailing(
+        cls, ticker: str, holding, current_price: float,
+        market_total: float, cash_balance: float, exchange_rate: float,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
+        target_cash_kr: float, target_cash_us: float, user_state,
+    ) -> bool:
+        """[Uptrend] 부분익절 후 잔여 수량 trailing (-N% from remaining_high). Crash 중엔 보류."""
+        if not holding or not user_state:
+            return False
+        if not user_state.partial_take_done.get(ticker):
+            return False
+        from services.strategy.crash_guard_service import CrashGuardService
+        if CrashGuardService.is_crash(macro_data):
+            return False
+        cur_high = float(user_state.remaining_high.get(ticker, current_price))
+        if current_price > cur_high:
+            user_state.remaining_high[ticker] = current_price
+            return False
+        trail_pct = SettingsService.get_float("STRATEGY_UPTREND_TRAILING_REMAINING_PCT", -10.0)
+        drawdown = (current_price - cur_high) / cur_high * 100 if cur_high > 0 else 0
+        if drawdown > trail_pct:
+            return False
+        buy_price = float(holding.buy_price or 0)
+        profit_pct = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+        result = cls._handle_forced_sell(
+            ticker, holding, profit_pct, current_price, market_total,
+            cash_balance, exchange_rate, holdings=holdings, user_id=user_id,
+            macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
+            reason=f"trailing_remaining({drawdown:.1f}% from {cur_high:,.0f})",
+        )
+        if result.executed:
+            user_state.remaining_high.pop(ticker, None)
+            user_state.partial_take_done.pop(ticker, None)
+        return result.executed
+
     # ── Profit-Taking ─────────────────────────────────────────────────────────────────
 
     @classmethod
@@ -438,11 +615,17 @@ class PositionService:
         # [Manual Fix] Reset buy-spent tracker for v1 compatibility before handling each signal
         TradeExecutorService._last_buy_spent_krw = 0.0
         common_kwargs = dict(holdings=holdings, user_id=user_id, macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us)
+        uptrend = cls._is_uptrend_dca_enabled()
+        from services.strategy.crash_guard_service import CrashGuardService
+        is_crash = CrashGuardService.is_crash(macro_data)
         # 가격이 stop_loss 임계 위로 회복했으면 연속손절 카운터 리셋
         if u.holding and not u.forced_sell:
             cls._reset_stop_loss_streak(u.ticker, user_state)
         if u.forced_sell and u.holding:
-            # 3일 연속 손절 룰 — 임계 미달 시 매도 보류, 카운터만 누적
+            # Uptrend: Crash 중엔 forced_sell 도 보류 (저점 매도 방지)
+            if uptrend and is_crash:
+                logger.info(f"⏸ {u.ticker} 강제매도 보류 (Crash 가드 활성)")
+                return False, None, 0.0, 0.0
             if not cls._should_execute_stop_loss(u.ticker, u.profit_pct, macro_data, user_state, cfg.today):
                 return False, None, 0.0, 0.0
             (split_orders or {}).pop(u.ticker, None)
@@ -454,26 +637,63 @@ class PositionService:
             )
             if result.executed and user_state:
                 cls._set_panic_lock(u.ticker, user_state)
+                cls._reset_uptrend_state_on_sell(u.ticker, user_state)
             return result.executed, u.ticker if result.executed else None, 0.0, 0.0
         current_price = getattr(u.state, 'current_price', 0)
-        th = trailing_high if trailing_high is not None else {}
-        cls._update_trailing_high(u.ticker, current_price, th)
-        trail_result = cls._handle_trailing_stop(
-            u.ticker, u.holding, current_price, th,
-            u.market_total, cash_balance, cfg.exchange_rate, **common_kwargs,
-        )
-        if trail_result and trail_result.executed:
-            return True, u.ticker, 0.0, 0.0
+        # ── Uptrend DCA 분기 ────────────────────────────────────────────────
+        if uptrend and u.holding:
+            # 1) 부분익절 (+15% 도달 시 50% 매도, 1회만)
+            if cls._handle_uptrend_partial_take(
+                u.ticker, u.holding, u.profit_pct, u.state, u.score,
+                u.market_total, cash_balance, cfg.exchange_rate,
+                holdings, user_id, macro_data, target_cash_kr, target_cash_us, user_state,
+            ):
+                return True, u.ticker, 0.0, 0.0
+            # 2) 잔여 trailing (-10% from remaining_high)
+            if cls._handle_uptrend_remaining_trailing(
+                u.ticker, u.holding, current_price,
+                u.market_total, cash_balance, cfg.exchange_rate,
+                holdings, user_id, macro_data, target_cash_kr, target_cash_us, user_state,
+            ):
+                cls._reset_uptrend_state_on_sell(u.ticker, user_state)
+                return True, u.ticker, 0.0, 0.0
+            # 3) DCA 3단계 추매 (loss thresholds)
+            dca_result = cls._handle_uptrend_dca_signal(
+                u.ticker, u.holding, u.profit_pct, current_price,
+                u.market_total, cash_balance, cfg.exchange_rate,
+                holdings, user_id, macro_data, target_cash_kr, target_cash_us, user_state,
+            )
+            if dca_result.executed:
+                return True, u.ticker, dca_result.spent_krw, dca_result.spent_usd
+            # Uptrend 활성 시: trailing_stop (손실분) 완전 비활성. 익절/추가매수 등 다른 분기로
+        else:
+            # 레거시 trailing_stop (Uptrend 비활성시만)
+            th = trailing_high if trailing_high is not None else {}
+            cls._update_trailing_high(u.ticker, current_price, th)
+            trail_result = cls._handle_trailing_stop(
+                u.ticker, u.holding, current_price, th,
+                u.market_total, cash_balance, cfg.exchange_rate, **common_kwargs,
+            )
+            if trail_result and trail_result.executed:
+                return True, u.ticker, 0.0, 0.0
         # ticker별 mode×market×regime 기반 동적 파라미터 조회
         take_profit_pct = cls._get_take_profit_pct(u.ticker, macro_data)
         stop_loss_pct = cls._get_stop_loss_pct(u.ticker, macro_data)
-        if cls._handle_profit_take_signal(u.ticker, u.holding, u.profit_pct, take_profit_pct, sell_cooldown, cfg.today, u.state, u.score, u.market_total, cash_balance, cfg.exchange_rate, sell_split_orders=sell_split_orders, **common_kwargs):
-            return True, u.ticker, 0.0, 0.0
-        current_rsi = getattr(u.state, 'rsi', 50.0)
-        add_result = cls._handle_add_buy_signal(u.ticker, u.holding, u.profit_pct, stop_loss_pct, current_rsi, cfg.add_rsi_limit, cfg.add_score_limit, u.score, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, split_orders=split_orders, **common_kwargs)
-        if add_result.executed:
-            return True, u.ticker, add_result.spent_krw, add_result.spent_usd
+        # Uptrend 활성 시 일반 take_profit/add_buy 분기는 Skip (부분익절/DCA 가 대체)
+        if not uptrend:
+            if cls._handle_profit_take_signal(u.ticker, u.holding, u.profit_pct, take_profit_pct, sell_cooldown, cfg.today, u.state, u.score, u.market_total, cash_balance, cfg.exchange_rate, sell_split_orders=sell_split_orders, **common_kwargs):
+                return True, u.ticker, 0.0, 0.0
+            current_rsi = getattr(u.state, 'rsi', 50.0)
+            add_result = cls._handle_add_buy_signal(u.ticker, u.holding, u.profit_pct, stop_loss_pct, current_rsi, cfg.add_rsi_limit, cfg.add_score_limit, u.score, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, split_orders=split_orders, **common_kwargs)
+            if add_result.executed:
+                return True, u.ticker, add_result.spent_krw, add_result.spent_usd
+        # score-based 매매: Uptrend 활성 시에도 신규 매수/sell threshold 도달 매도는 가능 (단 Crash 보류)
+        if uptrend and is_crash and u.holding:
+            # Crash 중엔 score-based 매도도 보류 (신규 매수는 허용)
+            return False, None, 0.0, 0.0
         result = cls._handle_score_trade(u.ticker, u.holding, u.score, u.reason_str, u.profit_pct, cfg.buy_max, cfg.sell_min, sell_cooldown, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders, sell_split_orders=sell_split_orders)
+        if result.executed and user_state:
+            cls._reset_uptrend_state_on_sell(u.ticker, user_state)
         return result.executed, u.ticker if result.executed else None, result.spent_krw, result.spent_usd
 
     # ── Trailing Stop ──────────────────────────────────────────────────────────

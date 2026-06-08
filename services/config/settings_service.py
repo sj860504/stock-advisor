@@ -132,6 +132,46 @@ class SettingsService:
         "STRATEGY_WATCHLIST_US_TIGHT_STOP_TRIGGER_PCT":    ("5.0",  "[Watchlist·US] Tight Stop 발동 임계 (%)"),
         "STRATEGY_WATCHLIST_US_TIGHT_STOP_PCT":            ("-3.0", "[Watchlist·US] Tight Stop drawdown (%)"),
         "STRATEGY_WATCHLIST_US_STOP_LOSS_CONSECUTIVE_DAYS":("0",    "[Watchlist·US] 연속 N거래일 손절 (0=즉시)"),
+        # ────────────────────────────────────────────────────────────────────
+        # Uptrend DCA Algorithm — 우상향 가정 저점 매수 전략
+        # ────────────────────────────────────────────────────────────────────
+        # Master switches
+        "STRATEGY_UPTREND_DCA_ENABLED":          ("1",     "[Uptrend] 알고리즘 활성화 (0=레거시 사용)"),
+        # 부분 익절
+        "STRATEGY_UPTREND_PARTIAL_TAKE_PCT":     ("15.0",  "[Uptrend] 부분익절 발동 수익률 (%)"),
+        "STRATEGY_UPTREND_PARTIAL_TAKE_RATIO":   ("0.5",   "[Uptrend] 부분익절 비율 (0.5=50%)"),
+        "STRATEGY_UPTREND_TRAILING_REMAINING_PCT": ("-10.0", "[Uptrend] 잔여분 trailing stop (%)"),
+        # 손절
+        "STRATEGY_UPTREND_STOP_LOSS_PCT":        ("-25.0", "[Uptrend] 손절 임계 (%) — 깊게"),
+        "STRATEGY_UPTREND_STOP_LOSS_DAYS":       ("7",     "[Uptrend] 손절 연속 거래일 — 길게"),
+        # DCA (3단계)
+        "STRATEGY_UPTREND_DCA_STAGE1_PCT":       ("-3.0",  "[Uptrend] DCA 1단계 손실 임계 (%)"),
+        "STRATEGY_UPTREND_DCA_STAGE1_RATIO":     ("0.03",  "[Uptrend] DCA 1단계 자본 비중 (3%)"),
+        "STRATEGY_UPTREND_DCA_STAGE2_PCT":       ("-8.0",  "[Uptrend] DCA 2단계 손실 임계 (%)"),
+        "STRATEGY_UPTREND_DCA_STAGE2_RATIO":     ("0.04",  "[Uptrend] DCA 2단계 자본 비중 (4%)"),
+        "STRATEGY_UPTREND_DCA_STAGE3_PCT":       ("-15.0", "[Uptrend] DCA 3단계 손실 임계 (%)"),
+        "STRATEGY_UPTREND_DCA_STAGE3_RATIO":     ("0.05",  "[Uptrend] DCA 3단계 자본 비중 (5%)"),
+        # Crash 감지 (매도/손절 보류)
+        "STRATEGY_CRASH_INDEX_1D_PCT":           ("-5.0",  "[Crash] 지수 1일 변화율 임계 (%)"),
+        "STRATEGY_CRASH_INDEX_5D_PCT":           ("-10.0", "[Crash] 지수 5일 변화율 임계 (%)"),
+        "STRATEGY_CRASH_VIX_LEVEL":              ("35.0",  "[Crash] VIX 절대값 임계"),
+        "STRATEGY_CRASH_FROZEN_VIX":             ("50.0",  "[Crash] Frozen(매수도 보류) VIX 임계"),
+        # KOSPI 5d 보너스 (per_trade multiplier + score boost)
+        "STRATEGY_KOSPI_5D_MULT_TIER1":          ("-3.0",  "[KOSPI 5d] 1단계 임계 (%)"),
+        "STRATEGY_KOSPI_5D_MULT_TIER2":          ("-7.0",  "[KOSPI 5d] 2단계 임계 (%)"),
+        "STRATEGY_KOSPI_5D_MULT_TIER3":          ("-12.0", "[KOSPI 5d] 3단계 임계 (%)"),
+        "STRATEGY_KOSPI_5D_MULT_TIER4":          ("-18.0", "[KOSPI 5d] 4단계 임계 (%)"),
+        "STRATEGY_KOSPI_5D_MULT_VAL1":           ("1.0",   "[KOSPI 5d] tier1 per_trade 배율"),
+        "STRATEGY_KOSPI_5D_MULT_VAL2":           ("1.5",   "[KOSPI 5d] tier2 per_trade 배율"),
+        "STRATEGY_KOSPI_5D_MULT_VAL3":           ("2.0",   "[KOSPI 5d] tier3 per_trade 배율"),
+        "STRATEGY_KOSPI_5D_MULT_VAL4":           ("2.5",   "[KOSPI 5d] tier4 per_trade 배율"),
+        "STRATEGY_KOSPI_5D_SCORE_BOOST1":        ("0",     "[KOSPI 5d] tier1 score 가산 (BUY 방향, 음수)"),
+        "STRATEGY_KOSPI_5D_SCORE_BOOST2":        ("-5",    "[KOSPI 5d] tier2 score 가산"),
+        "STRATEGY_KOSPI_5D_SCORE_BOOST3":        ("-10",   "[KOSPI 5d] tier3 score 가산"),
+        "STRATEGY_KOSPI_5D_SCORE_BOOST4":        ("-15",   "[KOSPI 5d] tier4 score 가산"),
+        # Safety
+        "STRATEGY_UPTREND_MAX_POSITION_PCT":     ("0.15",  "[Uptrend] 종목당 최대 자본 비중 (15%)"),
+        "STRATEGY_UPTREND_MIN_CASH_RATIO":       ("0.0",   "[Uptrend] 최저 현금 비율 (0=풀투자 허용)"),
     }
 
     @classmethod

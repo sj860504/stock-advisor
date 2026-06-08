@@ -52,7 +52,7 @@ function switchTab(el, tabId) {
     document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
     document.getElementById(tabId).classList.add('active');
     const loaders = {
-        dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchPortfolioFull(); },
+        dashboard: () => { fetchBalance(); fetchMacroBar(); fetchRegimeScore(); fetchPortfolioFull(); fetchCrashStatus(); },
         history:   () => { fetchHistory(); },
         market:    () => { fetchTop20(); fetchSignals(); },
         trading:   () => { fetchWaitingList(); fetchStrategyStatus(); },
@@ -596,6 +596,32 @@ async function fetchMacroBar() {
 async function fetchRegimeScore() {
     if (macroCache) { renderRegimeScore(macroCache.market_regime); return; }
     await fetchMacroBar();
+}
+
+// ─── Crash Mode 배지 ───────────────────────────────────────────────────────
+async function fetchCrashStatus() {
+    const banner = document.getElementById('crash-banner');
+    if (!banner) return;
+    try {
+        const d = await apiFetch('/market/crash-status');
+        if (!d.is_crash && !d.is_frozen && d.kospi_tier === 1) {
+            banner.style.display = 'none';
+            return;
+        }
+        const icon = d.is_frozen ? '🧊 FROZEN' : (d.is_crash ? '🚨 CRASH' : '⚠️ 약세 가드');
+        const tierLabel = ['', '정상', '주의', '경고', '극심'][d.kospi_tier] || '';
+        const reasons = (d.reasons || []).join(', ') || '-';
+        banner.style.display = 'flex';
+        banner.innerHTML = `
+          <span style="font-size:1.15rem;font-weight:800;color:${d.is_frozen ? '#bcd4ff' : '#ff8d8d'}">${icon}</span>
+          <span style="color:var(--sub);font-size:.85rem">KOSPI 5d ${d.kospi_5d != null ? d.kospi_5d.toFixed(2)+'%' : '-'}</span>
+          <span style="color:var(--sub);font-size:.85rem">| VIX ${d.vix ? d.vix.toFixed(1) : '-'}</span>
+          <span style="color:var(--sub);font-size:.85rem">| Tier ${d.kospi_tier} (${tierLabel})</span>
+          <span style="margin-left:auto;color:var(--sub);font-size:.82rem">${reasons}</span>
+        `;
+    } catch (e) {
+        banner.style.display = 'none';
+    }
 }
 
 function renderMacroBar(data) {
@@ -1458,6 +1484,7 @@ async function initApp() {
         fetchMacroBar(),
         fetchStrategyStatus(),
         fetchPortfolioFull(),
+        fetchCrashStatus(),
     ]);
     connectPriceStream();
     setInterval(() => {

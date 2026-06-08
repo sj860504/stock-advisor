@@ -398,6 +398,11 @@ class MacroDataSnapshot(BaseModel):
     indices: Dict[str, "IndexQuote"] = Field(default_factory=dict)
     economic_indicators: "EconomicIndicatorsSnapshot" = Field(default_factory=lambda: EconomicIndicatorsSnapshot())
     exchange_rate: float = 1350.0
+    # Crash 감지 + KOSPI 보너스용 일별 변화율 (Uptrend DCA 알고리즘)
+    kospi_change_1d: Optional[float] = None   # %
+    kospi_change_5d: Optional[float] = None   # %
+    spx_change_1d: Optional[float] = None
+    spx_change_5d: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -654,6 +659,13 @@ class UserState(BaseModel):
     trailing_high: Dict[str, float] = Field(default_factory=dict)
     # {ticker: {"days": int, "last_date": "YYYY-MM-DD"}} — 연속 손절 임계초과 일수 카운터
     stop_loss_streak: Dict[str, Any] = Field(default_factory=dict)
+    # Uptrend DCA 알고리즘 상태
+    # partial_take_done: {ticker: True}  — 부분 익절 1회 실행 완료
+    partial_take_done: Dict[str, bool] = Field(default_factory=dict)
+    # remaining_high: {ticker: float} — 부분익절 후 잔여 수량의 trailing 고점
+    remaining_high: Dict[str, float] = Field(default_factory=dict)
+    # dca_done: {ticker: {-3: True, -8: False, -15: False}} — 단계별 추매 실행 완료
+    dca_done: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
