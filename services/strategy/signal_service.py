@@ -130,6 +130,17 @@ class SignalService:
             if reg_delta != 0:
                 delta += reg_delta
                 reasons.append(f"Regime_deviation({regime_score},{reg_delta:+d})")
+
+        # [Uptrend DCA] KOSPI 5d 변화율 보너스 — 폭락 단계별 BUY 가산.
+        # tier1: 0  / tier2: -5  / tier3: -10  / tier4: -15
+        if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+            from services.strategy.crash_guard_service import CrashGuardService
+            kospi_boost = CrashGuardService.score_boost(macro)
+            if kospi_boost != 0:
+                delta += kospi_boost
+                tier = CrashGuardService.kospi_5d_tier(macro)
+                k5d = macro.kospi_change_5d if macro else None
+                reasons.append(f"KOSPI_5d_boost(t{tier},{k5d:+.1f}%,{kospi_boost:+d})")
         return delta, reasons
 
     @classmethod

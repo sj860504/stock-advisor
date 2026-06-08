@@ -101,6 +101,26 @@ def get_macro_data() -> Dict[str, Any]:
     return MacroService.get_macro_data()
 
 
+@router.get("/crash-status", response_model=Dict[str, Any])
+def get_crash_status() -> Dict[str, Any]:
+    """Uptrend DCA Crash 가드 상태 (UI 배지용)."""
+    from services.market.macro_service import MacroService
+    from services.strategy.crash_guard_service import CrashGuardService
+    macro = MacroService.get_macro_data_snapshot()
+    is_crash, is_frozen, reasons = CrashGuardService.get_status(macro)
+    tier = CrashGuardService.kospi_5d_tier(macro)
+    return {
+        "is_crash": is_crash,
+        "is_frozen": is_frozen,
+        "reasons": reasons,
+        "kospi_tier": tier,
+        "kospi_1d": macro.kospi_change_1d,
+        "kospi_5d": macro.kospi_change_5d,
+        "vix": macro.vix,
+        "uptrend_dca_enabled": True,  # settings 에서 가져올 수도
+    }
+
+
 @router.get("/calendar/weekly", response_model=List[Dict[str, Any]])
 def get_weekly_economic_calendar(days: int = 7) -> List[Dict[str, Any]]:
     """Weekly economic indicator release schedule (includes ET/KST times, sorted by date)."""
