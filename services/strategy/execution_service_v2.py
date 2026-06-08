@@ -462,15 +462,24 @@ class TradeExecutorService:
     # ── Order Execution Helpers ────────────────────────────────────────────────────────
 
     @classmethod
-    def _has_absolute_cash(cls, ticker: str, cash_balance: float) -> bool:
-        """Return False if there is no cash available for the market."""
-        if is_kr(ticker) and cash_balance <= 0:
-            logger.info(f"⏭️ {ticker} KRW cash insufficient ({cash_balance:,.0f}KRW). Buy blocked.")
-            return False
-        if not is_kr(ticker):
+    def _has_absolute_cash(cls, ticker: str, cash_balance: float, required_amount: float = 0.0) -> bool:
+        """Return False if there is no cash available for the market.
+        required_amount: 매수 예정 금액 (qty × price). 0이면 단순 양수 체크.
+        미수/신용 차단 — required_amount > cash_balance 면 즉시 reject."""
+        if is_kr(ticker):
+            if cash_balance <= 0:
+                logger.info(f"⏭️ {ticker} KRW cash insufficient ({cash_balance:,.0f}KRW). Buy blocked.")
+                return False
+            if required_amount > 0 and required_amount > cash_balance:
+                logger.info(f"⏭️ {ticker} 미수 차단 — 매수금 {required_amount:,.0f}원 > 현금 {cash_balance:,.0f}원.")
+                return False
+        else:
             _usd_cash = PortfolioService.get_usd_cash_balance()
             if _usd_cash <= 0:
                 logger.info(f"⏭️ {ticker} USD cash insufficient (${_usd_cash:.2f}). Buy blocked.")
+                return False
+            if required_amount > 0 and required_amount > _usd_cash:
+                logger.info(f"⏭️ {ticker} 미수 차단 — 매수금 ${required_amount:,.2f} > USD현금 ${_usd_cash:,.2f}.")
                 return False
         return True
 
@@ -595,6 +604,28 @@ class TradeExecutorService:
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} Insufficient balance (required: {final_price:,.0f}KRW)")
             return TradeResult.no_op()
+        # 미수/신용 차단 가드 — KIS 주문 직전 cash 검증
+        total_cost = quantity * final_price if is_kr_flag else quantity * current_price
+        if is_kr_flag:
+            if total_cost > cash_balance:
+                # forced_qty 가 미수를 만들면 가용 현금에 맞춰 축소
+                affordable_qty = max(0, int(cash_balance / current_price))
+                if affordable_qty <= 0:
+                    logger.warning(f"⛔ {ticker} 미수 차단 — qty {quantity} × {final_price:,.0f} = {total_cost:,.0f} > 현금 {cash_balance:,.0f}원. Skip.")
+                    return TradeResult.no_op()
+                logger.warning(f"⚠️ {ticker} 미수 회피 — qty {quantity}→{affordable_qty} (cash {cash_balance:,.0f}원 한도)")
+                quantity = affordable_qty
+                total_cost = quantity * final_price
+        else:
+            usd_cash = PortfolioService.get_usd_cash_balance() or 0.0
+            usd_cost = quantity * current_price
+            if usd_cost > usd_cash:
+                affordable_qty = max(0, int(usd_cash / current_price))
+                if affordable_qty <= 0:
+                    logger.warning(f"⛔ {ticker} 미수 차단 — qty {quantity} × ${current_price:.2f} = ${usd_cost:.2f} > USD현금 ${usd_cash:.2f}. Skip.")
+                    return TradeResult.no_op()
+                logger.warning(f"⚠️ {ticker} 미수 회피 — qty {quantity}→{affordable_qty} (USD ${usd_cash:.2f} 한도)")
+                quantity = affordable_qty
         logger.info(f"⚖️ {ticker} Split buy scheduled ({quantity} shares)")
         current_price = cls._refresh_us_price(ticker, current_price)
         record_price = current_price if not is_kr_flag else final_price
