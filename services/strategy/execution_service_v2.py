@@ -252,7 +252,11 @@ class TradeExecutorService:
 
     @classmethod
     def _get_target_cash_ratio(cls, market: str, regime_status: str) -> float:
-        """Get target cash ratio based on market regime (KR/US separated)."""
+        """Get target cash ratio based on market regime (KR/US separated).
+        Uptrend DCA 활성 시 STRATEGY_UPTREND_MIN_CASH_RATIO (기본 0%) 사용 →
+        DCA가 풀투자까지 매수 가능."""
+        if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+            return SettingsService.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
         regime_key = regime_status.upper()
         if regime_key not in ['BEAR', 'NEUTRAL', 'BULL']:
             regime_key = 'NEUTRAL'

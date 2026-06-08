@@ -117,13 +117,18 @@ class AssetManagementService:
     def _get_target_cash_ratio(cls, regime: MarketRegimeSchema, fear_greed: Optional[float], holdings: List[HoldingSchema]) -> float:
         """Return target cash ratio based on regime + individual holding profit rates.
 
-        Rules:
+        Uptrend DCA 활성 시 STRATEGY_UPTREND_MIN_CASH_RATIO (기본 0%) 사용 — 풀투자.
+
+        Legacy rules:
           - fear_greed < 10 → 0.0  (extreme fear, full investment)
           - BEAR    base 0.20, +10%p if ≥30% of holdings exceed 3% profit
           - NEUTRAL base 0.40, +10%p if ≥30% of holdings exceed 5% profit
           - BULL    base 0.40, +10%p if ≥30% of holdings exceed 7% profit
           - Upper bound: 0.60
         """
+        from services.config.settings_service import SettingsService as _SS
+        if _SS.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+            return _SS.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
         if fear_greed is not None and fear_greed < 10:
             return 0.0
 
