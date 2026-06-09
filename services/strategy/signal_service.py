@@ -90,6 +90,12 @@ class SignalService:
         elif profit_pct <= -5.0 and profit_pct > stop_loss_pct:
             delta += WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"add_position_zone({profit_pct:.1f}%)")
         elif stop_loss_pct < 0 and profit_pct <= stop_loss_pct:
+            # Uptrend DCA 활성 시 손실 임계 = 추매 신호이지 강제매도 X.
+            # 단순 BUY 가산만 적용하고 forced_sell 트리거 안 함.
+            if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+                delta += WEIGHTS['ADD_POSITION_LOSS']
+                reasons.append(f"uptrend_deep_loss({profit_pct:.1f}%)")
+                return delta, reasons, False
             return 0, ["stop_loss_hit"], True  # forced_sell: score=100
         return delta, reasons, False
 
