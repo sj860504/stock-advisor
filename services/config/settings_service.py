@@ -138,7 +138,7 @@ class SettingsService:
         # Master switches
         "STRATEGY_UPTREND_DCA_ENABLED":          ("1",     "[Uptrend] 알고리즘 활성화 (0=레거시 사용)"),
         # 부분 익절
-        "STRATEGY_UPTREND_PARTIAL_TAKE_PCT":     ("15.0",  "[Uptrend] 부분익절 발동 수익률 (%)"),
+        "STRATEGY_UPTREND_PARTIAL_TAKE_PCT":     ("10.0",  "[Uptrend] 부분익절 발동 수익률 (%)"),
         "STRATEGY_UPTREND_PARTIAL_TAKE_RATIO":   ("0.5",   "[Uptrend] 부분익절 비율 (0.5=50%)"),
         "STRATEGY_UPTREND_TRAILING_REMAINING_PCT": ("-10.0", "[Uptrend] 잔여분 trailing stop (%)"),
         # 손절
@@ -183,6 +183,8 @@ class SettingsService:
         _corrections = {
             "STRATEGY_TAKE_PROFIT_PCT": ("5.0", "5", ""),
             "STRATEGY_STOP_LOSS_PCT": ("-10.0", "-10", ""),
+            # Uptrend 부분익절 임계 15 → 10 (옛 값 강제 갱신)
+            "STRATEGY_UPTREND_PARTIAL_TAKE_PCT": ("15.0", "15", ""),
         }
         for key, old_values in _corrections.items():
             current = SettingsRepo.get(key)

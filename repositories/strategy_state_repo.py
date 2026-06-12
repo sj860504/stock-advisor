@@ -8,7 +8,12 @@ from models.schemas import BuyCooldownEntry, SplitOrderState, SplitSellOrderStat
 
 logger = get_logger("strategy_state_repo")
 
-_USER_FIELDS = ("sell_cooldown", "add_buy_cooldown", "panic_locks", "split_orders", "sell_split_orders", "trailing_high")
+_USER_FIELDS = (
+    "sell_cooldown", "add_buy_cooldown", "panic_locks",
+    "split_orders", "sell_split_orders", "trailing_high",
+    # Uptrend DCA 상태
+    "partial_take_done", "remaining_high", "dca_done", "stop_loss_streak",
+)
 
 # Map field names to Pydantic model classes for deserialization
 _MODEL_MAP = {
