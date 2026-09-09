@@ -94,6 +94,12 @@
 **Root Cause**: HIGH + LOW 합본 변수가 정의 안 됨. 매 5분 잡이 전부 fail → US LOW-tier 가격 폴링 자체 작동 안 함 → US 종목 ready=False
 **Fix**: `all_poll_tickers = list(set(high_tickers) | set(low_tickers))` 추가
 
+### 13. Uptrend DCA 추매가 레거시 추매 엔트리 게이트에 막힘 (2026-09-09 수정)
+
+**Symptom**: -3% DCA 1단계가 실행되지 않고 매 분 `Add-buy condition not met. Order skipped.` 반복. US 종목 DCA 는 단계 비율 무시하고 USD 현금 전액 매수
+**Check**: `_execute_trade_v2(is_holding=True)` 경로는 `_passes_add_buy_entry`(profit > `STRATEGY_ADD_POSITION_BELOW` -5% 차단)를 통과함. DCA 예산은 `market_total + cash_balance(KRW)` 를 USD 가격으로 나눔
+**Fix**: `trigger_reason='dca_stage_*'` 는 `_check_buy_cash_and_entry_conditions` 에서 엔트리·목표현금 게이트 우회. DCA 금액은 전부 KRW 기준(`price_krw`, `usd_cash×fx`). 새 매수 경로를 추가할 때 `_execute_trade_v2` 의 is_holding 게이트를 반드시 확인할 것
+
 ---
 
 **Update this file when:**
@@ -101,4 +107,4 @@
 - Error could cause production issue
 - Mistake repeated across sessions
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-09-09

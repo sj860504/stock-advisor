@@ -90,9 +90,13 @@ class SignalService:
         elif profit_pct <= -5.0 and profit_pct > stop_loss_pct:
             delta += WEIGHTS['ADD_POSITION_LOSS']; reasons.append(f"add_position_zone({profit_pct:.1f}%)")
         elif stop_loss_pct < 0 and profit_pct <= stop_loss_pct:
-            # Uptrend DCA 활성 시 손실 임계 = 추매 신호이지 강제매도 X.
-            # 단순 BUY 가산만 적용하고 forced_sell 트리거 안 함.
+            # Uptrend DCA 활성 시 레거시 손절 임계(-5~-8%) 는 추매 신호이지 강제매도 X.
+            # 단, 극단 손실(STRATEGY_UPTREND_STOP_LOSS_PCT, 기본 -25%) 은 안전망 손절
+            # → forced_sell (실행은 UPTREND_STOP_LOSS_DAYS 연속 + Crash 보류 규칙 적용).
             if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+                uptrend_sl = SettingsService.get_float("STRATEGY_UPTREND_STOP_LOSS_PCT", -25.0)
+                if uptrend_sl < 0 and profit_pct <= uptrend_sl:
+                    return 0, [f"uptrend_stop_loss_hit({profit_pct:.1f}%<={uptrend_sl:.0f}%)"], True
                 delta += WEIGHTS['ADD_POSITION_LOSS']
                 reasons.append(f"uptrend_deep_loss({profit_pct:.1f}%)")
                 return delta, reasons, False
@@ -100,10 +104,11 @@ class SignalService:
         return delta, reasons, False
 
     @classmethod
-    def _score_market_context(cls, macro: MacroDataSnapshot, regime: str) -> tuple:
+    def _score_market_context(cls, macro: MacroDataSnapshot, regime: str, ticker: Optional[str] = None) -> tuple:
         """[C] VIX, F&G, regime_score — all linear/proportional from baselines.
         High VIX / low F&G / low regime_score → buy signal (negative delta).
-        Low VIX / high F&G / high regime_score → sell signal (positive delta)."""
+        Low VIX / high F&G / high regime_score → sell signal (positive delta).
+        ticker 가 주어지면 지수 5d 보너스는 종목 시장 지수(KR→KOSPI, US→SPX) 기준."""
         delta = 0
         reasons = []
 
@@ -137,16 +142,17 @@ class SignalService:
                 delta += reg_delta
                 reasons.append(f"Regime_deviation({regime_score},{reg_delta:+d})")
 
-        # [Uptrend DCA] KOSPI 5d 변화율 보너스 — 폭락 단계별 BUY 가산.
-        # tier1: 0  / tier2: -5  / tier3: -10  / tier4: -15
+        # [Uptrend DCA] 지수 5d 변화율 보너스 — 폭락 단계별 BUY 가산.
+        # KR 종목=KOSPI, US 종목=SPX. tier1: 0 / tier2: -5 / tier3: -10 / tier4: -15
         if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
             from services.strategy.crash_guard_service import CrashGuardService
-            kospi_boost = CrashGuardService.score_boost(macro)
-            if kospi_boost != 0:
-                delta += kospi_boost
-                tier = CrashGuardService.kospi_5d_tier(macro)
-                k5d = macro.kospi_change_5d if macro else None
-                reasons.append(f"KOSPI_5d_boost(t{tier},{k5d:+.1f}%,{kospi_boost:+d})")
+            idx_boost = CrashGuardService.score_boost(macro, ticker)
+            if idx_boost != 0:
+                delta += idx_boost
+                tier = CrashGuardService.index_5d_tier(macro, ticker)
+                chg_5d = CrashGuardService.index_5d_change(macro, ticker)
+                label = CrashGuardService.index_label(ticker)
+                reasons.append(f"{label}_5d_boost(t{tier},{chg_5d:+.1f}%,{idx_boost:+d})")
         return delta, reasons
 
     @classmethod
@@ -217,7 +223,7 @@ class SignalService:
             return 100, r, True, {"base": t["base_score"], "forced_sell": True}
         score += d; reasons.extend(r); breakdown["portfolio"] = d
 
-        d, r = cls._score_market_context(macro, regime); score += d; reasons.extend(r); breakdown["market_context"] = d
+        d, r = cls._score_market_context(macro, regime, ticker); score += d; reasons.extend(r); breakdown["market_context"] = d
         d, r = cls._score_target_prices(state, curr_price); score += d; reasons.extend(r); breakdown["target_prices"] = d
         d, r = cls._score_bonuses(ticker, holding, macro, user_state); score += d; reasons.extend(r); breakdown["bonuses"] = d
 

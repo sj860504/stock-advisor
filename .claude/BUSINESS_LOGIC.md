@@ -11,6 +11,7 @@
 3. [매수/매도 임계값](#3-매수매도-임계값)
 4. [분할 매수/매도](#4-분할-매수매도)
 5. [손절/익절 로직](#5-손절익절-로직)
+   - 5-1. [Uptrend DCA 알고리즘](#5-1--uptrend-dca-알고리즘-기본-on-2026-06-08-도입--2026-09-09-결함-수정)
 6. [현금 비중 관리](#6-현금-비중-관리)
 7. [섹터 비중 관리](#7-섹터-비중-관리)
 8. [시장 레짐 판정](#8-시장-레짐-판정)
@@ -447,6 +448,74 @@ profit_pct ≥ take_profit_pct (레짐별 상이)
 ### ✅ 수정 완료 — 손절 전량 즉시 매도 (2026-03-15)
 
 `_handle_forced_sell()`이 `forced_qty=holding.quantity`를 전달하여 `_execute_sell_order`에서 전량 즉시 매도. sell_split_orders 잔존 문제 해결.
+
+---
+
+## 5-1. ✅ Uptrend DCA 알고리즘 (기본 ON, 2026-06-08 도입 · 2026-09-09 결함 수정)
+
+**파일**: `services/strategy/position_service.py`, `services/strategy/crash_guard_service.py`, `services/strategy/signal_service.py`
+**스위치**: `STRATEGY_UPTREND_DCA_ENABLED` (1=ON). ON 이면 Section 5 의 레거시 손절/익절/트레일링/추매 분기는 **모두 건너뛴다**.
+
+> 가정: 시장은 결국 우상향 → 저점일수록 더 사고, 단기 손절은 손실 확정. 매도는 보수적으로.
+
+### 매도 (보수적)
+
+| 규칙 | 조건 | 동작 | 설정키 |
+|------|------|------|--------|
+| 부분 익절 | profit ≥ +10% (1회만, `partial_take_done`) | 보유의 50% 매도, `remaining_high` 기록 | `STRATEGY_UPTREND_PARTIAL_TAKE_PCT` / `_RATIO` |
+| 잔여 trailing | 부분익절 후 `remaining_high` 대비 -10% | 잔여 전량 매도 | `STRATEGY_UPTREND_TRAILING_REMAINING_PCT` |
+| 안전망 손절 | profit ≤ **-25%** 가 **7거래일 연속** | 전량 매도 + panic_lock 3일 | `STRATEGY_UPTREND_STOP_LOSS_PCT` / `_DAYS` |
+| score 매도 | score ≥ SELL_THRESHOLD | 분할 매도 (Crash 중 보류) | — |
+
+- `_score_portfolio`: 레거시 stop_loss(-5~-8%) 도달은 `uptrend_deep_loss` **추매 가산(-10)**. -25% 이하만 `uptrend_stop_loss_hit` → score=100 → forced_sell.
+- 연속일수 카운터는 `_should_execute_stop_loss` 가 Uptrend 모드에서 `STRATEGY_UPTREND_STOP_LOSS_DAYS` 를 사용 (레거시 `STOP_LOSS_CONSECUTIVE_DAYS` 아님).
+- **Crash 가드 활성 시 부분익절 / 잔여 trailing / 안전망 손절 / score 매도 모두 보류** (저점 매도 방지).
+- 미감시 보유 종목(`_check_unmonitored_holdings`)도 동일 규칙 적용 (`_process_unmonitored_holding_uptrend`). 레거시 -7% 손절은 적용되지 않는다. DCA 추매는 하지 않음.
+
+### 매수 (저점 DCA)
+
+```
+_handle_uptrend_dca_signal()  — 보유 종목, 매 루프
+  단계 (깊은 순으로 평가, 단계별 1회 `dca_done[ticker][stage]`):
+    -15% → 자본 5%    -8% → 자본 4%    -3% → 자본 3%
+  × 지수 5d mult  (KR 종목=KOSPI, US 종목=SPX; tier1 1.0 / tier2 1.5 / tier3 2.0 / tier4 2.5)
+  자본 = 시장별 총자산 KRW (kr_total / us_total_krw — 해당 시장 현금 포함)
+  가드: 종목당 max position 15% (도달 시 단계 소진 처리)
+        min cash (`STRATEGY_UPTREND_MIN_CASH_RATIO`, 기본 0%)
+        Frozen(VIX>50) → 보류
+  현금 부족 → 단계 소진 X (현금 생기면 재시도)
+  → _execute_trade_v2(forced_qty, trigger_reason="dca_stage_-N")
+```
+
+- profit_pct 는 **평균매입가 기준**. DCA 후 평균단가가 내려가므로 다음 단계는 그만큼 더 떨어져야 발동 (시뮬레이션과 동일 의미).
+- **통화 규칙**: US 종목은 가격을 환율로 KRW 환산, 가용현금은 `usd_cash × 환율`. `_execute_collected_signals` → `_route_signal` 로 `usd_cash` 전달.
+- `trigger_reason='dca_stage_*'` 매수는 `_check_buy_cash_and_entry_conditions` 의 레거시 추매 엔트리(`STRATEGY_ADD_POSITION_BELOW` -5%) 와 목표현금 게이트를 **우회**한다 (절대현금 체크는 유지). 우회하지 않으면 -3% 1단계가 영원히 실행되지 않는다.
+
+### 예비현금 (dry powder) — 2026-09-09
+
+```
+Uptrend 목표 현금비율 = max(STRATEGY_UPTREND_MIN_CASH_RATIO, STRATEGY_UPTREND_DCA_RESERVE_RATIO)   (기본 max(0, 0.10) = 10%)
+  · score 신규매수 / 자산관리 budget 매수 / 신호수집 하드게이트 → 이 비율 이상 현금 유지
+  · DCA 추매 → 게이트 우회, MIN_CASH_RATIO(0%) 까지 사용 가능
+  · 자산관리 서비스는 Uptrend 모드에서 현금 < 예비여도 수익 종목을 팔아 채우지 않음 (매도 스킵)
+```
+
+`STRATEGY_UPTREND_DCA_RESERVE_RATIO=0` 으로 두면 이전의 풀투자 동작으로 돌아간다.
+
+### Crash Guard (`crash_guard_service.py`)
+
+| 상태 | 조건 (KOSPI/SPX 중 더 나쁜 값) | 효과 |
+|------|------|------|
+| Crash | 1d < -5% OR 5d < -10% OR VIX > 35 | 모든 매도 보류 (부분익절/trailing/손절/score 매도) |
+| Frozen | VIX > 50 | 매도 보류 + **모든 매수 차단** (`_execute_buy_order` 중앙 게이트: DCA·score·budget) |
+
+- 상태 캐시는 입력값(VIX, 지수 변화율)이 바뀌면 즉시 무효화.
+- 지수 5d tier / score boost / per_trade mult 는 종목 시장 기준: `index_5d_tier(macro, ticker)`. reason 문자열 `KOSPI_5d_boost(...)` / `SPX_5d_boost(...)`.
+- `GET /api/market/crash-status` → `kospi_tier`, `spx_tier`, `is_crash`, `is_frozen`, `reasons`.
+
+### 상태 영속 (`StrategyState`)
+
+`partial_take_done`, `remaining_high`, `dca_done`, `stop_loss_streak` — JSON 컬럼 (alembic `b8e5d2f10a4c`). 매도(전량) 시 `_reset_uptrend_state_on_sell` 로 초기화.
 
 ---
 
@@ -1082,6 +1151,25 @@ Base: DCF_DEFAULT_DISCOUNT_RATE (10%)
 | `STRATEGY_SPLIT_EXPIRE_DAYS` | 5 | 분할 매수 만료 기한 (일) |
 | `STRATEGY_MAX_SECTOR_RATIO` | 0.30 | 섹터 최대 비중 (30%) |
 
+### Uptrend DCA / Crash Guard
+
+| 설정키 | 기본값 | 설명 |
+|--------|--------|------|
+| `STRATEGY_UPTREND_DCA_ENABLED` | 1 | Uptrend 알고리즘 ON (0=레거시) |
+| `STRATEGY_UPTREND_PARTIAL_TAKE_PCT` / `_RATIO` | 10.0 / 0.5 | 부분익절 발동 수익률 / 비율 |
+| `STRATEGY_UPTREND_TRAILING_REMAINING_PCT` | -10.0 | 잔여분 trailing |
+| `STRATEGY_UPTREND_STOP_LOSS_PCT` / `_DAYS` | -25.0 / 7 | 안전망 손절 임계 / 연속 거래일 |
+| `STRATEGY_UPTREND_DCA_STAGE{1,2,3}_PCT` | -3 / -8 / -15 | DCA 단계 손실 임계 |
+| `STRATEGY_UPTREND_DCA_STAGE{1,2,3}_RATIO` | 0.03 / 0.04 / 0.05 | 단계별 자본 비중 |
+| `STRATEGY_UPTREND_MAX_POSITION_PCT` | 0.15 | 종목당 최대 자본 비중 |
+| `STRATEGY_UPTREND_MIN_CASH_RATIO` | 0.0 | DCA 가 내려갈 수 있는 현금 하한 |
+| `STRATEGY_UPTREND_DCA_RESERVE_RATIO` | 0.10 | 일반 매수가 남겨야 하는 DCA 예비현금 (0=풀투자) |
+| `STRATEGY_CRASH_INDEX_1D_PCT` / `_5D_PCT` | -5.0 / -10.0 | Crash 지수 임계 |
+| `STRATEGY_CRASH_VIX_LEVEL` / `STRATEGY_CRASH_FROZEN_VIX` | 35 / 50 | Crash / Frozen VIX 임계 |
+| `STRATEGY_KOSPI_5D_MULT_TIER{2,3,4}` | -7 / -12 / -18 | 지수 5d tier 임계 (KR=KOSPI, US=SPX 공용) |
+| `STRATEGY_KOSPI_5D_MULT_VAL{1..4}` | 1.0 / 1.5 / 2.0 / 2.5 | tier 별 per_trade 배율 |
+| `STRATEGY_KOSPI_5D_SCORE_BOOST{1..4}` | 0 / -5 / -10 / -15 | tier 별 score 가산 |
+
 ### 현금 비중 (레짐별)
 
 | 설정키 | 기본값 |
@@ -1151,4 +1239,4 @@ US:
 
 ---
 
-**Last Updated**: 2026-04-30 (✅ 점수 시스템 통합 비율(%) 기반 전환 — DCF/RSI/EMA200/VIX/F&G/Regime/change 모두 비율 컴포넌트화, target_buy/sell 필드 폐기)
+**Last Updated**: 2026-09-09 (✅ 5-1 Uptrend DCA 섹션 추가 — DCA 통화/게이트, 안전망 손절, Frozen 매수 차단, SPX tier, 예비현금) · 2026-04-30 (✅ 점수 시스템 통합 비율(%) 기반 전환 — DCF/RSI/EMA200/VIX/F&G/Regime/change 모두 비율 컴포넌트화, target_buy/sell 필드 폐기)

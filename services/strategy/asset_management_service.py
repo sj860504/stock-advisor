@@ -47,12 +47,12 @@ class AssetManagementService:
         is_us_strategy_enabled = SettingsService.get_bool("STRATEGY_ENABLED_US", True)
 
         if is_kr_open and is_kr_strategy_enabled:
-            cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings, user_state)
+            cls._rebalance_market(user_id, "KR", kr_cash, kr_stock_total, target_ratio, holdings, user_state, macro_data)
         elif is_kr_open:
             logger.info("[AssetMgmt] KR Strategy is disabled. Skipping KR rebalance.")
 
         if is_us_open and is_us_strategy_enabled:
-            cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings, user_state)
+            cls._rebalance_market(user_id, "US", usd_cash, us_stock_total_usd, target_ratio, holdings, user_state, macro_data)
         elif is_us_open:
             logger.info("[AssetMgmt] US Strategy is disabled. Skipping US rebalance.")
 
@@ -61,6 +61,7 @@ class AssetManagementService:
         cls, user_id: str, market: str, cash: float, stock_total: float,
         target_ratio: float, holdings: List[HoldingSchema],
         user_state: Optional[UserState] = None,
+        macro_data: Optional[MacroDataSnapshot] = None,
     ) -> None:
         """단일 시장(KR/US) 현금갭 계산 후 매수 또는 매도 위임.
         gap 크기 비례 BUY threshold 동적 완화 (cash-gap-aware)."""
@@ -99,8 +100,14 @@ class AssetManagementService:
             PositionService.execute_buy_budget(
                 user_id, budget_krw=budget_krw, budget_usd=budget_usd,
                 signals=eligible, user_state=user_state, gap_pct=gap_pct,
+                macro_data=macro_data,
             )
         elif gap < 0:
+            if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+                # Uptrend: 예비현금(RESERVE)은 DCA 가 소진하는 게 정상. 수익 종목을 팔아
+                # 예비현금을 다시 채우는 것은 '매도 보수적' 원칙과 충돌 → 매도 스킵.
+                logger.info(f"[AssetMgmt] {market} 현금 {cash_ratio:.1%} < 예비 {target_ratio:.1%} — Uptrend 모드: 현금확보 매도 스킵")
+                return
             signals = SignalService.get_latest_signals()
             market_holdings = [h for h in holdings if (is_kr(h.ticker) if market == "KR" else not is_kr(h.ticker))]
             candidates = cls._select_sell_candidates(market_holdings, signals)
@@ -117,7 +124,7 @@ class AssetManagementService:
     def _get_target_cash_ratio(cls, regime: MarketRegimeSchema, fear_greed: Optional[float], holdings: List[HoldingSchema]) -> float:
         """Return target cash ratio based on regime + individual holding profit rates.
 
-        Uptrend DCA 활성 시 STRATEGY_UPTREND_MIN_CASH_RATIO (기본 0%) 사용 — 풀투자.
+        Uptrend DCA 활성 시 max(MIN_CASH_RATIO, DCA_RESERVE_RATIO) 사용 — 일반 매수는 DCA 예비현금을 남기고, DCA 추매만 MIN_CASH 까지 사용.
 
         Legacy rules:
           - fear_greed < 10 → 0.0  (extreme fear, full investment)
@@ -128,7 +135,9 @@ class AssetManagementService:
         """
         from services.config.settings_service import SettingsService as _SS
         if _SS.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
-            return _SS.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
+            # 일반 budget 매수는 DCA 예비현금(RESERVE) 이상 유지 — execution_service_v2 와 동일 규칙
+            from services.strategy.execution_service_v2 import TradeExecutorService
+            return TradeExecutorService._uptrend_target_cash_ratio()
         if fear_greed is not None and fear_greed < 10:
             return 0.0
 

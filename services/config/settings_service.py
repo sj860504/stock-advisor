@@ -171,7 +171,8 @@ class SettingsService:
         "STRATEGY_KOSPI_5D_SCORE_BOOST4":        ("-15",   "[KOSPI 5d] tier4 score 가산"),
         # Safety
         "STRATEGY_UPTREND_MAX_POSITION_PCT":     ("0.15",  "[Uptrend] 종목당 최대 자본 비중 (15%)"),
-        "STRATEGY_UPTREND_MIN_CASH_RATIO":       ("0.0",   "[Uptrend] 최저 현금 비율 (0=풀투자 허용)"),
+        "STRATEGY_UPTREND_MIN_CASH_RATIO":       ("0.0",   "[Uptrend] 최저 현금 비율 (0=풀투자 허용) — DCA 추매가 사용 가능한 하한"),
+        "STRATEGY_UPTREND_DCA_RESERVE_RATIO":    ("0.10",  "[Uptrend] DCA 예비현금 비율 — score/budget 일반 매수는 이 비율 이상 현금 유지, DCA 추매만 MIN_CASH 까지 사용 (0=예비 없음)"),
     }
 
     @classmethod

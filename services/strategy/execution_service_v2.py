@@ -251,12 +251,25 @@ class TradeExecutorService:
         return vix >= 25 or fng <= 30
 
     @classmethod
+    def _uptrend_target_cash_ratio(cls) -> float:
+        """Uptrend DCA 모드의 일반(score/budget) 매수용 목표 현금 비율.
+        = max(MIN_CASH_RATIO, DCA_RESERVE_RATIO). DCA 추매는 이 예비현금을 사용할 수 있고
+        (엔트리 게이트 우회) MIN_CASH_RATIO 까지만 내려간다 → 폭락 시 dry powder 확보."""
+        min_cash = SettingsService.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
+        reserve = SettingsService.get_float("STRATEGY_UPTREND_DCA_RESERVE_RATIO", 0.10)
+        return max(0.0, min_cash, reserve)
+
+    @staticmethod
+    def _is_dca_trigger(trigger_reason: Optional[str]) -> bool:
+        return bool(trigger_reason) and trigger_reason.startswith("dca_stage")
+
+    @classmethod
     def _get_target_cash_ratio(cls, market: str, regime_status: str) -> float:
         """Get target cash ratio based on market regime (KR/US separated).
-        Uptrend DCA 활성 시 STRATEGY_UPTREND_MIN_CASH_RATIO (기본 0%) 사용 →
-        DCA가 풀투자까지 매수 가능."""
+        Uptrend DCA 활성 시 max(MIN_CASH_RATIO, DCA_RESERVE_RATIO) → 일반 매수는
+        예비현금을 남기고, DCA 추매(엔트리 게이트 우회)만 MIN_CASH 까지 사용."""
         if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
-            return SettingsService.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
+            return cls._uptrend_target_cash_ratio()
         regime_key = regime_status.upper()
         if regime_key not in ['BEAR', 'NEUTRAL', 'BULL']:
             regime_key = 'NEUTRAL'
@@ -499,10 +512,16 @@ class TradeExecutorService:
         cls, ticker: str, cash_balance: float, is_holding: bool, profit_pct: float,
         holdings: List[HoldingSchema], exchange_rate: float,
         target_cash_ratio_kr: float, target_cash_ratio_us: float, macro: MacroDataSnapshot,
+        trigger_reason: Optional[str] = None,
     ) -> bool:
-        """Check cash balance and entry conditions. Returns True if buy is allowed."""
+        """Check cash balance and entry conditions. Returns True if buy is allowed.
+        Uptrend DCA 추매(trigger_reason='dca_stage_*')는 레거시 추매 엔트리(-5% 이하)와
+        목표현금 게이트를 우회 — 단계 임계(-3/-8/-15%)·max position·min cash 는
+        PositionService._handle_uptrend_dca_signal 이 자체 검증한다."""
         if not cls._has_absolute_cash(ticker, cash_balance):
             return False
+        if cls._is_dca_trigger(trigger_reason):
+            return True
         if not cls._passes_add_buy_entry(ticker, is_holding, profit_pct):
             return False
         if cls._is_cash_below_target(ticker, holdings, cash_balance, exchange_rate, target_cash_ratio_kr, target_cash_ratio_us, macro):
@@ -588,10 +607,17 @@ class TradeExecutorService:
         if MarketHourService.is_weekend() or not MarketHourService.is_trading_active(market):
             logger.info(f"⛔ {ticker} Buy blocked: outside {market} trading-active window")
             return TradeResult.no_op()
+        # [Uptrend] Frozen(VIX>50) 중앙 게이트 — DCA/score/budget 매수 경로 전부 차단
+        if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
+            from services.strategy.crash_guard_service import CrashGuardService
+            if CrashGuardService.is_frozen(macro):
+                logger.info(f"⏸ {ticker} Buy blocked: Frozen 가드 (VIX>{SettingsService.get_float('STRATEGY_CRASH_FROZEN_VIX', 50.0):.0f})")
+                return TradeResult.no_op()
         if not cls._check_buy_cash_and_entry_conditions(
             ticker, cash_balance, is_holding, profit_pct,
             holdings, exchange_rate,
             target_cash_ratio_kr, target_cash_ratio_us, macro,
+            trigger_reason=trigger_reason,
         ):
             return TradeResult.no_op()
         is_kr_flag, holdings, kr_assets, us_assets_krw, usd_cash_krw = cls._compute_buy_market_totals(ticker, holdings, cash_balance, exchange_rate, user_id)

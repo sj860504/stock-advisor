@@ -109,15 +109,19 @@ def get_crash_status() -> Dict[str, Any]:
     macro = MacroService.get_macro_data_snapshot()
     is_crash, is_frozen, reasons = CrashGuardService.get_status(macro)
     tier = CrashGuardService.kospi_5d_tier(macro)
+    from services.config.settings_service import SettingsService
     return {
         "is_crash": is_crash,
         "is_frozen": is_frozen,
         "reasons": reasons,
         "kospi_tier": tier,
+        "spx_tier": CrashGuardService.index_5d_tier(macro, "SPY"),  # US 종목용 tier (SPX 5d)
         "kospi_1d": macro.kospi_change_1d,
         "kospi_5d": macro.kospi_change_5d,
+        "spx_1d": macro.spx_change_1d,
+        "spx_5d": macro.spx_change_5d,
         "vix": macro.vix,
-        "uptrend_dca_enabled": True,  # settings 에서 가져올 수도
+        "uptrend_dca_enabled": SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1,
     }
 
 
