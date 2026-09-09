@@ -33,7 +33,7 @@ class AssetManagementService:
         regime: MarketRegimeSchema = macro_data.market_regime
         fear_greed: Optional[float] = macro_data.fear_greed
 
-        target_ratio = cls._get_target_cash_ratio(regime, fear_greed, holdings)
+        target_ratio = cls._get_target_cash_ratio(regime, fear_greed, holdings, macro_data)
         kr_stock_total, us_stock_total_usd = cls._calc_totals(holdings)
 
         logger.info(
@@ -121,7 +121,8 @@ class AssetManagementService:
     # ── Target Cash Ratio ──────────────────────────────────────────────────────
 
     @classmethod
-    def _get_target_cash_ratio(cls, regime: MarketRegimeSchema, fear_greed: Optional[float], holdings: List[HoldingSchema]) -> float:
+    def _get_target_cash_ratio(cls, regime: MarketRegimeSchema, fear_greed: Optional[float], holdings: List[HoldingSchema],
+                               macro: Optional[MacroDataSnapshot] = None) -> float:
         """Return target cash ratio based on regime + individual holding profit rates.
 
         Uptrend DCA 활성 시 max(MIN_CASH_RATIO, DCA_RESERVE_RATIO) 사용 — 일반 매수는 DCA 예비현금을 남기고, DCA 추매만 MIN_CASH 까지 사용.
@@ -137,7 +138,7 @@ class AssetManagementService:
         if _SS.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
             # 일반 budget 매수는 DCA 예비현금(RESERVE) 이상 유지 — execution_service_v2 와 동일 규칙
             from services.strategy.execution_service_v2 import TradeExecutorService
-            return TradeExecutorService._uptrend_target_cash_ratio()
+            return TradeExecutorService._uptrend_target_cash_ratio(macro)
         if fear_greed is not None and fear_greed < 10:
             return 0.0
 

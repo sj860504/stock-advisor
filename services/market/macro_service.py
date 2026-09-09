@@ -121,41 +121,63 @@ class MacroService:
         data = cls.get_macro_data()
         snapshot = MacroDataSnapshot(**{k: v for k, v in data.items() if k != "timestamp"})
         snapshot.exchange_rate = cls.get_exchange_rate()
-        # KOSPI/SPX 변화율 계산 — yfinance 5분 캐시
-        kchg = cls._get_index_changes("^KS11")
-        schg = cls._get_index_changes("^GSPC")
-        snapshot.kospi_change_1d = kchg[0]
-        snapshot.kospi_change_5d = kchg[1]
-        snapshot.spx_change_1d = schg[0]
-        snapshot.spx_change_5d = schg[1]
+        # KOSPI/SPX 변화율 계산 — yfinance 5분 캐시 (1d/5d/20d/90d)
+        kchg = cls._get_index_changes_full("^KS11")
+        schg = cls._get_index_changes_full("^GSPC")
+        snapshot.kospi_change_1d = kchg.get(1)
+        snapshot.kospi_change_5d = kchg.get(5)
+        snapshot.kospi_change_20d = kchg.get(20)
+        snapshot.kospi_change_90d = kchg.get(90)
+        snapshot.spx_change_1d = schg.get(1)
+        snapshot.spx_change_5d = schg.get(5)
+        snapshot.spx_change_20d = schg.get(20)
+        snapshot.spx_change_90d = schg.get(90)
+        snapshot.vix_change_1d = cls._get_index_changes_full("^VIX").get(1)
+        # 장중 breadth (D3) — 실시간 유니버스 등락률. 순환 import 방지 위해 지연 import
+        try:
+            from services.market.market_data_service import MarketDataService
+            MarketDataService.fill_breadth(snapshot)
+        except Exception as e:
+            logger.debug(f"breadth unavailable: {e}")
         return snapshot
 
-    _index_change_cache: dict = {}   # {symbol: (1d, 5d, cached_at_epoch)}
+    _index_change_cache: dict = {}   # {symbol: ({1:..,5:..,20:..,90:..}, cached_at_epoch)}
     _INDEX_CHANGE_TTL_SEC: int = 300  # 5분
+    _INDEX_CHANGE_HORIZONS = (1, 5, 20, 90)
 
     @classmethod
-    def _get_index_changes(cls, symbol: str) -> tuple:
-        """yfinance로 지수 1d/5d 변화율 (%) 계산. 5분 메모리 캐시.
-        실패 시 (None, None) 반환."""
+    def _get_index_changes_full(cls, symbol: str) -> dict:
+        """yfinance로 지수 N거래일 변화율 (%) — {1, 5, 20, 90}. 5분 메모리 캐시.
+        데이터 부족한 horizon 은 None. 실패 시 빈 dict."""
         import time
         now = time.time()
         cached = cls._index_change_cache.get(symbol)
-        if cached and (now - cached[2]) < cls._INDEX_CHANGE_TTL_SEC:
-            return cached[0], cached[1]
+        if cached and (now - cached[1]) < cls._INDEX_CHANGE_TTL_SEC:
+            return cached[0]
         try:
             import yfinance as yf
-            data = yf.Ticker(symbol).history(period="15d", interval="1d", auto_adjust=True)
-            if data is None or data.empty or len(data) < 6:
-                return None, None
-            closes = list(data["Close"].dropna())
-            cur = float(closes[-1])
-            chg_1d = (cur - float(closes[-2])) / float(closes[-2]) * 100
-            chg_5d = (cur - float(closes[-6])) / float(closes[-6]) * 100
-            cls._index_change_cache[symbol] = (chg_1d, chg_5d, now)
-            return chg_1d, chg_5d
+            data = yf.Ticker(symbol).history(period="6mo", interval="1d", auto_adjust=True)
+            if data is None or data.empty or len(data) < 2:
+                return {}
+            closes = [float(x) for x in data["Close"].dropna()]
+            cur = closes[-1]
+            out = {}
+            for h in cls._INDEX_CHANGE_HORIZONS:
+                if len(closes) > h and closes[-1 - h] > 0:
+                    out[h] = (cur - closes[-1 - h]) / closes[-1 - h] * 100
+                else:
+                    out[h] = None
+            cls._index_change_cache[symbol] = (out, now)
+            return out
         except Exception as e:
             logger.debug(f"⚠️ index changes fetch failed for {symbol}: {e}")
-            return None, None
+            return {}
+
+    @classmethod
+    def _get_index_changes(cls, symbol: str) -> tuple:
+        """(1d, 5d) 하위 호환 래퍼."""
+        d = cls._get_index_changes_full(symbol)
+        return d.get(1), d.get(5)
 
     @staticmethod
     def _save_regime_snapshot(market_regime, vix, fear_greed):
@@ -575,11 +597,12 @@ class MacroService:
         "Goldilocks":   {"modifier":  +8, "label": "Goldilocks"},
     }
 
+    # D5: 실시간 지표(Technical/VIX) 상향, 지연 지표(FRED) 하향. 합계 100.
     COMPONENT_WEIGHTS = {
-        "technical": 20,
+        "technical": 25,
         "vix":       25,
         "fng":       20,
-        "econ":      20,
+        "econ":      15,
         "other":     15,
     }
 
@@ -735,6 +758,30 @@ class MacroService:
         return bear_threshold
 
     @classmethod
+    def _get_bull_threshold(cls) -> int:
+        """Dynamic Bull threshold (D5): 기본 STRATEGY_REGIME_BULL_THRESHOLD(65),
+        직전 1개월 Bear → +2 (67), 2개월 연속 Bear → +5 (70). Bear 탈출 직후 섣부른 Bull 진입 방지."""
+        try:
+            from services.config.settings_service import SettingsService
+            base = SettingsService.get_int("STRATEGY_REGIME_BULL_THRESHOLD", 65)
+        except Exception:
+            base = 65
+        bull_threshold = base
+        try:
+            from services.market.stock_meta_service import StockMetaService
+            recent = StockMetaService.get_market_regime_history(days=70)
+            if recent and len(recent) >= 1:
+                recent_statuses = [r.get("status") for r in recent[:2]]
+                bear_months = sum(1 for s in recent_statuses if s == "Bear")
+                if bear_months >= 2:
+                    bull_threshold = base + 5
+                elif bear_months >= 1:
+                    bull_threshold = base + 2
+        except Exception:
+            pass
+        return bull_threshold
+
+    @classmethod
     def _fetch_spx_and_ndx_history(cls) -> tuple:
         """Fetch real-time SPX 2-year close + NDX 1-month history."""
         import yfinance as yf
@@ -773,9 +820,13 @@ class MacroService:
         technical_20: int, vix_20: int, fng_20: int,
         econ_20: int, other_20: int, phase_modifier: int,
     ) -> int:
-        """5개 컴포넌트 합산 후 phase_modifier 적용, 0~100 클리핑."""
-        base_score = technical_20 + vix_20 + fng_20 + econ_20 + other_20
-        return max(0, min(100, base_score + phase_modifier))
+        """5개 컴포넌트(각 0~20)를 COMPONENT_WEIGHTS 로 가중 합산(합 100) 후 phase_modifier 적용, 0~100 클리핑."""
+        w = MacroService.COMPONENT_WEIGHTS
+        base_score = (
+            technical_20 * w["technical"] + vix_20 * w["vix"] + fng_20 * w["fng"]
+            + econ_20 * w["econ"] + other_20 * w["other"]
+        ) / 20.0
+        return max(0, min(100, round(base_score + phase_modifier)))
 
     @staticmethod
     def _blend_regime_score(regime_score: int, historical_avg_score: float | None) -> int:
@@ -799,10 +850,11 @@ class MacroService:
         forward_pe: float | None = None,
         avg_5y_pe: float | None = None,
     ) -> MarketRegimeSchema:
-        """blended_score 기준 레짐 판정 후 MarketRegimeSchema 구성."""
+        """blended_score 기준 레짐 판정 후 MarketRegimeSchema 구성. Bull 임계는 동적(_get_bull_threshold)."""
+        bull_threshold = MacroService._get_bull_threshold()
         if extreme_fear:
             status = "Bear"
-        elif blended_score >= 65:
+        elif blended_score >= bull_threshold:
             status = "Bull"
         elif blended_score <= bear_threshold:
             status = "Bear"
@@ -819,6 +871,7 @@ class MacroService:
             diff_pct=float(diff_pct),
             regime_score=regime_score,
             bear_threshold=bear_threshold,
+            bull_threshold=bull_threshold,
             economic_phase=economic_phase,
             phase_modifier=phase_modifier,
             ema={f"ema{p}": round(v, 2) for p, v in ema_map.items()},

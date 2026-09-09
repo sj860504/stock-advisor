@@ -403,6 +403,19 @@ class MacroDataSnapshot(BaseModel):
     kospi_change_5d: Optional[float] = None   # %
     spx_change_1d: Optional[float] = None
     spx_change_5d: Optional[float] = None
+    # 상대 약세 판정(S5)·레짐 보조: 20d/90d 지수 변화율
+    kospi_change_20d: Optional[float] = None
+    kospi_change_90d: Optional[float] = None
+    spx_change_20d: Optional[float] = None
+    spx_change_90d: Optional[float] = None
+    vix_change_1d: Optional[float] = None     # VIX 전일 대비 % (Crash 급등 조건)
+    # 장중 breadth (D3) — MarketDataService.compute_breadth 로 채움. 시장별 실시간 등락률 통계
+    kr_breadth_median: Optional[float] = None
+    kr_breadth_down_ratio: Optional[float] = None
+    kr_breadth_count: int = 0
+    us_breadth_median: Optional[float] = None
+    us_breadth_down_ratio: Optional[float] = None
+    us_breadth_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -548,6 +561,7 @@ class MarketRegimeSchema(BaseModel):
     diff_pct: float = 0.0
     regime_score: int = -1
     bear_threshold: int = 40
+    bull_threshold: int = 65
     economic_phase: str = "Neutral"
     phase_modifier: int = 0
     ema: Dict[str, float] = Field(default_factory=dict)
@@ -629,6 +643,9 @@ class SplitOrderState(BaseModel):
     split_count: int = 3
     start_date: str = ""
     entry_price: float = 0.0
+    # 트랜치 페이싱(B3): 다음 트랜치는 (전 트랜치 대비 -N% 하락) OR (다음 거래일) 에만
+    last_tranche_price: float = 0.0
+    last_tranche_date: str = ""
 
 
 class BuyCooldownEntry(BaseModel):
@@ -636,6 +653,9 @@ class BuyCooldownEntry(BaseModel):
     date: str = ""
     price: float = 0.0
     timestamp: float = 0.0  # epoch seconds — gap-aware cooldown 시간 단위 비교용
+    # 재진입 규칙(B6): kind='sell' 은 매도 후 재매수 차단 (expire_days 거래일 또는 -drop% 하락 시 해제)
+    kind: str = "buy"
+    expire_days: int = 1
 
 
 class SplitSellOrderState(BaseModel):

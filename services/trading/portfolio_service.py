@@ -456,6 +456,8 @@ class PortfolioService:
             "return_pct": round(profit_pct, 2),
             "rsi": cached.get("rsi"),
             "score": cached.get("score"),
+            "stock_score": cached.get("stock_score"),
+            "market_adj": cached.get("market_adj"),
             "score_calculated_at": cached.get("score_calculated_at"),
             "ema5": cached.get("ema5"),
             "ema10": cached.get("ema10"),

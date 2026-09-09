@@ -100,6 +100,13 @@
 **Check**: `_execute_trade_v2(is_holding=True)` 경로는 `_passes_add_buy_entry`(profit > `STRATEGY_ADD_POSITION_BELOW` -5% 차단)를 통과함. DCA 예산은 `market_total + cash_balance(KRW)` 를 USD 가격으로 나눔
 **Fix**: `trigger_reason='dca_stage_*'` 는 `_check_buy_cash_and_entry_conditions` 에서 엔트리·목표현금 게이트 우회. DCA 금액은 전부 KRW 기준(`price_krw`, `usd_cash×fx`). 새 매수 경로를 추가할 때 `_execute_trade_v2` 의 is_holding 게이트를 반드시 확인할 것
 
+### 14. MacroDataSnapshot 을 dict 로 직접 만들면 지수 변화율·breadth 가 빠진다 (2026-09-09 수정)
+
+**Symptom**: 매매 루프 로그에 `KOSPI_5d_boost` 가 전혀 없고 Crash 가드가 VIX 로만 동작. 5분 signal_cache(UI)에는 boost 가 보임
+**Check**: `MacroDataSnapshot(**{k: v for k, v in MacroService.get_macro_data().items() ...})` 패턴 사용 여부
+**Root Cause**: `get_macro_data()` dict 에는 `kospi_change_*`, `spx_change_*`, `vix_change_1d`, breadth 가 없다. 이 값들은 `get_macro_data_snapshot()` 이 채운다
+**Fix**: 항상 `MacroService.get_macro_data_snapshot()` 사용. 새 스냅샷 필드를 추가할 때도 그 함수에만 넣으면 된다
+
 ---
 
 **Update this file when:**

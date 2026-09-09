@@ -388,7 +388,7 @@ function renderPortfolioTable(data) {
             </td>
             <td class="mono" style="font-size:.82rem">${d.dcf_fair ? fmtCurr(d.dcf_fair, s) + '<span class="sub-text">' + fmtPct(d.dcf_upside) + '</span>' : '-'}</td>
             <td><span class="badge ${rsiCls}">${fmt(rsi, 1)}</span></td>
-            <td><span class="badge ${scoreCls}">${score != null ? score : '-'}</span></td>
+            <td><span class="badge ${scoreCls}" title="${d.stock_score != null ? `종목 ${d.stock_score} / 시장조정 ${d.market_adj >= 0 ? '+' : ''}${d.market_adj}` : ''}">${score != null ? score : '-'}</span></td>
             <td class="text-center">
                 ${d.has_buy_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'buy')">매수 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}
                 ${d.has_sell_cooldown ? `<button class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:11px;color:var(--sub)" onclick="resetTickerCooldown('${d.ticker}', 'sell')">매도 <i class="fas fa-times" style="font-size:9px;color:var(--bear)"></i></button>` : ''}

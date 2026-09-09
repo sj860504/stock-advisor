@@ -170,8 +170,7 @@ def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]
 
     # Assemble data (same pattern as get_waiting_list)
     holdings = PortfolioService.load_portfolio(user_id)
-    raw_macro = MacroService.get_macro_data()
-    macro_snapshot = MacroDataSnapshot(**{k: v for k, v in raw_macro.items() if k != "timestamp"})
+    macro_snapshot = MacroService.get_macro_data_snapshot()
     user_state_map = TradingStrategyService._load_state(user_id)
     user_state = user_state_map.get(user_id, UserState())
     cash_balance = PortfolioService.load_cash(user_id)
@@ -188,3 +187,94 @@ def get_ticker_score(ticker_input: str, user_id: str = "sean") -> Dict[str, Any]
     )
     result["name"] = getattr(state, 'name', None) or real_ticker
     return result
+
+
+@router.get("/strategy-kpi")
+def get_strategy_kpi(days: int = 30) -> Dict[str, Any]:
+    """전략 KPI (감지·매수·매도 사이클 건강 지표).
+    - signal cache: BUY/HOLD/SELL 분포, 컴포넌트별 캡 포화 비율, 시장 조정치 평균
+    - trade_history(최근 N일): trigger_reason 별 건수·실현 P&L(매도), 섀도우 건수
+    - crash guard 현재 상태
+    """
+    import re as _re
+    from collections import Counter, defaultdict
+    from datetime import datetime as _dt, timedelta as _td
+    from repositories.signal_cache_repo import SignalCacheRepo
+    from repositories.trade_history_repo import TradeHistoryRepo
+    from services.config.settings_service import SettingsService
+    from services.strategy.crash_guard_service import CrashGuardService
+
+    buy_thr = SettingsService.get_int("STRATEGY_BUY_THRESHOLD", 30)
+    sell_thr = SettingsService.get_int("STRATEGY_SELL_THRESHOLD", 70)
+    caps = {
+        "DCF_deviation": SettingsService.get_int("STRATEGY_DCF_DEVIATION_CAP", 25),
+        "RSI_deviation": SettingsService.get_int("STRATEGY_RSI_DEVIATION_CAP", 15),
+        "EMA200_deviation": SettingsService.get_int("STRATEGY_EMA200_DEVIATION_CAP", 15),
+        "change_deviation": SettingsService.get_int("STRATEGY_CHANGE_DEVIATION_CAP", 15),
+    }
+    cache = SignalCacheRepo.load_all()
+    dist = {"buy": 0, "hold": 0, "sell": 0, "kr_buy": 0, "us_buy": 0, "kr": 0, "us": 0}
+    comp_n: Counter = Counter(); comp_cap: Counter = Counter()
+    market_adj_vals = []; stock_scores = []
+    for t, row in cache.items():
+        sc = row.get("score")
+        if sc is None:
+            continue
+        kr = is_kr(t)
+        dist["kr" if kr else "us"] += 1
+        if sc <= buy_thr:
+            dist["buy"] += 1; dist["kr_buy" if kr else "us_buy"] += 1
+        elif sc >= sell_thr:
+            dist["sell"] += 1
+        else:
+            dist["hold"] += 1
+        bd = row.get("breakdown") or {}
+        if bd.get("market_adj") is not None:
+            market_adj_vals.append(bd["market_adj"])
+        if bd.get("stock_score") is not None:
+            stock_scores.append(bd["stock_score"])
+        for r in row.get("reasons") or []:
+            m = _re.match(r"(\w+)\(.*?,([+-]?\d+)", r)
+            if not m:
+                continue
+            name, val = m.group(1), abs(int(m.group(2)))
+            if name in caps:
+                comp_n[name] += 1
+                if val >= caps[name]:
+                    comp_cap[name] += 1
+    saturation = {k: round(comp_cap[k] / comp_n[k], 3) if comp_n[k] else None for k in caps}
+
+    since = _dt.now() - _td(days=max(1, days))
+    trades = TradeHistoryRepo.query_by_date_range(since)
+    by_reason: dict = defaultdict(lambda: {"buys": 0, "sells": 0, "realized_pnl": 0.0, "shadow": 0})
+    for tr in trades:
+        key = tr.trigger_reason or "unknown"
+        rec = by_reason[key]
+        if tr.status == "shadow":
+            rec["shadow"] += 1
+        if tr.order_type == "buy":
+            rec["buys"] += 1
+        else:
+            rec["sells"] += 1
+            if tr.buy_price_at_trade and tr.price:
+                rec["realized_pnl"] += (tr.price - tr.buy_price_at_trade) * (tr.quantity or 0)
+    macro = MacroService.get_macro_data_snapshot()
+    is_crash, is_frozen, reasons = CrashGuardService.get_status(macro)
+    n = len(stock_scores)
+    return {
+        "generated_at": _dt.now().isoformat(),
+        "thresholds": {"buy": buy_thr, "sell": sell_thr},
+        "signal_distribution": dist,
+        "signals_total": len(cache),
+        "component_saturation": saturation,
+        "market_adj": {
+            "mean": round(sum(market_adj_vals) / len(market_adj_vals), 2) if market_adj_vals else None,
+            "min": min(market_adj_vals) if market_adj_vals else None,
+            "max": max(market_adj_vals) if market_adj_vals else None,
+        },
+        "stock_score_median": sorted(stock_scores)[n // 2] if n else None,
+        "trades_by_trigger": dict(by_reason),
+        "trades_window_days": days,
+        "crash_guard": {"is_crash": is_crash, "is_frozen": is_frozen, "reasons": reasons},
+        "shadow_mode": SettingsService.get_int("STRATEGY_SHADOW", 0) == 1,
+    }

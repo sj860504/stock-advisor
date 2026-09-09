@@ -59,6 +59,42 @@ class IndicatorService:
         return rsi_series
 
     @staticmethod
+    def compute_atr_pct(df: pd.DataFrame, period: int = 14) -> Optional[float]:
+        """ATR(period) / 마지막 종가 × 100. High/Low 가 없으면 종가 절대변화 평균으로 근사.
+        데이터 부족(< period+1) 시 None."""
+        try:
+            if df is None or len(df) < period + 1 or "Close" not in df.columns:
+                return None
+            close = pd.to_numeric(df["Close"], errors="coerce")
+            if "High" in df.columns and "Low" in df.columns:
+                high = pd.to_numeric(df["High"], errors="coerce")
+                low = pd.to_numeric(df["Low"], errors="coerce")
+                prev_close = close.shift(1)
+                tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+            else:
+                tr = close.diff().abs()
+            atr = tr.rolling(window=period).mean().iloc[-1]
+            last = float(close.iloc[-1])
+            if last <= 0 or pd.isna(atr):
+                return None
+            return round(float(atr) / last * 100.0, 3)
+        except Exception:
+            return None
+
+    @staticmethod
+    def compute_avg_volume(df: pd.DataFrame, window: int = 20) -> Optional[float]:
+        """최근 window 일 평균 거래량. Volume 컬럼 없거나 데이터 부족 시 None."""
+        try:
+            if df is None or "Volume" not in df.columns or len(df) < 2:
+                return None
+            vol = pd.to_numeric(df["Volume"], errors="coerce").dropna()
+            if vol.empty:
+                return None
+            return round(float(vol.tail(window).mean()), 1)
+        except Exception:
+            return None
+
+    @staticmethod
     def compute_ema_series(close_series: pd.Series, period: int) -> pd.Series:
         """Calculate EMA (Exponential Moving Average) time series."""
         if close_series.empty:

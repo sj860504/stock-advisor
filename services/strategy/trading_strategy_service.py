@@ -362,8 +362,9 @@ class TradingStrategyService:
     def _load_macro_and_assets(cls, holdings: list, kr_cash: float) -> tuple:
         """Load macro data and calculate asset totals.
         Returns (macro_snapshot, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us)."""
-        macro_data = MacroService.get_macro_data()
-        macro_snapshot = MacroDataSnapshot(**{k: v for k, v in macro_data.items() if k != "timestamp"})
+        # D0: get_macro_data_snapshot() 사용 — KOSPI/SPX 변화율·VIX 변화·breadth 가 채워진 스냅샷.
+        # (이전엔 dict→모델 직변환으로 지수 변화율이 None → 매매 루프에서 Crash 가드·지수 boost 가 비활성이었음)
+        macro_snapshot = MacroService.get_macro_data_snapshot()
         exchange_rate = MacroService.get_exchange_rate()
         kr_total, us_total_krw, target_cash_kr, target_cash_us = TradeExecutorService._calculate_total_assets(holdings, kr_cash, macro_snapshot)
         return macro_snapshot, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us
@@ -492,8 +493,7 @@ class TradingStrategyService:
         all_states = MarketDataService.get_all_states()
         all_state_items = list(all_states.items())
         holdings = PortfolioService.load_portfolio(user_id)
-        raw_macro = MacroService.get_macro_data()
-        macro_snapshot = MacroDataSnapshot(**{k: v for k, v in raw_macro.items() if k != "timestamp"})
+        macro_snapshot = MacroService.get_macro_data_snapshot()
 
         state = cls._load_state(user_id)
         user_state = state.get(user_id, UserState())

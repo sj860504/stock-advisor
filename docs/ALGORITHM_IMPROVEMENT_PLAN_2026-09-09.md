@@ -3,6 +3,10 @@
 기준 코드: `develop` 8fafd4d + `claude/algorithm-improvement-lehthi` (Uptrend DCA 결함 수정 802540f).
 근거 데이터: 저장소 DB 스냅샷(2026-06-08~12) `ticker_signal_cache` 199건, 보유 23종목(전부 KR).
 
+> **구현 상태 (2026-09-09, 브랜치 `claude/algorithm-improvement-lehthi`)**: 아래 항목 전부 구현·테스트 완료 (`tests/test_algorithm_v2.py` 37건 + `tests/test_uptrend_dca.py` 25건).
+> 운영 규칙 요약은 `.claude/BUSINESS_LOGIC.md` §5-2. 미구현: D3 의 KIS 지수 현재가 API 보강(breadth 로 대체), S6 의 미체결 매도 재주문(중복 체결 위험으로 보류).
+> 사용자 결정 항목(§5)은 기본값으로 진행 — DCA 기준가 `avg`(entry 는 옵션), 예비현금 동적화 ON, 상대약세 정리 ON, 점수 분리는 API/UI 툴팁 노출.
+
 ---
 
 ## 0. 현황 진단 — 숫자로 보는 문제

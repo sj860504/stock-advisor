@@ -1,7 +1,8 @@
 """CrashGuardService — 단기 시장 충격 감지 및 매도/매수 가드.
 
 Uptrend DCA 알고리즘의 안전망:
-- Crash: KOSPI/SPX 1d<-5% OR 5d<-10% OR VIX>35 → 매도/손절 일시 보류
+- Crash: KOSPI/SPX 1d<-5% OR 5d<-10% OR VIX>35 OR VIX 1d +20% 급등
+         OR 장중 breadth(유니버스 등락률 중앙값 ≤ -3% AND 하락비율 ≥ 80%) → 매도/손절 일시 보류
 - Frozen: VIX>50 → 매수도 일시 보류 (panic 단계 추가 진입 방지)
   · DCA 추매 / score 신규매수 / 자산관리 budget 매수 전부 차단
     (ExecutionServiceV2._execute_buy_order 에서 중앙 게이트)
@@ -33,10 +34,23 @@ class CrashGuardService:
     @staticmethod
     def _inputs_key(macro_data) -> tuple:
         return (
-            macro_data.vix,
+            macro_data.vix, getattr(macro_data, "vix_change_1d", None),
             macro_data.kospi_change_1d, macro_data.kospi_change_5d,
             macro_data.spx_change_1d, macro_data.spx_change_5d,
+            getattr(macro_data, "kr_breadth_median", None), getattr(macro_data, "kr_breadth_down_ratio", None),
+            getattr(macro_data, "us_breadth_median", None), getattr(macro_data, "us_breadth_down_ratio", None),
         )
+
+    @staticmethod
+    def _breadth_crash(median, down_ratio, count) -> bool:
+        """D3: 장중 breadth 기반 Crash — 유니버스 등락률 중앙값 ≤ N% AND 하락 비율 ≥ R (표본 ≥ MIN)."""
+        if median is None or down_ratio is None:
+            return False
+        if (count or 0) < SettingsService.get_int("STRATEGY_CRASH_BREADTH_MIN_COUNT", 20):
+            return False
+        med_thr = SettingsService.get_float("STRATEGY_CRASH_BREADTH_MEDIAN_PCT", -3.0)
+        ratio_thr = SettingsService.get_float("STRATEGY_CRASH_BREADTH_DOWN_RATIO", 0.8)
+        return median <= med_thr and down_ratio >= ratio_thr
 
     @classmethod
     def get_status(cls, macro_data) -> Tuple[bool, bool, list]:
@@ -69,6 +83,20 @@ class CrashGuardService:
             reasons.append(f"index_5d({worst_5d:.1f}%<{idx_5d_thresh}%)")
         if vix and vix > vix_thresh:
             reasons.append(f"vix({vix:.1f}>{vix_thresh})")
+        # D3-3: VIX 급등 (수준 미달이어도 전일 대비 +N%)
+        vix_chg = getattr(macro_data, "vix_change_1d", None)
+        vix_chg_thr = SettingsService.get_float("STRATEGY_CRASH_VIX_CHANGE_PCT", 20.0)
+        if vix_chg is not None and vix_chg_thr > 0 and vix_chg >= vix_chg_thr:
+            reasons.append(f"vix_spike({vix_chg:+.0f}%>={vix_chg_thr:.0f}%)")
+        # D3-1: 장중 breadth (일봉 종가 확정 전에 급락 감지)
+        if cls._breadth_crash(getattr(macro_data, "kr_breadth_median", None),
+                              getattr(macro_data, "kr_breadth_down_ratio", None),
+                              getattr(macro_data, "kr_breadth_count", 0)):
+            reasons.append(f"kr_breadth(med{macro_data.kr_breadth_median:+.1f}%,down{macro_data.kr_breadth_down_ratio:.0%})")
+        if cls._breadth_crash(getattr(macro_data, "us_breadth_median", None),
+                              getattr(macro_data, "us_breadth_down_ratio", None),
+                              getattr(macro_data, "us_breadth_count", 0)):
+            reasons.append(f"us_breadth(med{macro_data.us_breadth_median:+.1f}%,down{macro_data.us_breadth_down_ratio:.0%})")
 
         is_crash = bool(reasons)
         is_frozen = bool(vix and vix > frozen_vix)

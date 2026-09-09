@@ -74,8 +74,24 @@ class MarketDataService:
             if (v := getattr(financials, f"ema{span}", None)) is not None
         }
         state.current_price = float(financials.current_price or 0.0)
-        state.update_indicators(emas=emas, dcf=financials.dcf_value, rsi=financials.rsi)
+        state.update_indicators(
+            emas=emas, dcf=financials.dcf_value, rsi=financials.rsi,
+            atr_pct=getattr(financials, "atr_pct", None),
+            avg_volume_20d=getattr(financials, "avg_volume_20d", None),
+            dcf_confidence=cls._dcf_confidence_for(state.ticker),
+        )
         return cls._has_minimum_indicators(state)
+
+    @staticmethod
+    def _dcf_confidence_for(ticker: str) -> Optional[float]:
+        """DCF 소스 신뢰도 계수 (FinancialService 캐시 기반). 알 수 없으면 None(=유지)."""
+        try:
+            from services.analysis.financial_service import FinancialService
+            from services.strategy.uptrend_rules import dcf_confidence_for_source
+            src = FinancialService.get_dcf_source(ticker)
+            return dcf_confidence_for_source(src) if src else None
+        except Exception:
+            return None
 
     @classmethod
     def _should_skip_by_market_hours(cls, ticker: str) -> bool:
@@ -148,7 +164,13 @@ class MarketDataService:
         snapshot = IndicatorService.compute_latest_indicators_snapshot(df["Close"])
         rsi      = snapshot.rsi if snapshot else None
         dcf_val  = DcfService.calculate_dcf(ticker)
-        state.update_indicators(emas=snapshot.ema if snapshot else {}, dcf=dcf_val, rsi=rsi)
+        atr_pct  = IndicatorService.compute_atr_pct(df)
+        avg_vol  = IndicatorService.compute_avg_volume(df)
+        partial_metrics["atr_pct"] = atr_pct
+        partial_metrics["avg_volume_20d"] = avg_vol
+        state.update_indicators(emas=snapshot.ema if snapshot else {}, dcf=dcf_val, rsi=rsi,
+                                atr_pct=atr_pct, avg_volume_20d=avg_vol,
+                                dcf_confidence=cls._dcf_confidence_for(ticker))
         return snapshot, rsi, dcf_val
 
     @classmethod
@@ -360,6 +382,44 @@ class MarketDataService:
                 updated += 1
         logger.info(f"🔄 reload_states_from_db: {updated}/{len(target)} tickers refreshed from DB")
         return updated
+
+    # ── Breadth (D3: 장중 시장 충격 감지) ───────────────────────────────────
+
+    @classmethod
+    def compute_breadth(cls, market: str, max_stale_sec: int = 900) -> tuple:
+        """시장별(KR/US) 실시간 등락률 통계. Returns (median_change_pct, down_ratio, count).
+        is_ready 이고 last_updated 가 max_stale_sec 이내인 종목만 사용. 표본 없으면 (None, None, 0)."""
+        want_kr = market.upper() == "KR"
+        now = datetime.now()
+        rates = []
+        for t, st in list(cls._states.items()):
+            if is_kr(t) != want_kr or not getattr(st, "is_ready", False):
+                continue
+            lu = getattr(st, "last_updated", None)
+            if lu is not None and (now - lu).total_seconds() > max_stale_sec:
+                continue
+            cr = getattr(st, "change_rate", None)
+            if cr is None:
+                continue
+            rates.append(float(cr))
+        if not rates:
+            return None, None, 0
+        rates.sort()
+        n = len(rates)
+        median = rates[n // 2] if n % 2 else (rates[n // 2 - 1] + rates[n // 2]) / 2
+        down_ratio = sum(1 for r in rates if r < 0) / n
+        return round(median, 2), round(down_ratio, 3), n
+
+    @classmethod
+    def fill_breadth(cls, snapshot) -> None:
+        """MacroDataSnapshot 에 KR/US breadth 채움 (in-place)."""
+        try:
+            m, d, n = cls.compute_breadth("KR")
+            snapshot.kr_breadth_median, snapshot.kr_breadth_down_ratio, snapshot.kr_breadth_count = m, d, n
+            m, d, n = cls.compute_breadth("US")
+            snapshot.us_breadth_median, snapshot.us_breadth_down_ratio, snapshot.us_breadth_count = m, d, n
+        except Exception as e:
+            logger.debug(f"breadth fill skipped: {e}")
 
     # ── Tier management ───────────────────────────────────────────────────
 

@@ -57,7 +57,7 @@ class Config:
     STRATEGY_BASE_SCORE = int(os.getenv("STRATEGY_BASE_SCORE", "50"))
     # Score-based strategy defaults: 30~40 buy, 70~100 sell
     STRATEGY_BUY_THRESHOLD_MIN = int(os.getenv("STRATEGY_BUY_THRESHOLD_MIN", "30"))
-    STRATEGY_BUY_THRESHOLD = int(os.getenv("STRATEGY_BUY_THRESHOLD", "40"))
+    STRATEGY_BUY_THRESHOLD = int(os.getenv("STRATEGY_BUY_THRESHOLD", "30"))  # 문서·자산관리와 통일 (B1)
     STRATEGY_SELL_THRESHOLD = int(os.getenv("STRATEGY_SELL_THRESHOLD", "70"))
     STRATEGY_SELL_THRESHOLD_MAX = int(os.getenv("STRATEGY_SELL_THRESHOLD_MAX", "100"))
     # Do not trade until full analysis is ready

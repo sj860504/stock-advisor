@@ -389,10 +389,16 @@ class DataService:
             return False
         hist = cls.get_price_history(ticker, days=HISTORY_DAYS_DEFAULT)
         indicators = {}
+        atr_pct = None
+        avg_vol = None
         if not hist.empty:
             indicators = IndicatorService.get_latest_indicators(hist[COL_CLOSE])
+            atr_pct = IndicatorService.compute_atr_pct(hist)
+            avg_vol = IndicatorService.compute_avg_volume(hist)
         dcf_val = DcfService.calculate_dcf(ticker)
         metrics = {
+            "atr_pct": atr_pct,
+            "avg_volume_20d": avg_vol,
             "current_price": price_info.get("price"),
             "market_cap": price_info.get("market_cap"),
             "per": price_info.get("per"),

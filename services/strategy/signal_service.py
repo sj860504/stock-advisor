@@ -15,6 +15,9 @@ from services.market.macro_service import MacroService
 from services.config.settings_service import SettingsService
 from services.strategy.execution_service_v2 import TradeExecutorService
 from models.schemas import MacroDataSnapshot, SignalSchema, UserState
+from services.strategy.uptrend_rules import (
+    tanh_scaled, uptrend_stop_loss_pct, drop_confirmation_factor,
+)
 from utils.logger import get_logger
 from utils.market import is_kr
 
@@ -38,24 +41,31 @@ class SignalService:
         """RSI deviation from 50, capped ±RSI_CAP (1 point per 1 RSI unit).
         Above 50 → positive (sell signal), below 50 → negative (buy signal)."""
         cap = SettingsService.get_int("STRATEGY_RSI_DEVIATION_CAP", 15)
-        delta = max(-cap, min(cap, int(rsi - 50)))
+        # D1: 선형 클램프(59% 가 캡 포화) → tanh 스케일. scale=0 이면 기존 선형.
+        delta = tanh_scaled(rsi - 50, cap, SettingsService.get_float("STRATEGY_RSI_TANH_SCALE", 15.0))
         if delta == 0:
             return 0, []
         return delta, [f"RSI_deviation({rsi:.1f},{delta:+d})"]
 
     @classmethod
-    def _score_dcf(cls, dcf_value: float, curr_price: float) -> tuple:
-        """DCF deviation %-based score, capped ±DCF_CAP."""
+    def _score_dcf(cls, dcf_value: float, curr_price: float, confidence: float = 1.0) -> tuple:
+        """DCF deviation %-based score, capped ±DCF_CAP.
+        D1: tanh 스케일(포화 완화) × 소스 신뢰도 계수(override 1.0 … kis 0.4)."""
         if not (dcf_value and dcf_value > 0):
             WEIGHTS = TradeExecutorService.WEIGHTS
             w = WEIGHTS.get('DCF_UNAVAILABLE', 10)
             return w, [f"no_dcf_data(+{w})"]
         cap = SettingsService.get_int("STRATEGY_DCF_DEVIATION_CAP", 25)
         undervalue_pct = (dcf_value - curr_price) / curr_price * 100
-        delta = max(-cap, min(cap, int(-undervalue_pct)))
+        delta = tanh_scaled(-undervalue_pct, cap, SettingsService.get_float("STRATEGY_DCF_TANH_SCALE", 20.0))
+        conf = 1.0
+        if SettingsService.get_int("STRATEGY_DCF_CONFIDENCE_ENABLED", 1) == 1 and confidence is not None:
+            conf = max(0.0, min(1.0, float(confidence)))
+            delta = int(round(delta * conf))
         if delta == 0:
             return 0, []
-        return delta, [f"DCF_deviation({undervalue_pct:+.1f}%,{delta:+d})"]
+        conf_str = f",conf{conf:.1f}" if conf < 1.0 else ""
+        return delta, [f"DCF_deviation({undervalue_pct:+.1f}%,{delta:+d}{conf_str})"]
 
     @classmethod
     def _score_technical(cls, state, curr_price: float, oversold_rsi: float, overbought_rsi: float, dip_buy_pct: float) -> tuple:
@@ -69,17 +79,28 @@ class SignalService:
         change_rate = getattr(state, 'change_rate', 0) or 0
         cap = SettingsService.get_int("STRATEGY_CHANGE_DEVIATION_CAP", 15)
         change_delta = max(-cap, min(cap, int(change_rate * 3)))
+        # D2: 급락(음수) 가산은 저가 대비 반등 또는 거래량 동반 시에만 전액 (falling knife 완화)
+        if change_delta < 0:
+            factor = drop_confirmation_factor(
+                change_rate, curr_price, getattr(state, 'low_price', 0) or 0,
+                getattr(state, 'volume', 0) or 0, getattr(state, 'avg_volume_20d', 0) or 0,
+            )
+            if factor < 1.0:
+                change_delta = int(round(change_delta * factor))
+                reasons.append(f"drop_unconfirmed(x{factor:.1f})")
         if change_delta != 0:
             delta += change_delta
             reasons.append(f"change_deviation({change_rate:+.1f}%,{change_delta:+d})")
 
-        dcf_d, dcf_r = cls._score_dcf(state.dcf_value, curr_price)
+        dcf_d, dcf_r = cls._score_dcf(state.dcf_value, curr_price, getattr(state, 'dcf_confidence', 1.0))
         delta += dcf_d; reasons.extend(dcf_r)
         return delta, reasons
 
     @classmethod
-    def _score_portfolio(cls, holding, profit_pct: float, take_profit_pct: float, stop_loss_pct: float) -> tuple:
-        """[B] Profit-taking / add-buy / stop-loss -> (delta, reasons, forced_sell)"""
+    def _score_portfolio(cls, holding, profit_pct: float, take_profit_pct: float, stop_loss_pct: float,
+                         atr_pct: float = None) -> tuple:
+        """[B] Profit-taking / add-buy / stop-loss -> (delta, reasons, forced_sell).
+        atr_pct: Uptrend 안전망 손절을 ATR 기반으로 산출 (S4). None 이면 고정 -25%."""
         if not holding:
             return 0, [], False
         WEIGHTS = TradeExecutorService.WEIGHTS
@@ -94,7 +115,7 @@ class SignalService:
             # 단, 극단 손실(STRATEGY_UPTREND_STOP_LOSS_PCT, 기본 -25%) 은 안전망 손절
             # → forced_sell (실행은 UPTREND_STOP_LOSS_DAYS 연속 + Crash 보류 규칙 적용).
             if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
-                uptrend_sl = SettingsService.get_float("STRATEGY_UPTREND_STOP_LOSS_PCT", -25.0)
+                uptrend_sl = uptrend_stop_loss_pct(atr_pct)
                 if uptrend_sl < 0 and profit_pct <= uptrend_sl:
                     return 0, [f"uptrend_stop_loss_hit({profit_pct:.1f}%<={uptrend_sl:.0f}%)"], True
                 delta += WEIGHTS['ADD_POSITION_LOSS']
@@ -218,14 +239,28 @@ class SignalService:
         from services.strategy.position_service import PositionService
         tp_dyn = PositionService._get_take_profit_pct(ticker, macro)
         sl_dyn = PositionService._get_stop_loss_pct(ticker, macro)
-        d, r, forced_sell = cls._score_portfolio(holding, profit_pct, tp_dyn, sl_dyn)
+        d, r, forced_sell = cls._score_portfolio(holding, profit_pct, tp_dyn, sl_dyn, atr_pct=getattr(state, 'atr_pct', None))
         if forced_sell:
             return 100, r, True, {"base": t["base_score"], "forced_sell": True}
         score += d; reasons.extend(r); breakdown["portfolio"] = d
 
-        d, r = cls._score_market_context(macro, regime, ticker); score += d; reasons.extend(r); breakdown["market_context"] = d
         d, r = cls._score_target_prices(state, curr_price); score += d; reasons.extend(r); breakdown["target_prices"] = d
         d, r = cls._score_bonuses(ticker, holding, macro, user_state); score += d; reasons.extend(r); breakdown["bonuses"] = d
+
+        # D1: 종목 점수(stock_score)와 시장 조정치(market_adj) 분리. 시장 컴포넌트는 모든 종목에
+        # 동일하게 더해지는 상수이므로 사실상 '임계선 이동'이다. 최종 score = stock + market_adj (기존 의미 유지),
+        # 두 값을 breakdown 으로 노출해 UI/튜닝에서 분리 관찰 가능.
+        stock_score = score
+        m_delta, m_reasons = cls._score_market_context(macro, regime, ticker)
+        adj_cap = SettingsService.get_int("STRATEGY_MARKET_ADJ_CAP", 20)
+        market_adj = max(-adj_cap, min(adj_cap, m_delta))
+        if market_adj != m_delta:
+            m_reasons.append(f"market_adj_capped({m_delta:+d}->{market_adj:+d})")
+        reasons.extend(m_reasons)
+        breakdown["market_context"] = market_adj
+        breakdown["stock_score"] = max(1, min(100, stock_score))
+        breakdown["market_adj"] = market_adj
+        score = stock_score + market_adj
 
         return score, reasons, False, breakdown
 
@@ -255,7 +290,14 @@ class SignalService:
         thresholds = cls._load_score_thresholds()
         thresholds["take_profit_pct"] = cls._get_take_profit_pct_by_regime(regime)
         if ticker in panic_locks:
-            return (20, ["3day_recovery_wait"], {"panic_lock": True}) if state.rsi < thresholds["oversold_rsi"] else (50, ["panic_lock_zone"], {"panic_lock": True})
+            # B6: 재진입은 RSI 과매도 + 손절가 대비 +N% 회복 확인(바닥 확인) 시에만 20점
+            lock = panic_locks.get(ticker)
+            lock_price = float(lock.get("price") or 0) if isinstance(lock, dict) else 0.0
+            recovery = SettingsService.get_float("STRATEGY_REENTRY_RECOVERY_PCT", 3.0)
+            recovered = (lock_price <= 0) or (curr_price >= lock_price * (1 + recovery / 100))
+            if state.rsi < thresholds["oversold_rsi"] and recovered:
+                return 20, ["3day_recovery_wait"], {"panic_lock": True}
+            return 50, ["panic_lock_zone" if recovered else f"panic_lock_no_recovery(<{lock_price*(1+recovery/100):,.0f})"], {"panic_lock": True}
         score, reasons, forced_sell, breakdown = cls._apply_score_components(ticker, state, holding, macro, user_state, profit_pct, curr_price, regime, thresholds)
         if forced_sell:
             return 100, reasons, breakdown
@@ -278,9 +320,17 @@ class SignalService:
         elif score >= sell_threshold_min:
             recommendation = "SELL"
 
+        market_adj = int(breakdown.get("market_adj", 0) or 0)
         return {
             "ticker": ticker,
             "score": score,
+            "stock_score": breakdown.get("stock_score", score),
+            "market_adj": market_adj,
+            "buy_threshold": buy_threshold_max,
+            "sell_threshold": sell_threshold_min,
+            # 시장 조정치를 임계선으로 옮겨 본 값: stock_score ≤ eff_buy ⇔ score ≤ buy_threshold
+            "effective_buy_threshold": buy_threshold_max - market_adj,
+            "effective_sell_threshold": sell_threshold_min - market_adj,
             "recommendation": recommendation,
             "reasons": reasons,
             "score_breakdown": breakdown,
@@ -335,6 +385,17 @@ class SignalService:
         fear_greed = macro.fear_greed or 50
         regime_status = macro.market_regime.status if macro.market_regime else "Neutral"
         return fear_greed < 20 and regime_status == "Bear"
+
+    @classmethod
+    def _is_price_stale(cls, ticker_state) -> bool:
+        """D4: last_updated 가 STRATEGY_PRICE_STALE_SEC 초과 경과 → 신호 생성 스킵 (옛 가격 매매 방지)."""
+        max_sec = SettingsService.get_int("STRATEGY_PRICE_STALE_SEC", 600)
+        if max_sec <= 0:
+            return False
+        lu = getattr(ticker_state, "last_updated", None)
+        if lu is None:
+            return False  # 갱신 기록 없음(DB 로드 직후) — 판단 불가, 기존 동작 유지
+        return (datetime.now() - lu).total_seconds() > max_sec
 
     @classmethod
     def _apply_hard_gates(
@@ -392,6 +453,7 @@ class SignalService:
 
         holdings_map = {h.ticker: h for h in holdings}
         prepared_signals: list[SignalSchema] = []
+        stale_skipped = 0
 
         for ticker, ticker_state in list(MarketDataService.get_all_states().items()):
             is_kr_ticker = is_kr(ticker)
@@ -407,13 +469,21 @@ class SignalService:
                 if wl is not None and ticker not in wl:
                     continue
 
+            if cls._is_price_stale(ticker_state):
+                stale_skipped += 1
+                continue
             if cls._apply_hard_gates(ticker, ticker_state, holding, cash_balance, usd_cash, exchange_rate, kr_total, us_total_krw, target_cash_kr, target_cash_us, macro=macro_data):
                 continue
             market_total = kr_total if is_kr_ticker else us_total_krw
             market_cash_ratio = target_cash_kr if is_kr_ticker else target_cash_us
-            score, reasons, _breakdown = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_cash_ratio=market_cash_ratio, market_total_krw=market_total)
-            prepared_signals.append(SignalSchema(ticker=ticker, state=ticker_state, holding=holding, score=score, reasons=reasons))
+            score, reasons, breakdown = cls.calculate_score(ticker, ticker_state, holding, macro_data, user_state, cash_balance, market_cash_ratio=market_cash_ratio, market_total_krw=market_total)
+            prepared_signals.append(SignalSchema(
+                ticker=ticker, state=ticker_state, holding=holding, score=score, reasons=reasons,
+                stock_score=breakdown.get("stock_score"), market_adj=int(breakdown.get("market_adj", 0) or 0),
+            ))
 
+        if stale_skipped:
+            logger.warning(f"⏸ {stale_skipped} tickers skipped: price stale (> STRATEGY_PRICE_STALE_SEC)")
         logger.info(f"📊 Signal collection complete. {len(prepared_signals)} stocks ready.")
         cls._cached_signals = prepared_signals
         return prepared_signals

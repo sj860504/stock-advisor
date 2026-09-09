@@ -261,6 +261,22 @@ class MarketHourService:
         return cls.US_PRE_MARKET_START <= now.time() <= end_dt.time()
 
     @classmethod
+    def minutes_to_close(cls, market: str) -> float:
+        """정규장 마감까지 남은 분. KR 15:30 KST / US 16:00 ET. 장 시간 밖(마감 후·개장 전·주말)이면 큰 값(1e9)."""
+        if market.upper() == "US":
+            now = datetime.now(pytz.timezone('America/New_York'))
+            close_t = time(16, 0)
+            open_t = time(9, 30)
+        else:
+            now = datetime.now(pytz.timezone('Asia/Seoul'))
+            close_t = time(15, 30)
+            open_t = time(9, 0)
+        if now.weekday() >= 5 or not (open_t <= now.time() <= close_t):
+            return 1e9
+        close_dt = now.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
+        return max(0.0, (close_dt - now).total_seconds() / 60.0)
+
+    @classmethod
     def is_trading_active(cls, market: str) -> bool:
         """KR/US 매매 활성 여부. is_kr_trading_active / is_us_trading_active 위임."""
         return cls.is_us_trading_active() if market.upper() == "US" else cls.is_kr_trading_active()

@@ -278,6 +278,17 @@ class FinancialService:
         return dcf_input
 
     @classmethod
+    def get_dcf_source(cls, ticker: str) -> Optional[str]:
+        """최근 계산된 DCF 입력의 소스명 (override/five_year_cashflow/yfinance/analyst_target/
+        eps_per_fallback/kis). 캐시에 없으면 None. D1-4 DCF 신뢰도 계수용 — I/O 없음."""
+        cached = cls._dcf_input_by_ticker.get(ticker)
+        if not cached:
+            return None
+        if isinstance(cached, dict):
+            return cached.get("source") or None
+        return getattr(cached, "source", None)
+
+    @classmethod
     def get_dcf_data(cls, ticker: str) -> Optional[DcfInputData]:
         """Return DCF calculation input data.
         Priority: user override -> 5yr EPS CAGR -> yfinance FCF -> analyst target -> EPS*PER -> KIS API.

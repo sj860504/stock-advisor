@@ -70,6 +70,8 @@ class Financials(Base):
     ema120 = Column(Float)
     ema200 = Column(Float)
     dcf_value = Column(Float)
+    atr_pct = Column(Float)          # ATR(14)/close × 100
+    avg_volume_20d = Column(Float)   # 20일 평균 거래량
     
     updated_at = Column(DateTime, default=datetime.now)
     

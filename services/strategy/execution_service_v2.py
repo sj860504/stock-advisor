@@ -20,6 +20,7 @@ from services.trading.order_service import OrderService
 from services.kis.kis_service import KisService
 from repositories.trade_history_repo import TradeHistoryRepo
 from models.schemas import TradeResult, MacroDataSnapshot, HoldingSchema
+from services.strategy.uptrend_rules import buy_confidence_multiplier, volatility_multiplier
 from utils.logger import get_logger
 from utils.market import is_kr, filter_kr, filter_us
 
@@ -251,12 +252,18 @@ class TradeExecutorService:
         return vix >= 25 or fng <= 30
 
     @classmethod
-    def _uptrend_target_cash_ratio(cls) -> float:
+    def _uptrend_target_cash_ratio(cls, macro: Optional[MacroDataSnapshot] = None, ticker: Optional[str] = None) -> float:
         """Uptrend DCA 모드의 일반(score/budget) 매수용 목표 현금 비율.
         = max(MIN_CASH_RATIO, DCA_RESERVE_RATIO). DCA 추매는 이 예비현금을 사용할 수 있고
-        (엔트리 게이트 우회) MIN_CASH_RATIO 까지만 내려간다 → 폭락 시 dry powder 확보."""
+        (엔트리 게이트 우회) MIN_CASH_RATIO 까지만 내려간다 → 폭락 시 dry powder 확보.
+        B4 동적화: 종목 시장 지수 5d tier ≥ STRATEGY_UPTREND_RESERVE_ZERO_TIER(3) 이면 예비를 전부 푼다(MIN_CASH)."""
         min_cash = SettingsService.get_float("STRATEGY_UPTREND_MIN_CASH_RATIO", 0.0)
         reserve = SettingsService.get_float("STRATEGY_UPTREND_DCA_RESERVE_RATIO", 0.10)
+        zero_tier = SettingsService.get_int("STRATEGY_UPTREND_RESERVE_ZERO_TIER", 3)
+        if macro is not None and zero_tier > 0:
+            from services.strategy.crash_guard_service import CrashGuardService
+            if CrashGuardService.index_5d_tier(macro, ticker) >= zero_tier:
+                return max(0.0, min_cash)
         return max(0.0, min_cash, reserve)
 
     @staticmethod
@@ -264,12 +271,12 @@ class TradeExecutorService:
         return bool(trigger_reason) and trigger_reason.startswith("dca_stage")
 
     @classmethod
-    def _get_target_cash_ratio(cls, market: str, regime_status: str) -> float:
+    def _get_target_cash_ratio(cls, market: str, regime_status: str, macro: Optional[MacroDataSnapshot] = None) -> float:
         """Get target cash ratio based on market regime (KR/US separated).
         Uptrend DCA 활성 시 max(MIN_CASH_RATIO, DCA_RESERVE_RATIO) → 일반 매수는
         예비현금을 남기고, DCA 추매(엔트리 게이트 우회)만 MIN_CASH 까지 사용."""
         if SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1:
-            return cls._uptrend_target_cash_ratio()
+            return cls._uptrend_target_cash_ratio(macro, "005930" if market == 'KR' else "SPY")
         regime_key = regime_status.upper()
         if regime_key not in ['BEAR', 'NEUTRAL', 'BULL']:
             regime_key = 'NEUTRAL'
@@ -300,8 +307,8 @@ class TradeExecutorService:
         us_total_krw = us_market_value_krw + usd_cash_krw
 
         regime_status = (macro_data.market_regime.status if macro_data else 'Neutral').upper()
-        target_cash_kr = cls._get_target_cash_ratio('KR', regime_status)
-        target_cash_us = cls._get_target_cash_ratio('US', regime_status)
+        target_cash_kr = cls._get_target_cash_ratio('KR', regime_status, macro_data)
+        target_cash_us = cls._get_target_cash_ratio('US', regime_status, macro_data)
         logger.info(f"💰 Market regime: {regime_status} → KR total: {kr_total:,.0f}KRW, US total: {us_total_krw:,.0f}KRW | KR cash ratio target: {target_cash_kr:.1%}, US cash ratio target: {target_cash_us:.1%}")
 
         return kr_total, us_total_krw, target_cash_kr, target_cash_us
@@ -344,7 +351,7 @@ class TradeExecutorService:
         target_cash_ratio = target_cash_ratio_kr if is_kr_ticker else target_cash_ratio_us
 
         if target_cash_ratio is None:
-            target_cash_ratio = cls._get_target_cash_ratio('KR' if is_kr_ticker else 'US', regime_status)
+            target_cash_ratio = cls._get_target_cash_ratio('KR' if is_kr_ticker else 'US', regime_status, macro)
 
         # Subtract pending buy orders from available cash to prevent over-leveraging
         pending_orders = TradeHistoryRepo.get_pending_orders()
@@ -375,16 +382,19 @@ class TradeExecutorService:
     # ── Buy Quantity Calculation ────────────────────────────────────────────────────────
 
     @classmethod
-    def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr_flag: bool, market_total_krw: float = 0.0, usd_cash_krw: float = 0.0, gap_pct: float = 0.0) -> tuple:
+    def _calculate_buy_quantity(cls, score: int, cash_balance: float, current_price: float, exchange_rate: float, is_kr_flag: bool, market_total_krw: float = 0.0, usd_cash_krw: float = 0.0, gap_pct: float = 0.0, atr_pct: float = 0.0) -> tuple:
         """Calculate total buy quantity and required capital (KRW) based on investment weight.
-        gap_pct (cash 비중 - target, %pa) 비례 multiplier 추가 — 갭 클수록 회당 매수 비중 확대."""
+        gap_pct (cash 비중 - target, %pa) 비례 multiplier 추가 — 갭 클수록 회당 매수 비중 확대.
+        B2: 신뢰도 승수(score≤10 1.5×, ≤20 1.25× — 옛 score≥80/90 승수는 BUY 경로에서 발동 불가였음)
+            × 변동성 승수(ATR 목표 2% 대비, 0.5~1.5×)."""
         per_trade_ratio = SettingsService.get_float("STRATEGY_PER_TRADE_RATIO", 0.05)
 
         base_assets = market_total_krw
-        score_multiplier = 2.0 if score >= 90 else (1.5 if score >= 80 else 1.0)
+        score_multiplier = buy_confidence_multiplier(score)
+        vol_multiplier = volatility_multiplier(atr_pct)
         # gap-aware: gap 25%pa당 +1배, 최대 3배
         gap_multiplier = 1 + min(2, int(max(0.0, gap_pct) / 25))
-        target_invest_krw = base_assets * per_trade_ratio * score_multiplier * gap_multiplier
+        target_invest_krw = base_assets * per_trade_ratio * score_multiplier * vol_multiplier * gap_multiplier
         cash_limit = (usd_cash_krw if (not is_kr_flag and usd_cash_krw > 0) else cash_balance)
         actual_invest_krw = min(target_invest_krw, cash_limit)
 
@@ -542,6 +552,42 @@ class TradeExecutorService:
         us_assets_krw = us_market_value_krw + usd_cash_krw
         return is_kr_flag, holdings, kr_assets, us_assets_krw, usd_cash_krw
 
+    # ── B5: 업종 그룹 노출 한도 ────────────────────────────────────────────────
+
+    @classmethod
+    def _group_key_map(cls, tickers: List[str]) -> dict:
+        """ticker → industry(없으면 sector) 매핑. stock_meta 벌크 조회, 실패 시 빈 dict."""
+        try:
+            metas = StockMetaService.get_stock_meta_bulk(list(set(tickers)))
+            return {m.ticker: (m.industry or m.sector or "") for m in metas}
+        except Exception as e:
+            logger.debug(f"group map unavailable: {e}")
+            return {}
+
+    @classmethod
+    def _group_exposure_cap_qty(cls, ticker: str, holdings: List[HoldingSchema], price_krw: float,
+                                market_total_krw: float, exchange_rate: float, quantity: int) -> int:
+        """동일 업종 그룹 비중이 STRATEGY_MAX_GROUP_RATIO 를 넘지 않도록 매수 수량 축소.
+        그룹 정보 없으면 원 수량 유지. 0 반환 시 매수 스킵."""
+        max_ratio = SettingsService.get_float("STRATEGY_MAX_GROUP_RATIO", 0.30)
+        if max_ratio <= 0 or max_ratio >= 1 or market_total_krw <= 0 or quantity <= 0 or price_krw <= 0:
+            return quantity
+        same_market = [h for h in (holdings or []) if h.quantity > 0 and is_kr(h.ticker) == is_kr(ticker)]
+        gmap = cls._group_key_map([ticker] + [h.ticker for h in same_market])
+        group = gmap.get(ticker) or ""
+        if not group:
+            return quantity
+        fx = exchange_rate if not is_kr(ticker) else 1.0
+        cur_group_val = sum(cls._get_holding_value(h) * fx for h in same_market if gmap.get(h.ticker) == group)
+        allowed = market_total_krw * max_ratio - cur_group_val
+        if allowed <= 0:
+            logger.info(f"⛔ {ticker} 그룹 '{group}' 비중 {cur_group_val / market_total_krw:.1%} ≥ 한도 {max_ratio:.0%} → 매수 스킵")
+            return 0
+        cap_qty = int(allowed // price_krw)
+        if cap_qty < quantity:
+            logger.info(f"⚠️ {ticker} 그룹 '{group}' 한도 {max_ratio:.0%} — qty {quantity}→{cap_qty}")
+        return min(quantity, cap_qty)
+
     @classmethod
     def _fetch_fresh_us_price(cls, ticker: str, fallback: float) -> float:
         """Refresh real-time price before US order. Returns fallback on failure."""
@@ -558,10 +604,33 @@ class TradeExecutorService:
         return fallback
 
     @classmethod
+    def _fetch_fresh_kr_price(cls, ticker: str, fallback: float) -> float:
+        """S6/D4: KR 주문 직전 현재가 재조회 (KIS 국내 현재가). 실패 시 fallback."""
+        try:
+            from services.kis.fetch.kis_fetcher import KisFetcher
+            token = KisService.get_access_token()
+            fresh = KisFetcher.fetch_domestic_price(token, ticker)
+            price = float((fresh or {}).get("price") or 0)
+            if price > 0:
+                if abs(price - fallback) / fallback > 0.0005 if fallback else True:
+                    logger.info(f"🔄 {ticker} Pre-order price refresh: {price:,.0f} (previous: {fallback:,.0f})")
+                return price
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} KR price refresh failed, using previous price: {e}")
+        return fallback
+
+    @classmethod
     def _refresh_us_price(cls, ticker: str, current_price: float) -> float:
-        """Return refreshed price for US tickers, current_price for KR. Pure I/O."""
+        """Return refreshed price for US tickers, current_price for KR (buy path)."""
         if is_kr(ticker):
             return current_price
+        return cls._fetch_fresh_us_price(ticker, current_price)
+
+    @classmethod
+    def _refresh_price_for_sell(cls, ticker: str, current_price: float) -> float:
+        """매도 직전 현재가 재조회 — KR/US 모두 (옛 캐시 가격 매도 방지)."""
+        if is_kr(ticker):
+            return cls._fetch_fresh_kr_price(ticker, current_price)
         return cls._fetch_fresh_us_price(ticker, current_price)
 
     @classmethod
@@ -582,6 +651,12 @@ class TradeExecutorService:
         if cls._has_pending_order(ticker, side):
             logger.info(f"⏸️ {ticker} {side.upper()} 스킵: 미체결 주문 대기 중")
             return False
+        # 섀도우 모드: KIS 주문 대신 trade_history(status='shadow') 기록만 — 신규 규칙 검증용
+        if SettingsService.get_int("STRATEGY_SHADOW", 0) == 1:
+            OrderService.record_trade(ticker, side, qty, price, f"[SHADOW] {reason}", "v3_strategy_shadow",
+                                      buy_price=buy_price, status="shadow", trigger_reason=trigger_reason)
+            logger.info(f"👻 [SHADOW] {ticker} {side.upper()} {qty} @ {price:,.2f} ({trigger_reason}) — 주문 미전송")
+            return True
         excg_cd = StockMetaService.get_exchange_code(ticker) if not is_kr(ticker) else None
         if is_kr(ticker):
             order_result = KisService.send_order(ticker, qty, 0, side)
@@ -621,14 +696,20 @@ class TradeExecutorService:
         ):
             return TradeResult.no_op()
         is_kr_flag, holdings, kr_assets, us_assets_krw, usd_cash_krw = cls._compute_buy_market_totals(ticker, holdings, cash_balance, exchange_rate, user_id)
+        market_total_krw = kr_assets if is_kr_flag else us_assets_krw
         if forced_qty is not None:
             quantity = forced_qty
             final_price = current_price if is_kr_flag else current_price * exchange_rate
         else:
-            market_total_krw = kr_assets if is_kr_flag else us_assets_krw
-            quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw, usd_cash_krw=usd_cash_krw, gap_pct=gap_pct)
+            _st = MarketDataService.get_state(ticker)
+            atr_pct = float(getattr(_st, "atr_pct", 0.0) or 0.0) if _st else 0.0
+            quantity, _, final_price = cls._calculate_buy_quantity(score, cash_balance, current_price, exchange_rate, is_kr_flag, market_total_krw=market_total_krw, usd_cash_krw=usd_cash_krw, gap_pct=gap_pct, atr_pct=atr_pct)
         if quantity <= 0:
             logger.warning(f"⚠️ {ticker} Insufficient balance (required: {final_price:,.0f}KRW)")
+            return TradeResult.no_op()
+        # B5: 업종 그룹 노출 한도 (신규·추매·DCA 공통) — 초과분만큼 수량 축소
+        quantity = cls._group_exposure_cap_qty(ticker, holdings, final_price, market_total_krw, exchange_rate, quantity)
+        if quantity <= 0:
             return TradeResult.no_op()
         # 미수/신용 차단 가드 — KIS 주문 직전 cash 검증
         total_cost = quantity * final_price if is_kr_flag else quantity * current_price
@@ -687,7 +768,7 @@ class TradeExecutorService:
             sell_qty = max(1, int(holding_qty / split_count))
         msg = reason or ("forced_sell(full)" if (forced_qty is not None and forced_qty > 0) else "partial_sell(take_profit)")
         buy_price_val = float(current_holding.buy_price or 0) or None
-        current_price = cls._refresh_us_price(ticker, current_price)
+        current_price = cls._refresh_price_for_sell(ticker, current_price)
         executed = cls._place_and_record(ticker, "sell", sell_qty, current_price, msg, user_id, buy_price=buy_price_val, trigger_reason=trigger_reason)
         if executed:
             return True, sell_qty

@@ -25,6 +25,9 @@ class TickerState:
     rsi: float = 0.0             # RSI (14)
     bollinger: Dict[str, float] = field(default_factory=dict) # {upper, middle, lower}
     dcf_value: float = 0.0       # Fair value (DCF)
+    dcf_confidence: float = 1.0  # DCF 소스 신뢰도 계수 (override 1.0 … kis 0.4)
+    atr_pct: float = 0.0         # ATR(14)/close × 100 — 변동성 사이징·손절
+    avg_volume_20d: float = 0.0  # 20일 평균 거래량 — 급락 매수 확인
 
     # Price last-updated timestamp
     last_updated: Optional[datetime] = None
@@ -88,8 +91,19 @@ class TickerState:
             except (ValueError, TypeError):
                 continue
             
-    def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None) -> None:
+    def update_indicators(self, emas: Dict[int, float], dcf: Optional[float] = None, rsi: Optional[float] = None,
+                          atr_pct: Optional[float] = None, avg_volume_20d: Optional[float] = None,
+                          dcf_confidence: Optional[float] = None) -> None:
         """Inject externally calculated indicators (warm-up or periodic refresh)."""
+        if atr_pct is not None:
+            try: self.atr_pct = float(atr_pct)
+            except (TypeError, ValueError): pass
+        if avg_volume_20d is not None:
+            try: self.avg_volume_20d = float(avg_volume_20d)
+            except (TypeError, ValueError): pass
+        if dcf_confidence is not None:
+            try: self.dcf_confidence = float(dcf_confidence)
+            except (TypeError, ValueError): pass
         if emas:
             # Convert all keys to int before storing
             processed_emas = {}

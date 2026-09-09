@@ -121,6 +121,9 @@ def get_crash_status() -> Dict[str, Any]:
         "spx_1d": macro.spx_change_1d,
         "spx_5d": macro.spx_change_5d,
         "vix": macro.vix,
+        "vix_change_1d": macro.vix_change_1d,
+        "kr_breadth": {"median": macro.kr_breadth_median, "down_ratio": macro.kr_breadth_down_ratio, "count": macro.kr_breadth_count},
+        "us_breadth": {"median": macro.us_breadth_median, "down_ratio": macro.us_breadth_down_ratio, "count": macro.us_breadth_count},
         "uptrend_dca_enabled": SettingsService.get_int("STRATEGY_UPTREND_DCA_ENABLED", 1) == 1,
     }
 

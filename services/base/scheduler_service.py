@@ -660,6 +660,8 @@ class SchedulerService:
                 "change": ticker_state.current_price - ticker_state.prev_close if ticker_state.prev_close > 0 else 0,
                 "change_pct": ticker_state.change_rate,
                 "score": sig.get("score"),  # ← DB cache
+                "stock_score": (sig.get("breakdown") or {}).get("stock_score"),
+                "market_adj": (sig.get("breakdown") or {}).get("market_adj"),
                 "score_calculated_at": sig.get("calculated_at"),
                 "fair_value_dcf": ticker_state.dcf_value,
                 "ema5": ticker_state.ema.get(5),

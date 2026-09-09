@@ -53,6 +53,25 @@ class TradeHistoryRepo:
             return None
 
     @classmethod
+    def get_first_buy_date(cls, ticker: str) -> Optional[datetime]:
+        """해당 종목의 최초 체결 매수 시각 (보유기간 산출용, S5 상대약세). 기록 없으면 None."""
+        session = get_session()
+        try:
+            row = (
+                session.query(TradeHistory.timestamp)
+                .filter(TradeHistory.ticker == ticker, TradeHistory.order_type == "buy",
+                        TradeHistory.status.in_(("filled", "pending")))
+                .order_by(TradeHistory.timestamp.asc())
+                .first()
+            )
+            return row[0] if row else None
+        except Exception as e:
+            logger.debug(f"get_first_buy_date failed for {ticker}: {e}")
+            return None
+        finally:
+            session.close()
+
+    @classmethod
     def get_pending_orders(cls, ticker: str = None) -> List[TradeHistory]:
         """Fetch pending (unfilled) orders, optionally filtered by ticker."""
         session = get_session()

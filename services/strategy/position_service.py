@@ -11,10 +11,15 @@ from typing import Optional
 import pytz
 
 from services.market.market_data_service import MarketDataService
+from services.market.market_hour_service import MarketHourService
 from services.market.macro_service import MacroService
 from services.config.settings_service import SettingsService
 from services.strategy.execution_service_v2 import TradeExecutorService
 from models.schemas import SplitOrderState, BuyCooldownEntry, SplitSellOrderState, TradeResult, MacroDataSnapshot, ExecutionConfig, UnpackedSignal, SignalSchema, UserState, HoldingSchema
+from services.strategy.uptrend_rules import (
+    parse_scale_out, stages_done_count, trailing_pct_by_profit, trailing_floor_price,
+    dca_stages, dca_reference_mode, uptrend_stop_loss_pct,
+)
 from utils.logger import get_logger
 from utils.market import is_kr
 
@@ -38,35 +43,41 @@ class PositionService:
         holdings: list, user_id: str, macro_data: MacroDataSnapshot,
         target_cash_kr: float, target_cash_us: float, user_state,
     ) -> bool:
-        """[Uptrend] +N% 도달 시 보유의 RATIO 비중 매도 (1회만). Crash 중엔 보류."""
+        """[Uptrend/S2] 다단계 스케일아웃. STRATEGY_UPTREND_SCALE_OUT='10:0.5,20:0.5,35:0.5'
+        → +10% 에 보유의 50%, +20% 에 잔여의 50%, +35% 에 잔여의 50%. 단계별 1회
+        (partial_take_done[ticker] = 완료 단계 수; 레거시 True 는 1). Crash 중엔 보류."""
         if not holding or not user_state:
             return False
-        if user_state.partial_take_done.get(ticker):
+        stages = parse_scale_out()
+        done = stages_done_count(user_state.partial_take_done.get(ticker))
+        if done >= len(stages):
             return False
-        tp_pct = SettingsService.get_float("STRATEGY_UPTREND_PARTIAL_TAKE_PCT", 10.0)
+        tp_pct, ratio = stages[done]
         if profit_pct < tp_pct:
             return False
         from services.strategy.crash_guard_service import CrashGuardService
         if CrashGuardService.is_crash(macro_data):
-            logger.info(f"⏸ {ticker} 부분익절 보류 (Crash 가드 활성)")
+            logger.info(f"⏸ {ticker} 스케일아웃 {done + 1}단계 보류 (Crash 가드 활성)")
             return False
-        ratio = SettingsService.get_float("STRATEGY_UPTREND_PARTIAL_TAKE_RATIO", 0.5)
         qty = int(holding.quantity)
         sell_qty = max(1, int(qty * ratio))
         if sell_qty >= qty:
             sell_qty = max(1, qty - 1) if qty > 1 else qty
+        cur_px = float(getattr(state, "current_price", 0) or 0)
         result = TradeExecutorService._execute_trade_v2(
             ticker, "sell",
-            f"uptrend_partial_take(+{profit_pct:.2f}%, {ratio*100:.0f}%)",
+            f"uptrend_scale_out(stage{done + 1}/{len(stages)}, +{profit_pct:.2f}%, {ratio * 100:.0f}%)",
             profit_pct, True, score,
-            getattr(state, 'current_price', 0), market_total, cash_balance, exchange_rate,
+            cur_px, market_total, cash_balance, exchange_rate,
             holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
             target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
             forced_qty=sell_qty, trigger_reason="partial_take",
         )
         if result.executed:
-            user_state.partial_take_done[ticker] = True
-            user_state.remaining_high[ticker] = float(getattr(state, "current_price", 0))
+            user_state.partial_take_done[ticker] = done + 1
+            prev_high = float(user_state.remaining_high.get(ticker, 0) or 0)
+            user_state.remaining_high[ticker] = max(prev_high, cur_px)
+            cls._set_reentry_block(ticker, cur_px, user_state)
         return result.executed
 
     @classmethod
@@ -99,22 +110,32 @@ class PositionService:
         price_krw = current_price if is_kr_ticker else current_price * fx
         avail_cash_krw = cash_balance if is_kr_ticker else (usd_cash or 0.0) * fx
 
-        # 3단계 임계 + 비율
-        stages = [
-            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE3_PCT", -15.0),
-             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE3_RATIO", 0.05), -15),
-            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE2_PCT", -8.0),
-             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE2_RATIO", 0.04), -8),
-            (SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE1_PCT", -3.0),
-             SettingsService.get_float("STRATEGY_UPTREND_DCA_STAGE1_RATIO", 0.03), -3),
-        ]
+        # 3단계 임계 + 비율 (깊은 단계 우선)
+        stages = dca_stages()
         ticker_dca = user_state.dca_done.get(ticker) or {}
+        # B4: 종목당 하루 최대 N단계 — 갭하락 -16% 에 3분 만에 3단계 전부 투입되는 것 방지
+        today_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
+        max_per_day = SettingsService.get_int("STRATEGY_UPTREND_DCA_MAX_STAGES_PER_DAY", 1)
+        if max_per_day > 0 and ticker_dca.get("last_date") == today_kst \
+                and int(ticker_dca.get("today_count") or 0) >= max_per_day:
+            return TradeResult.no_op()
+        # B4: 기준가 — avg(평균단가, 기본·시뮬 검증) | entry(첫 평가 시점 buy_price 고정, 공격적)
+        ref_profit_pct = profit_pct
+        if dca_reference_mode() == "entry":
+            ref_price = float(ticker_dca.get("ref_price") or 0)
+            if ref_price <= 0:
+                ref_price = float(holding.buy_price or 0)
+                if ref_price > 0:
+                    ticker_dca["ref_price"] = ref_price
+                    user_state.dca_done[ticker] = ticker_dca
+            if ref_price > 0:
+                ref_profit_pct = (current_price - ref_price) / ref_price * 100
         triggered_stage = None
         triggered_ratio = None
         for threshold, ratio, key in stages:
             if ticker_dca.get(str(key)):  # JSON serialization 호환
                 continue
-            if profit_pct <= threshold:
+            if ref_profit_pct <= threshold:
                 triggered_stage = key
                 triggered_ratio = ratio
                 break
@@ -169,8 +190,23 @@ class PositionService:
         )
         if result.executed:
             ticker_dca[str(triggered_stage)] = True
+            ticker_dca["today_count"] = (int(ticker_dca.get("today_count") or 0) + 1) if ticker_dca.get("last_date") == today_kst else 1
+            ticker_dca["last_date"] = today_kst
             user_state.dca_done[ticker] = ticker_dca
         return result
+
+    @classmethod
+    def _set_reentry_block(cls, ticker: str, sell_price: float, user_state) -> None:
+        """B6: 매도 후 재매수 차단 — add_buy_cooldown 에 kind='sell' 엔트리.
+        해제: STRATEGY_REENTRY_DAYS 경과 OR 매도가 대비 STRATEGY_REENTRY_DROP_PCT 하락."""
+        if user_state is None:
+            return
+        kst = pytz.timezone("Asia/Seoul")
+        now_dt = datetime.now(kst)
+        user_state.add_buy_cooldown[ticker] = BuyCooldownEntry(
+            date=now_dt.strftime("%Y-%m-%d"), price=float(sell_price or 0), timestamp=now_dt.timestamp(),
+            kind="sell", expire_days=max(1, SettingsService.get_int("STRATEGY_REENTRY_DAYS", 5)),
+        )
 
     @classmethod
     def _reset_uptrend_state_on_sell(cls, ticker: str, user_state) -> None:
@@ -191,7 +227,7 @@ class PositionService:
         """[Uptrend] 부분익절 후 잔여 수량 trailing (-N% from remaining_high). Crash 중엔 보류."""
         if not holding or not user_state:
             return False
-        if not user_state.partial_take_done.get(ticker):
+        if stages_done_count(user_state.partial_take_done.get(ticker)) == 0:
             return False
         from services.strategy.crash_guard_service import CrashGuardService
         if CrashGuardService.is_crash(macro_data):
@@ -200,21 +236,28 @@ class PositionService:
         if current_price > cur_high:
             user_state.remaining_high[ticker] = current_price
             return False
-        trail_pct = SettingsService.get_float("STRATEGY_UPTREND_TRAILING_REMAINING_PCT", -10.0)
+        buy_price = float(holding.buy_price or 0)
+        # S2: 고점 수익률 구간별 trailing 폭 (+20% 이상 -7%, +35% 이상 -5%; 기본 -10%)
+        max_profit_pct = (cur_high - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
+        trail_pct = trailing_pct_by_profit(max_profit_pct)
         drawdown = (current_price - cur_high) / cur_high * 100 if cur_high > 0 else 0
         if drawdown > trail_pct:
             return False
-        buy_price = float(holding.buy_price or 0)
+        # S1: 손익분기 하한 — 잔여분을 손실(또는 수수료 이하 수익)로 팔지 않는다. 그 아래면 보유 유지(DCA 규칙으로 복귀)
+        if buy_price > 0 and current_price < trailing_floor_price(buy_price):
+            logger.info(f"⏸ {ticker} 잔여 trailing 보류: 현재가 {current_price:,.0f} < 손익분기 하한 {trailing_floor_price(buy_price):,.0f}")
+            return False
         profit_pct = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0.0
         result = cls._handle_forced_sell(
             ticker, holding, profit_pct, current_price, market_total,
             cash_balance, exchange_rate, holdings=holdings, user_id=user_id,
             macro_data=macro_data, target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
-            reason=f"trailing_remaining({drawdown:.1f}% from {cur_high:,.0f})",
+            reason=f"trailing_remaining({drawdown:.1f}% from {cur_high:,.0f}, trail {trail_pct:.0f}%)",
         )
         if result.executed:
             user_state.remaining_high.pop(ticker, None)
             user_state.partial_take_done.pop(ticker, None)
+            cls._set_reentry_block(ticker, current_price, user_state)
         return result.executed
 
     # ── Profit-Taking ─────────────────────────────────────────────────────────────────
@@ -263,6 +306,14 @@ class PositionService:
         if holding_qty <= 0:
             sell_split_orders.pop(ticker, None)
             return 0
+        # S6: 장 마감 N분 전이면 잔여 트랜치를 합쳐 1회 처리 (당일 미완 방지)
+        merge_min = SettingsService.get_int("STRATEGY_SELL_MERGE_BEFORE_CLOSE_MIN", 10)
+        if merge_min > 0 and MarketHourService.minutes_to_close("KR" if is_kr(ticker) else "US") <= merge_min:
+            sso_exist = sell_split_orders.get(ticker)
+            remaining = min(holding_qty, int(sso_exist.remaining_qty)) if sso_exist else holding_qty
+            if remaining > 0:
+                logger.info(f"⏱ {ticker} 마감 {merge_min}분 전 — 분할매도 잔여 {remaining}주 일괄 처리")
+                return remaining
         sso = sell_split_orders.get(ticker)
         if not sso:
             split_count = SettingsService.get_int("STRATEGY_SELL_SPLIT_COUNT", 5)
@@ -318,6 +369,19 @@ class PositionService:
         cd = add_buy_cooldown.get(ticker)
         if not cd:
             return False
+
+        # B6: 매도 후 재진입 차단(kind='sell') — expire_days 경과 OR 매도가 대비 REENTRY_DROP% 하락 시 해제
+        if not isinstance(cd, str) and getattr(cd, 'kind', 'buy') == 'sell':
+            from services.config.settings_service import SettingsService as _SS
+            drop = _SS.get_float("STRATEGY_REENTRY_DROP_PCT", -5.0)
+            sell_px = float(getattr(cd, 'price', 0) or 0)
+            if sell_px > 0 and current_price > 0 and current_price <= sell_px * (1 + drop / 100):
+                return False
+            try:
+                elapsed = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(cd.date, "%Y-%m-%d")).days
+            except (TypeError, ValueError):
+                elapsed = 0
+            return elapsed < int(getattr(cd, 'expire_days', 1) or 1)
 
         # 가격 -5% 예외는 모든 케이스 적용
         cd_price = cd if isinstance(cd, str) else getattr(cd, 'price', 0)
@@ -450,6 +514,8 @@ class PositionService:
         if result.executed:
             so.splits_done += 1
             so.remaining_qty -= this_run_qty
+            so.last_tranche_price = float(current_price_val or 0)
+            so.last_tranche_date = today
             if so.remaining_qty <= 0:
                 split_orders.pop(ticker, None)
             add_buy_cooldown[ticker] = BuyCooldownEntry(date=today, price=current_price_val)
@@ -475,6 +541,14 @@ class PositionService:
             just_initialized = True
         else:
             just_initialized = False
+            # B3: 트랜치 페이싱 — 다음 트랜치는 (전 트랜치가 대비 -N% 하락) OR (다음 거래일) 에만.
+            # 없으면 1분 루프마다 실행돼 3분 만에 3트랜치 소진 → 분할의 시간 분산 효과 0.
+            so = split_orders[ticker]
+            drop_pct = SettingsService.get_float("STRATEGY_SPLIT_TRANCHE_DROP_PCT", -2.0)
+            if so.last_tranche_date == today and so.last_tranche_price > 0 and current_price_val > 0:
+                if current_price_val > so.last_tranche_price * (1 + drop_pct / 100):
+                    logger.info(f"⏭️ {ticker} split tranche 대기: 당일 이미 체결, 가격 {current_price_val:,.0f} > 전 트랜치 {so.last_tranche_price:,.0f}×(1{drop_pct:+.0f}%)")
+                    return TradeResult.no_op()
         result = cls._execute_split_tranche(
             ticker, holding, score, reason_str, profit_pct, split_orders,
             current_price_val, market_total, cash_balance, exchange_rate,
@@ -653,7 +727,7 @@ class PositionService:
                 cash_balance, cfg.exchange_rate, **common_kwargs,
             )
             if result.executed and user_state:
-                cls._set_panic_lock(u.ticker, user_state)
+                cls._set_panic_lock(u.ticker, user_state, price=getattr(u.state, 'current_price', 0))
                 cls._reset_uptrend_state_on_sell(u.ticker, user_state)
             return result.executed, u.ticker if result.executed else None, 0.0, 0.0
         current_price = getattr(u.state, 'current_price', 0)
@@ -683,6 +757,14 @@ class PositionService:
             )
             if dca_result.executed:
                 return True, u.ticker, dca_result.spent_krw, dca_result.spent_usd
+            # 4) S5: 상대 약세 정리 (장기 보유 + 지수 대비 큰 부진 + 지수는 회복 중)
+            rw_result = cls._handle_relative_weakness(
+                u.ticker, u.holding, u.profit_pct, current_price,
+                u.market_total, cash_balance, cfg.exchange_rate,
+                holdings, user_id, macro_data, target_cash_kr, target_cash_us, user_state, cfg.today,
+            )
+            if rw_result.executed:
+                return True, u.ticker, 0.0, 0.0
             # Uptrend 활성 시: trailing_stop (손실분) 완전 비활성. 익절/추가매수 등 다른 분기로
         else:
             # 레거시 trailing_stop (Uptrend 비활성시만)
@@ -709,10 +791,76 @@ class PositionService:
         if uptrend and is_crash and u.holding:
             # Crash 중엔 score-based 매도도 보류 (신규 매수는 허용)
             return False, None, 0.0, 0.0
+        is_score_sell = bool(u.holding) and u.score >= cfg.sell_min
+        if uptrend and is_score_sell:
+            # S3: Uptrend 에서 score 매도는 최소 수익 이상일 때만 — 손실/수수료 이하 구간 score 매도 금지
+            min_profit = SettingsService.get_float("STRATEGY_UPTREND_SCORE_SELL_MIN_PROFIT", 3.0)
+            if u.profit_pct < min_profit:
+                logger.info(f"⏸ {u.ticker} score 매도 보류: 수익 {u.profit_pct:.2f}% < 최소 {min_profit:.1f}% (Uptrend)")
+                return False, None, 0.0, 0.0
         result = cls._handle_score_trade(u.ticker, u.holding, u.score, u.reason_str, u.profit_pct, cfg.buy_max, cfg.sell_min, sell_cooldown, add_buy_cooldown, cfg.today, u.state, u.market_total, cash_balance, cfg.exchange_rate, holdings, user_id, macro_data, target_cash_kr, target_cash_us, split_orders=split_orders, sell_split_orders=sell_split_orders)
         if result.executed and user_state:
             cls._reset_uptrend_state_on_sell(u.ticker, user_state)
+            if is_score_sell:
+                cls._set_reentry_block(u.ticker, current_price, user_state)
         return result.executed, u.ticker if result.executed else None, result.spent_krw, result.spent_usd
+
+    # ── S5: 상대 약세 정리 ───────────────────────────────────────────────────────
+
+    @classmethod
+    def _handle_relative_weakness(
+        cls, ticker: str, holding, profit_pct: float, current_price: float,
+        market_total: float, cash_balance: float, exchange_rate: float,
+        holdings: list, user_id: str, macro_data: MacroDataSnapshot,
+        target_cash_kr: float, target_cash_us: float, user_state, today: str,
+    ) -> TradeResult:
+        """'우상향' 가정은 지수엔 맞아도 개별 종목엔 틀릴 수 있다.
+        보유 ≥ MIN_DAYS AND (종목 수익률 − 지수 90d 수익률) ≤ UNDERPERF AND 지수 20d ≥ MIN(회복 중)
+        → 보유의 SELL_RATIO 를 1회 정리 (dca_done[ticker]['rw_done'] 로 영속). Crash 중엔 보류."""
+        if not holding or not user_state or current_price <= 0:
+            return TradeResult.no_op()
+        if SettingsService.get_int("STRATEGY_RELATIVE_WEAKNESS_ENABLED", 1) != 1:
+            return TradeResult.no_op()
+        ticker_dca = user_state.dca_done.get(ticker) or {}
+        if ticker_dca.get("rw_done"):
+            return TradeResult.no_op()
+        kr = is_kr(ticker)
+        idx90 = getattr(macro_data, "kospi_change_90d" if kr else "spx_change_90d", None) if macro_data else None
+        idx20 = getattr(macro_data, "kospi_change_20d" if kr else "spx_change_20d", None) if macro_data else None
+        if idx90 is None or idx20 is None:
+            return TradeResult.no_op()
+        if idx20 < SettingsService.get_float("STRATEGY_RELATIVE_WEAKNESS_INDEX_20D_MIN", 0.0):
+            return TradeResult.no_op()
+        underperf = profit_pct - idx90
+        if underperf > SettingsService.get_float("STRATEGY_RELATIVE_WEAKNESS_UNDERPERF_PCT", -20.0):
+            return TradeResult.no_op()
+        from repositories.trade_history_repo import TradeHistoryRepo
+        first_buy = TradeHistoryRepo.get_first_buy_date(ticker)
+        if first_buy is None:
+            return TradeResult.no_op()  # 매수 이력 없음(외부 매수) → 보유기간 판단 불가
+        held_days = (datetime.now() - first_buy).days
+        if held_days < SettingsService.get_int("STRATEGY_RELATIVE_WEAKNESS_MIN_DAYS", 90):
+            return TradeResult.no_op()
+        from services.strategy.crash_guard_service import CrashGuardService
+        if CrashGuardService.is_crash(macro_data):
+            logger.info(f"⏸ {ticker} 상대약세 정리 보류 (Crash 가드 활성)")
+            return TradeResult.no_op()
+        ratio = SettingsService.get_float("STRATEGY_RELATIVE_WEAKNESS_SELL_RATIO", 0.5)
+        qty = int(holding.quantity)
+        sell_qty = max(1, int(qty * ratio))
+        result = TradeExecutorService._execute_trade_v2(
+            ticker, "sell",
+            f"relative_weakness(held {held_days}d, pnl {profit_pct:+.1f}% vs idx90 {idx90:+.1f}% = {underperf:+.1f}%p, idx20 {idx20:+.1f}%)",
+            profit_pct, True, 0, current_price, market_total, cash_balance, exchange_rate,
+            holdings=holdings, user_id=user_id, holding=holding, macro=macro_data,
+            target_cash_ratio_kr=target_cash_kr, target_cash_ratio_us=target_cash_us,
+            forced_qty=sell_qty, trigger_reason="relative_weakness",
+        )
+        if result.executed:
+            ticker_dca["rw_done"] = today
+            user_state.dca_done[ticker] = ticker_dca
+            cls._set_reentry_block(ticker, current_price, user_state)
+        return result
 
     # ── Trailing Stop ──────────────────────────────────────────────────────────
 
@@ -771,18 +919,23 @@ class PositionService:
     # ── Panic Lock (손절 후 재매수 차단) ─────────────────────────────────────────
 
     @staticmethod
-    def _set_panic_lock(ticker: str, user_state: UserState) -> None:
-        """손절 실행된 종목을 panic_locks에 등록하여 재매수 차단."""
+    def _set_panic_lock(ticker: str, user_state: UserState, price: float = None) -> None:
+        """손절 실행된 종목을 panic_locks에 등록하여 재매수 차단.
+        B6: 손절가도 기록 → 재진입 시 +N% 회복 확인에 사용. {date, price} (레거시 문자열 호환)."""
         from datetime import datetime
-        user_state.panic_locks[ticker] = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"🔒 {ticker} panic_lock 설정 (손절 후 재매수 차단)")
+        user_state.panic_locks[ticker] = {"date": datetime.now().strftime("%Y-%m-%d"), "price": float(price or 0)}
+        logger.info(f"🔒 {ticker} panic_lock 설정 (손절 후 재매수 차단, 손절가 {float(price or 0):,.0f})")
+
+    @staticmethod
+    def _panic_lock_date(entry) -> str:
+        return entry.get("date", "") if isinstance(entry, dict) else str(entry or "")
 
     @staticmethod
     def _clear_expired_panic_locks(user_state: UserState, expire_days: int = 3) -> None:
         """만료된 panic_locks 제거. 기본 3일 후 해제."""
         from datetime import datetime, timedelta
         cutoff = (datetime.now() - timedelta(days=expire_days)).strftime("%Y-%m-%d")
-        expired = [t for t, d in user_state.panic_locks.items() if d <= cutoff]
+        expired = [t for t, d in user_state.panic_locks.items() if PositionService._panic_lock_date(d) <= cutoff]
         for t in expired:
             user_state.panic_locks.pop(t, None)
             logger.info(f"🔓 {t} panic_lock 해제 ({expire_days}일 경과)")
@@ -971,7 +1124,7 @@ class PositionService:
             holdings=holdings, user_id=user_id, macro_data=macro_data,
             target_cash_kr=target_cash_kr, target_cash_us=target_cash_us,
         )
-        uptrend_sl = SettingsService.get_float("STRATEGY_UPTREND_STOP_LOSS_PCT", -25.0)
+        uptrend_sl = uptrend_stop_loss_pct(getattr(cached_state, "atr_pct", None) if cached_state else None)
         if uptrend_sl < 0 and profit_pct <= uptrend_sl:
             if CrashGuardService.is_crash(macro_data):
                 logger.info(f"⏸ {ticker} [Unmonitored] 안전망 손절 보류 (Crash 가드 활성)")
@@ -981,10 +1134,10 @@ class PositionService:
             result = cls._handle_forced_sell(
                 ticker, h, profit_pct, current_price, market_total,
                 cash_balance, cfg.exchange_rate,
-                reason=f"uptrend_stop_loss({profit_pct:.2f}%)", **common_kwargs,
+                reason=f"uptrend_stop_loss({profit_pct:.2f}%<={uptrend_sl:.0f}%)", **common_kwargs,
             )
             if result.executed and user_state:
-                cls._set_panic_lock(ticker, user_state)
+                cls._set_panic_lock(ticker, user_state, price=current_price)
                 cls._reset_uptrend_state_on_sell(ticker, user_state)
             return result.executed, ticker if result.executed else None
         cls._reset_stop_loss_streak(ticker, user_state)
@@ -1026,10 +1179,17 @@ class PositionService:
             sell_cooldown.pop(t)
             logger.debug(f"🧹 {t} sell_cooldown 만료 항목 제거")
 
-        expired_buy = [
-            t for t, cd in add_buy_cooldown.items()
-            if (cd if isinstance(cd, str) else cd.date) != today
-        ]
+        def _buy_expired(cd) -> bool:
+            if isinstance(cd, str):
+                return cd != today
+            days = int(getattr(cd, 'expire_days', 1) or 1)
+            if days <= 1:
+                return cd.date != today
+            try:
+                return (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(cd.date, "%Y-%m-%d")).days >= days
+            except (TypeError, ValueError):
+                return True
+        expired_buy = [t for t, cd in add_buy_cooldown.items() if _buy_expired(cd)]
         for t in expired_buy:
             add_buy_cooldown.pop(t)
             logger.debug(f"🧹 {t} add_buy_cooldown 만료 항목 제거")
@@ -1145,10 +1305,10 @@ class PositionService:
         def _priority(s: SignalSchema):
             t = s.ticker
             if not s.holding and t not in split_orders:
-                return 0
+                return (0, s.score)   # 신규 후보는 점수 낮은(강한 BUY) 순 — B1 랭킹 캡과 결합
             if t in split_orders:
-                return 2
-            return 1
+                return (2, s.score)
+            return (1, s.score)
         return sorted(signals, key=_priority)
 
     @classmethod
@@ -1203,7 +1363,14 @@ class PositionService:
 
         prepared_signals = cls._sort_signals_by_priority(prepared_signals, split_orders)
 
+        # B1: 루프당 신규 종목 매수 상한 (점수 하위 N개만). 임계 통과 종목이 절반이어도 무차별 매수 방지
+        max_new_buys = SettingsService.get_int("STRATEGY_MAX_NEW_BUYS_PER_LOOP", 2)
+        new_buys_done = 0
         for sig in prepared_signals:
+            is_new_candidate = (not sig.holding) and (sig.ticker not in split_orders) and sig.score <= cfg.buy_max
+            if is_new_candidate and max_new_buys > 0 and new_buys_done >= max_new_buys:
+                logger.info(f"⏭️ {sig.ticker} 신규 매수 스킵: 루프당 상한 {max_new_buys}건 도달 (score={sig.score})")
+                continue
             sig_executed, sig_ticker, sig_spent_krw, sig_spent_usd = cls._process_single_signal(
                 sig, cfg, sell_cooldown, add_buy_cooldown,
                 holdings, user_id, kr_total, us_total_krw, cash_balance,
@@ -1213,6 +1380,8 @@ class PositionService:
             )
             if sig_executed and sig_ticker:
                 executed_tickers.add(sig_ticker)
+                if is_new_candidate:
+                    new_buys_done += 1
             trade_executed = sig_executed or trade_executed
             cash_balance, usd_cash = cls._deduct_loop_cash(sig.ticker, sig_spent_krw, sig_spent_usd, cash_balance, usd_cash)
 

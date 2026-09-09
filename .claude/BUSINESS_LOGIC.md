@@ -12,6 +12,7 @@
 4. [분할 매수/매도](#4-분할-매수매도)
 5. [손절/익절 로직](#5-손절익절-로직)
    - 5-1. [Uptrend DCA 알고리즘](#5-1--uptrend-dca-알고리즘-기본-on-2026-06-08-도입--2026-09-09-결함-수정)
+   - 5-2. [감지·매수·매도 사이클 개선 2026-09-09](#5-2--감지매수매도-사이클-개선-2026-09-09-docsalgorithm_improvement_plan_2026-09-09md-전면-구현)
 6. [현금 비중 관리](#6-현금-비중-관리)
 7. [섹터 비중 관리](#7-섹터-비중-관리)
 8. [시장 레짐 판정](#8-시장-레짐-판정)
@@ -141,7 +142,7 @@ score = BASE_SCORE(50) + Σ(컴포넌트별 비율 점수)
 
 | 설정키 | 기본값 | 의미 |
 |--------|--------|------|
-| `STRATEGY_BUY_THRESHOLD_MAX` | 30 | score ≤ 30 → BUY 신호 |
+| `STRATEGY_BUY_THRESHOLD` | 30 | score ≤ 30 → BUY 신호 (config 기본 40 → 30 통일, 2026-09-09) |
 | `STRATEGY_SELL_THRESHOLD_MIN` | 70 | score ≥ 70 → SELL 신호 |
 
 > 설정은 DB Settings 테이블에서 런타임 변경 가능.
@@ -516,6 +517,55 @@ Uptrend 목표 현금비율 = max(STRATEGY_UPTREND_MIN_CASH_RATIO, STRATEGY_UPTR
 ### 상태 영속 (`StrategyState`)
 
 `partial_take_done`, `remaining_high`, `dca_done`, `stop_loss_streak` — JSON 컬럼 (alembic `b8e5d2f10a4c`). 매도(전량) 시 `_reset_uptrend_state_on_sell` 로 초기화.
+
+---
+
+## 5-2. ✅ 감지·매수·매도 사이클 개선 (2026-09-09, `docs/ALGORITHM_IMPROVEMENT_PLAN_2026-09-09.md` 전면 구현)
+
+> 순수 규칙 함수는 `services/strategy/uptrend_rules.py` 에 모여 있다 (I/O 없음, 테스트 `tests/test_algorithm_v2.py`).
+
+### 감지 (Detection)
+
+| # | 변경 | 위치 | 설정키 |
+|---|------|------|--------|
+| D0 | **매매 루프가 `MacroService.get_macro_data_snapshot()` 사용** — 이전엔 dict→모델 직변환으로 지수 변화율이 None → Crash 가드·지수 boost 가 실제 루프에서 비활성이었음 | `trading_strategy_service._load_macro_and_assets`, `routers/analysis` | — |
+| D1 | 점수 = `stock_score`(RSI/DCF/등락/EMA/포트폴리오) + `market_adj`(VIX/F&G/Regime/지수 5d, ±CAP). 최종 score 의미는 동일하나 breakdown·API·UI 툴팁에 분리 노출. `effective_buy_threshold = BUY − market_adj` | `signal_service._apply_score_components` | `STRATEGY_MARKET_ADJ_CAP` 20 |
+| D1 | RSI/DCF 선형 클램프 → `cap × tanh(x/scale)` (포화 완화, 25% 와 40% 저평가 구별) | `_score_rsi`, `_score_dcf` | `STRATEGY_RSI_TANH_SCALE` 15, `STRATEGY_DCF_TANH_SCALE` 20 (0=선형) |
+| D1 | DCF 소스 신뢰도 계수 (override 1.0 / EPS CAGR 0.9 / FCF 0.8 / analyst 0.6 / EPS×PER 0.5 / KIS 0.4) → `TickerState.dcf_confidence` | `FinancialService.get_dcf_source`, `MarketDataService._dcf_confidence_for` | `STRATEGY_DCF_CONFIDENCE_ENABLED` |
+| D2 | 급락(음수 change) 가산은 (저가 대비 회복 ≥ 낙폭×0.3) OR (거래량 ≥ 20일평균×1.5) 일 때만 전액, 아니면 ×0.5. reason `drop_unconfirmed(x0.5)` | `_score_technical`, `drop_confirmation_factor` | `STRATEGY_CHANGE_CONFIRM_*` |
+| D3 | 장중 Crash: 유니버스 breadth(등락률 중앙값 ≤ -3% AND 하락비율 ≥ 80%, 표본 ≥ 20) / VIX 전일 대비 +20% 급등 | `MarketDataService.compute_breadth`, `CrashGuardService.get_status` | `STRATEGY_CRASH_BREADTH_*`, `STRATEGY_CRASH_VIX_CHANGE_PCT` |
+| D4 | 가격 신선도 게이트: `last_updated` 600초 초과 → 신호 생성 스킵 | `signal_service._is_price_stale` | `STRATEGY_PRICE_STALE_SEC` |
+| D5 | 레짐 가중 25/25/20/15/15 (Technical/VIX/F&G/FRED/복합), Bull 임계 동적(65 → 직전 Bear 1개월 67 / 2개월 70) | `macro_service._compute_weighted_score`, `_get_bull_threshold` | `STRATEGY_REGIME_BULL_THRESHOLD` |
+
+### 매수 (Buy)
+
+| # | 변경 | 위치 | 설정키 |
+|---|------|------|--------|
+| B1 | BUY 임계 config 40 → **30** 통일. 루프당 신규 종목 매수 상한 N(점수 낮은 순). 자산관리 완화 상한 20 → 10 | `config.py`, `_execute_collected_signals`, `_sort_signals_by_priority` | `STRATEGY_MAX_NEW_BUYS_PER_LOOP` 2, `STRATEGY_GAP_RELAX_MAX` 10 |
+| B2 | 매수 수량 = per_trade × 신뢰도(score≤10 1.5×, ≤20 1.25×) × 변동성(ATR 목표 2%/ATR, 0.5~1.5×) × gap. 옛 score≥80/90 승수(BUY 경로에서 발동 불가) 제거 | `_calculate_buy_quantity` | `STRATEGY_BUY_CONFIDENCE_*`, `STRATEGY_ATR_*` |
+| B3 | 분할매수 다음 트랜치: (전 트랜치가 대비 -2%) OR (다음 거래일) — 이전엔 1분 루프마다 실행돼 3분 만에 완료 | `_handle_buy_split`, `SplitOrderState.last_tranche_*` | `STRATEGY_SPLIT_TRANCHE_DROP_PCT` |
+| B4 | DCA 하루 최대 1단계, 기준가 `avg`(기본)/`entry` 옵션, 예비현금은 지수 tier ≥ 3(5d < -12%) 이면 0% | `_handle_uptrend_dca_signal`, `_uptrend_target_cash_ratio(macro)` | `STRATEGY_UPTREND_DCA_MAX_STAGES_PER_DAY`, `_DCA_REF`, `_RESERVE_ZERO_TIER` |
+| B5 | 업종(industry) 그룹 비중 30% 한도 — 초과분만큼 수량 축소 (신규·추매·DCA 공통) | `_group_exposure_cap_qty` | `STRATEGY_MAX_GROUP_RATIO` |
+| B6 | 재진입: panic_lock 에 손절가 기록 → RSI<30 AND 손절가 +3% 회복 시에만 재진입. 모든 매도 후 `add_buy_cooldown(kind=sell)` — 5거래일 또는 매도가 -5% 하락 시 해제 | `_set_panic_lock`, `_set_reentry_block`, `_is_buy_cooldown_active` | `STRATEGY_REENTRY_*` |
+
+### 매도 (Sell)
+
+| # | 변경 | 위치 | 설정키 |
+|---|------|------|--------|
+| S1 | 잔여 trailing 매도 하한 = 매입가 × 1.01 — 그 아래면 보유 유지(손실 확정 차단) | `_handle_uptrend_remaining_trailing` | `STRATEGY_UPTREND_TRAILING_FLOOR_PCT` |
+| S2 | 다단계 스케일아웃 +10% 50% / +20% 잔여 50% / +35% 잔여 50%. `partial_take_done[ticker]` = 완료 단계 수(레거시 True=1). 고점 수익 구간별 trailing -10 / +20% 이상 -7 / +35% 이상 -5 | `_handle_uptrend_partial_take`, `parse_scale_out`, `trailing_pct_by_profit` | `STRATEGY_UPTREND_SCALE_OUT`, `_TRAILING_BY_PROFIT` |
+| S3 | Uptrend 에서 score 매도(≥70)는 수익 ≥ 3% 일 때만 | `_route_signal` | `STRATEGY_UPTREND_SCORE_SELL_MIN_PROFIT` |
+| S4 | 안전망 손절 = clamp(-6 × ATR%, -35%, -15%) (ATR 없으면 -25%) | `uptrend_stop_loss_pct`, `_score_portfolio(atr_pct)` | `STRATEGY_UPTREND_STOP_ATR_*` |
+| S5 | 상대 약세 정리: 보유 ≥ 90일 AND (종목 − 지수 90d) ≤ -20%p AND 지수 20d ≥ 0 → 50% 1회 정리(`dca_done[ticker]['rw_done']`). 매수 이력 없는 종목은 판정 안 함 | `_handle_relative_weakness`, `TradeHistoryRepo.get_first_buy_date` | `STRATEGY_RELATIVE_WEAKNESS_*` |
+| S6 | 매도 직전 KR도 현재가 재조회. 장 마감 10분 전 분할매도 잔여 일괄. 자산관리 매도 최소수익은 코드 기준 2% | `_refresh_price_for_sell`, `_get_sell_split_qty` | `STRATEGY_SELL_MERGE_BEFORE_CLOSE_MIN` |
+
+### 인프라
+
+- **섀도우 모드** `STRATEGY_SHADOW=1`: `_place_and_record` 가 KIS 주문 대신 `trade_history(status='shadow')` 기록. 신규 규칙 2주 검증용.
+- **KPI** `GET /api/analysis/strategy-kpi?days=30`: BUY/HOLD/SELL 분포, 컴포넌트 캡 포화율, market_adj 통계, trigger_reason 별 건수·실현 P&L, Crash 상태.
+- **리플레이 백테스트** `scripts/backtest_replay.py`: 운영 `calculate_score`/`_execute_collected_signals` 를 그대로 호출(주문만 시뮬). `scripts/backtest_last_week.py` 는 규칙 별도 구현 시뮬(빠른 비교용).
+- `financials.atr_pct / avg_volume_20d` 컬럼 (alembic `d4f1a2b3c5e6`), `TickerState.atr_pct / avg_volume_20d / dcf_confidence`.
+- `/api/market/crash-status` 에 `vix_change_1d`, `kr_breadth`, `us_breadth`; 포트폴리오/감시 응답에 `stock_score`, `market_adj`.
 
 ---
 

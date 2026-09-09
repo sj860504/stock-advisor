@@ -171,6 +171,7 @@ class StockMetaRepo:
             "high52": "high52", "low52": "low52",
             "volume": "volume", "amount": "amount",
             "rsi": "rsi", "dcf_value": "dcf_value",
+            "atr_pct": "atr_pct", "avg_volume_20d": "avg_volume_20d",
         }
         for metric_key, db_field in metric_to_db_field.items():
             if metric_key in metrics:
