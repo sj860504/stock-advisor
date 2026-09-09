@@ -50,3 +50,15 @@
 ```bash
 cd /root/stock-advisor && git pull && ./start.sh   # settings 신규 키는 init_defaults 가 자동 삽입
 ```
+
+## 후속 — 최근 일주일 백테스트 스크립트 (`scripts/backtest_last_week.py`)
+
+원격 작업 환경의 이그레스 정책이 시세 서버(query1/2.finance.yahoo.com, stooq.com, fchart/api.finance.naver.com, api.stlouisfed.org, alphavantage.co)를 전부 403 으로 차단해 실데이터 백테스트는 여기서 실행 불가.
+운영 서버에서 실행할 스크립트를 추가하고 `--synthetic` 합성 데이터로 동작만 검증함.
+
+```bash
+python scripts/backtest_last_week.py            # 최근 7일, Legacy vs Uptrend(before) vs Uptrend(after)
+python scripts/backtest_last_week.py --days 14 --cash 3000000
+```
+- 일봉(고/저/종가) 기준, 보유 종목 한정 (신규 종목 score 매수 미포함). 하루 1단계 DCA 로 단순화.
+- `--csv-dir` 로 미리 받은 CSV 사용 가능 (네트워크 없는 환경).
