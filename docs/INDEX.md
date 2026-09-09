@@ -25,6 +25,8 @@ Load these files at every session start:
 | 토픽 | 로드할 파일 |
 |------|-----------|
 | 매매 전략 로직 수정 | `BUSINESS_LOGIC.md` + `FUNCTION_REFERENCE.md` §4 |
+| 알고리즘 개선 계획/로드맵 | `docs/ALGORITHM_IMPROVEMENT_PLAN_2026-09-09.md` (감지·매수·매도 사이클, Phase 1~3) |
+| Uptrend DCA 규칙 | `BUSINESS_LOGIC.md` §5-1 |
 | 신규 API 엔드포인트 | `API_REFERENCE.md` + `ARCHITECTURE_MAP.md` |
 | KIS API 연동 | `FUNCTION_REFERENCE.md` §2 + §7(kis_fetcher) |
 | DB 스키마/쿼리 | `FUNCTION_REFERENCE.md` §8~9 |
